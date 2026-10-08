@@ -1,3 +1,6 @@
+import pytest
+
+from reelforge import lexicon
 from reelforge.script import footage_queries, normalize, parse_script
 
 EXAMPLE = ("You've already had your last conversation with someone. You just don't know which one. "
@@ -51,9 +54,50 @@ def test_multiword_markup_and_free_dash():
     assert marked == ["far", "too", "long"]
 
 
-def test_footage_queries_follow_story_and_are_unique():
+# Vertical results on Mixkit's first results page (24 max) when the bright
+# palette was written (2026-10-08). Every bright search must be one of these:
+# longer or rarer phrases return nothing there, or loosely matching clips.
+MIXKIT_VERTICAL_RESULTS = {
+    "mountains": 24, "forest": 24, "lake": 23, "clouds": 24, "sky clouds": 24, "trees": 24,
+    "snow": 24, "flowers": 24, "sunset": 24, "woman nature": 21, "beach": 20, "woman walking": 18,
+    "sea": 17, "sunlight": 16, "river": 14, "field": 12, "hills": 11, "man nature": 11,
+    "road trip": 10, "couple nature": 6, "hiking": 5, "camping": 4, "waterfall": 4, "sunrise": 3,
+}
+
+
+def test_moody_footage_queries_follow_story_and_are_unique():
+    s = parse_script(EXAMPLE)
+    q = footage_queries(s, 8, palette="moody")
+    assert len(q) == 8 and len(set(q)) == 8
+    assert q[:4] == ["clock ticking dark", "night city drive",  # "last" is the first visual concept,
+                     "phone screen dark night", "rain window night"]  # then the atmosphere interleaves
+    assert footage_queries(parse_script("Hello."), 3, palette="moody") == lexicon.ATMOSPHERE[:3]
+
+
+def test_bright_footage_queries_are_the_default_and_follow_story():
     s = parse_script(EXAMPLE)
     q = footage_queries(s, 8)
+    assert q == footage_queries(s, 8, palette="bright")
     assert len(q) == 8 and len(set(q)) == 8
-    assert q[0] == "clock ticking dark"  # "last" is the first visual concept
-    assert footage_queries(parse_script("Hello."), 3)  # falls back to atmosphere
+    assert q[:4] == ["sunset", "mountains", "woman nature", "lake"]  # last, (fill), conversation, (fill)
+    hook = parse_script("If you lost your memory, who would you trust? Not who would show up.")
+    assert footage_queries(hook, 3) == ["sky clouds", "mountains", "field"]  # lost, (fill), memory
+    assert footage_queries(parse_script("Hello."), 3) == ["mountains", "lake", "forest"]
+    everything = footage_queries(s, 100)
+    assert len(everything) == len(set(everything)) and set(lexicon.BRIGHT_ATMOSPHERE) <= set(everything)
+
+
+def test_unknown_palette_is_explained():
+    with pytest.raises(ValueError, match="bright, moody"):
+        footage_queries(parse_script("Hello."), 3, palette="neon")
+
+
+def test_bright_lexicon_only_uses_searches_that_find_clips():
+    queries = set(lexicon.BRIGHT_ATMOSPHERE)
+    for triggers, searches in lexicon.BRIGHT_CONCEPTS:
+        queries.update(searches)
+        assert triggers == {normalize(t) for t in triggers}  # matched against normalised words
+    assert queries <= set(MIXKIT_VERTICAL_RESULTS)
+    assert all(len(q.split()) <= 2 for q in queries)
+    words = [w for triggers, _ in lexicon.BRIGHT_CONCEPTS for w in triggers]
+    assert len(words) == len(set(words))  # each word picks one concept

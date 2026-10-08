@@ -95,15 +95,16 @@ class _FrameProgress(ProgressBarLogger):
     """Forwards MoviePy's frame counter to a callback (fraction 0..1); the
     callback may raise to abort the export (used for cancel)."""
 
-    def __init__(self, callback: Callable[[float], None]):
+    def __init__(self, on_fraction: Callable[[float], None]):
         super().__init__()
-        self.callback = callback
+        # not "callback": proglog's ProgressLogger already has a callback() method
+        self.on_fraction = on_fraction
 
     def bars_callback(self, bar, attr, value, old_value=None):
         if bar == "frame_index" and attr == "index":
             total = self.bars[bar].get("total") or 0
             if total:
-                self.callback(min(1.0, value / total))
+                self.on_fraction(min(1.0, value / total))
 
 
 def open_segments(clips: list[Path], shots: list[tuple[float, float]], vs: VideoStyle):

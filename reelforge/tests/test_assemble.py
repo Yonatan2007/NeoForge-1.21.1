@@ -114,3 +114,14 @@ def test_timeline_applies_overlays_in_order():
     vs = VideoStyle(crossfade=0, fade_in=0, fade_out=0)
     tl = Timeline([Solid(10, 3.0)], [0.0], vs, [Mark(1), Mark(2)])
     assert tl.frame(1.0)[0, 0, 1] == 2 and tl.frame(1.0)[1, 1, 0] == 10
+
+
+def test_frame_progress_reports_fractions_and_keeps_proglog_working():
+    from reelforge.assemble import _FrameProgress
+
+    seen = []
+    logger = _FrameProgress(seen.append)
+    logger(message="MoviePy - writing")           # proglog's own callback path must still work
+    for i in logger.iter_bar(frame_index=range(4)):
+        pass
+    assert seen == sorted(seen) and seen[-1] == pytest.approx(1.0) and all(0 <= f <= 1 for f in seen)

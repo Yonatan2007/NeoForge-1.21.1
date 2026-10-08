@@ -133,6 +133,7 @@ python -m reelforge presets
 | `HF_KEY`, `HIGGSFIELD_TTS_ENDPOINT` | experimental headless Higgsfield route | <https://console.higgsfield.ai> |
 | `WHISPER_MODEL`, `WHISPER_DEVICE` | word timing model (default `base.en`, `cpu`) | |
 | `REELFORGE_HOME` | projects and saved defaults (default `~/.config/reelforge`) | |
+| `REELFORGE_MAX_UPLOAD_MB` | largest file the UI accepts (default 500) | |
 | `REELFORGE_CACHE` | downloads and graded clips (default `~/.cache/reelforge`) | |
 
 ## How it works

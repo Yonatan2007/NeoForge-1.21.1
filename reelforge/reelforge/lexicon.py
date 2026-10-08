@@ -2,8 +2,11 @@
 
 * ``EMPHASIS_WORDS`` / ``EMPHASIS_PHRASES`` decide which words get coloured.
   Level 1 = highlight (yellow), level 2 = alert (red, finality and absolutes).
-* ``VISUAL_CONCEPTS`` maps script vocabulary to stock-footage searches.
-* ``ATMOSPHERE`` is the moody B-roll palette used to fill the remaining shots.
+* ``BRIGHT_CONCEPTS`` / ``BRIGHT_ATMOSPHERE`` (the default "bright" footage
+  palette, the reference look) map script vocabulary to sunny nature and
+  adventure searches, and fill the remaining shots.
+* ``VISUAL_CONCEPTS`` / ``ATMOSPHERE`` are the "moody" palette (night, rain).
+* ``PALETTES`` names both.
 
 Edit freely: these lists are the "taste" of the generator.
 """
@@ -97,3 +100,106 @@ ATMOSPHERE: list[str] = [
     "moody mountains fog",
     "streetlight rain night",
 ]
+
+# The "bright" palette: sunny outdoor scenes with people small in the
+# landscape. Every search here is one or two words and was checked on Mixkit's
+# vertical listing (2026-10-08, results on the first page): mountains 24+,
+# forest 24+, lake 23, clouds 24+, sky clouds 24+, trees 24+, snow 24+,
+# flowers 24+, sunset 24+, woman nature 21, beach 20, woman walking 18,
+# sea 17, sunlight 16, river 14, field 12, hills 11, man nature 11,
+# road trip 10, couple nature 6, hiking 5, camping 4, waterfall 4, sunrise 3.
+# Longer phrases match loosely there ("sunset mountains" finds a DJ in a
+# desert) or not at all ("alpine lake", "hiker", "tent", "valley"), so keep
+# additions short and check them first. Pexels and Pixabay have more of all.
+BRIGHT_CONCEPTS: list[tuple[frozenset[str], list[str]]] = [
+    (frozenset("conversation conversations talk talking talked said say saying words call called "
+               "phone voice listen".split()),
+     ["woman nature", "couple nature"]),
+    (frozenset("last time times clock late before ending final hours years minutes moment "
+               "moments".split()),
+     ["sunset", "sky clouds"]),
+    (frozenset("sorry regret regrets mistake mistakes forgive forgiven apology wrong".split()),
+     ["man nature", "river"]),
+    (frozenset("proud father mother family parent parents son daughter dad mom brother sister "
+               "child children kids".split()),
+     ["woman walking", "field"]),
+    (frozenset("thank thanks grateful gratitude".split()),
+     ["flowers", "sunlight"]),
+    (frozenset("today now morning tomorrow day days sunrise begin beginning start".split()),
+     ["sunrise", "field"]),
+    (frozenset("alone lonely nobody empty silence solitude".split()),
+     ["lake", "man nature"]),
+    (frozenset("love loved loving heart miss missing kiss".split()),
+     ["couple nature", "sunset"]),
+    (frozenset("die dies dying dead death gone grave funeral lost loss".split()),
+     ["sky clouds", "snow"]),
+    (frozenset("life living live alive old young grow growing age".split()),
+     ["forest", "trees"]),
+    (frozenset("stop wait waiting slow still pause".split()),
+     ["hills", "lake"]),
+    (frozenset("road roads drive driving journey path way leave leaving travel".split()),
+     ["road trip", "hiking"]),
+    (frozenset("fear afraid scared dark darkness storm".split()),
+     ["waterfall", "mountains"]),
+    (frozenset("hope light chance again believe faith".split()),
+     ["sunlight", "sunrise"]),
+    (frozenset("memory memories remember forget forgot past".split()),
+     ["field", "sunset"]),
+    (frozenset("trust truth honest real true".split()),
+     ["mountains", "hiking"]),
+    (frozenset("free freedom escape fly wild".split()),
+     ["sea", "beach"]),
+    (frozenset("friend friends people together everyone someone show stay home".split()),
+     ["camping", "woman walking"]),
+    (frozenset("peace calm rest quiet breathe".split()),
+     ["river", "lake"]),
+    (frozenset("dream dreams future become change".split()),
+     ["clouds", "road trip"]),
+    (frozenset("world everything universe earth".split()),
+     ["mountains", "sky clouds"]),
+    (frozenset("pain hurt broken tears cry".split()),
+     ["snow", "river"]),
+    (frozenset("walk walking walked steps step run running".split()),
+     ["woman walking", "hiking"]),
+    # Nature named in the script: show it.
+    (frozenset("mountain mountains hill hills peak peaks summit climb top".split()),
+     ["mountains", "hiking"]),
+    (frozenset("sea seas ocean oceans wave waves shore water".split()),
+     ["sea", "beach"]),
+    (frozenset("sky skies cloud clouds heaven stars".split()),
+     ["sky clouds", "clouds"]),
+    (frozenset("sun sunshine summer warm warmth".split()),
+     ["sunlight", "beach"]),
+    (frozenset("tree trees forest forests woods".split()),
+     ["forest", "trees"]),
+    (frozenset("river rivers lake lakes stream flow".split()),
+     ["river", "lake"]),
+    (frozenset("flower flowers spring bloom garden".split()),
+     ["flowers", "field"]),
+    (frozenset("snow winter cold ice".split()),
+     ["snow", "mountains"]),
+]
+
+# Fills the shots between concepts, most reference-like first: big
+# landscapes, lakes and forest, people small in nature, open sky.
+BRIGHT_ATMOSPHERE: list[str] = [
+    "mountains",
+    "lake",
+    "forest",
+    "woman nature",
+    "sky clouds",
+    "hills",
+    "sunlight",
+    "river",
+    "man nature",
+    "field",
+    "trees",
+    "sea",
+    "road trip",
+    "snow",
+]
+
+PALETTES: dict[str, tuple[list[tuple[frozenset[str], list[str]]], list[str]]] = {
+    "bright": (BRIGHT_CONCEPTS, BRIGHT_ATMOSPHERE),
+    "moody": (VISUAL_CONCEPTS, ATMOSPHERE),
+}

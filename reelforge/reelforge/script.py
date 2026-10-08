@@ -148,26 +148,34 @@ def _auto_emphasis(script: Script) -> None:
             next_group += 1
 
 
-def footage_queries(script: Script, count: int) -> list[str]:
-    """Stock-footage searches: script concepts (in story order) interleaved
-    with the moody atmosphere palette, de-duplicated, ``count`` long."""
+def footage_queries(script: Script, count: int, palette: str = "bright") -> list[str]:
+    """Stock-footage searches: the palette's script concepts (in story order)
+    interleaved with its atmosphere searches, de-duplicated, ``count`` long
+    (shorter only if the palette has fewer distinct searches). Palettes live
+    in ``lexicon.PALETTES``: "bright" (sunny nature, the reference look) and
+    "moody" (night, rain)."""
+    try:
+        concept_map, fill = lexicon.PALETTES[palette]
+    except KeyError:
+        raise ValueError(f"unknown footage palette {palette!r}: "
+                         f"use one of {', '.join(lexicon.PALETTES)}") from None
     concepts: list[list[str]] = []
     used: set[int] = set()
     for w in script.words:
-        for i, (triggers, queries) in enumerate(lexicon.VISUAL_CONCEPTS):
+        for i, (triggers, queries) in enumerate(concept_map):
             if i not in used and w.norm in triggers:
                 used.add(i)
                 concepts.append(queries)
 
     ordered: list[str] = []
-    atmosphere = iter(lexicon.ATMOSPHERE)
+    atmosphere = iter(fill)
     for queries in concepts:
         ordered.append(queries[0])
         ordered.append(next(atmosphere, queries[-1]))
     for queries in concepts:
         ordered.extend(queries[1:])
     ordered.extend(atmosphere)
-    ordered.extend(lexicon.ATMOSPHERE)  # wrap around if still short
+    ordered.extend(fill)  # wrap around if still short
 
     result: list[str] = []
     for q in ordered:
