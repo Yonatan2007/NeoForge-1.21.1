@@ -166,6 +166,9 @@ function stepStatus(tab) {
       if (v.source === "piper") return { text: "Piper", ok: Boolean(v.piper_model), warn: !v.piper_model };
       if (v.source === "higgsfield-api") return { text: "Higgsfield API", ok: true };
       if (v.file) return { text: v.source === "higgsfield" ? "Higgsfield" : "Recording added", ok: true };
+      if (v.source === "higgsfield" && state.meta.capabilities && state.meta.capabilities.claude_voice) {
+        return { text: "Claude makes it", ok: true };
+      }
       return { text: v.source === "higgsfield" ? "Waiting for voice" : "Add a recording", warn: true };
     }
     case "music":
@@ -206,6 +209,7 @@ function stepNav(active) {
     return { t, sub, marker, link };
   });
   const paint = () => {
+    if (!state.project) return; // the project was just closed (leaving for the gallery)
     for (const { t, sub, marker, link } of items) {
       const st = stepStatus(t.id);
       sub.textContent = st.text;

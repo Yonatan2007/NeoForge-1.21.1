@@ -186,7 +186,17 @@ export function render(panel) {
     }
 
     const extraFields = (SOURCE_FIELDS[v.source] || []).map((p) => fieldFor(p)).filter(Boolean);
-    if (v.source === "higgsfield") {
+    const claudeVoice = Boolean(state.meta.capabilities && state.meta.capabilities.claude_voice);
+    if (v.source === "higgsfield" && claudeVoice) {
+      // Claude renders this reel (control panel): it makes the voice itself.
+      hf = null;
+      body.append(h("section", { class: "card", "aria-labelledby": "hfc" },
+        h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "hfc" }, "Claude makes the voice"),
+          h("p", { class: "card-sub" }, "With your connected Higgsfield account, when you render.")),
+        h("div", { class: "stack" },
+          extraFields.length ? h("div", { class: "form-grid" }, extraFields) : null,
+          h("p", { class: "muted" }, "About 1 credit for every 50 words. To use your own recording instead, choose “Upload a voiceover” above."))));
+    } else if (v.source === "higgsfield") {
       hf = higgsfieldBlock();
       body.append(h("section", { class: "card step-card", "aria-labelledby": "hf1" },
         h("div", { class: "card-head" }, h("span", { class: "step-num" }, "1"), h("h2", { class: "card-title", id: "hf1" }, "Ask Claude for the voice")),

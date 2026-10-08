@@ -59,3 +59,47 @@ then one white lowercase word at a time. Don't change the look unless asked.
 
 The user can also run everything themselves with the web UI:
 `python -m reelforge ui` (projects, uploads, music trimming, style, render).
+
+## Control panel requests
+
+The user also has the reelforge **control panel**: the same web UI published as
+a claude.ai Artifact (built from `reelforge/panel/`, see its README). The panel
+keeps reels in the Artifact's database (`projects/<id>`) and files in its asset
+store. Its "Preview plan" and "Render" buttons write a task (`tasks/<id>`) and
+message this session through the user's Claude Code Remote connector:
+
+    reelforge panel request: <plan|render> task "<task id>" for reel "<reel id>". Panel: <artifact url> ...
+
+That message is the user's own button press: carry the task out. (If the user
+writes "render my reel" in chat instead, `ArtifactData query tasks` where
+`status == "queued"` and do those.) W = a work folder in the scratchpad,
+A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
+
+1. Setup in a fresh container: `git pull origin claude/eager-hypatia-yaqaw0`,
+   then a venv with `pip install -r reelforge/requirements.txt faster-whisper`.
+2. `ArtifactData get tasks/<task id>`. Stop if it is no longer `queued`. Write
+   `{status: "running", message: "Claude is getting your files…"}` (pin
+   `if_version`; keep the latest version for every later write).
+3. `ArtifactData get projects/<reel id>` with `out_dir` → a JSON file.
+   `python -m reelforge.panelrun stage <file> --assets A --work W`. While it
+   prints `{"need": [ids]}`, fetch them with `Artifact read` (`url` = panel,
+   `paths` = the ids, `out_dir` = A) and stage again.
+4. **plan**: `python -m reelforge.panelrun plan --work W`, then update the task
+   with `{status: "done", result: <W/plan.json>}` (write the update as a JSON
+   file and pass `file_path`).
+5. **render**:
+   - If stage printed `higgsfield_request`: `mcp__higgsfield__generate_audio`
+     with its params, `jobs_wait`, take the result URL (never resubmit).
+   - Start `python -m reelforge.panelrun render --work W [--voiceover <url>]`
+     in the background. Every 20–40 s: `panelrun status --work W` → update the
+     task (`status, stage, progress, message, log`); if the task shows
+     `cancel_requested`, `touch W/cancel`.
+   - When it ends: `panelrun outputs --work W` lists the files. Upload them
+     to the panel's asset store (`Artifact` publish, `url` = panel,
+     `asset: true`; video + cover together with `file_paths`, each text file
+     with its own `file_path`). Then one `ArtifactData batch`: update
+     `projects/<reel id>` with `{outputs: {video, cover, srt, credits, timings: <asset ids>}}`
+     (pinned to its version; on a conflict re-read and redo) and the task with
+     `{status: "done", stage: "finish", progress: 1, message: "Finished", result}`.
+   - On failure: task `{status: "error", error: <first line>, log}`.
+6. Tell the user in chat in one or two lines what was made (or what failed).

@@ -30,12 +30,14 @@ function readiness() {
   const p = state.project;
   const words = parseScript(p.script).words.length;
   const v = p.voice;
-  const needsFile = (v.source === "file" || v.source === "higgsfield") && !v.file;
+  const claudeVoice = Boolean(state.meta.capabilities && state.meta.capabilities.claude_voice);
+  const needsFile = (v.source === "file" || (v.source === "higgsfield" && !claudeVoice)) && !v.file;
   const own = p.footage.items.filter((i) => i.role === "footage").length;
   return [
     { ok: words > 0, label: words ? `Script · ${words} words` : "Script is empty", tab: "script" },
     { ok: !needsFile && !(v.source === "piper" && !v.piper_model),
-      label: v.source === "none" ? "No voice (captions at reading pace)" : needsFile ? "Voiceover missing" : "Voice ready", tab: "voice" },
+      label: v.source === "none" ? "No voice (captions at reading pace)" : needsFile ? "Voiceover missing"
+        : v.source === "higgsfield" && !v.file ? "Claude makes the voice" : "Voice ready", tab: "voice" },
     { ok: own > 0 || p.footage.stock, label: own ? `${own} of your clips${p.footage.stock ? " + stock" : ""}` : p.footage.stock ? "Stock footage" : "No footage", tab: "footage" },
     { ok: true, optional: !p.music.file, label: p.music.file ? "Music added" : "No music (optional)", tab: "music" },
   ];
@@ -63,12 +65,22 @@ function resultCard(job) {
   for (const [key, label, ext, iconName] of DOWNLOADS) {
     const url = outputUrl(key, result);
     if (!url) continue;
-    const name = key === "video" ? `${(state.project.name || "reel").replace(/[^\w-]+/g, "-")}.mp4` : basename(url.split("?")[0]);
+    const base = (state.project.name || "reel").replace(/[^\w-]+/g, "-");
+    const fromUrl = basename(url.split("?")[0]);
+    const suffix = { srt: "captions", cover: "cover", credits: "credits" }[key] || key;
+    const name = key === "video" ? `${base}.mp4` : /\.[a-z0-9]+$/i.test(fromUrl) ? fromUrl : `${base}-${suffix}.${ext.toLowerCase()}`;
     links.append(h("li", {}, h("a", { class: ["download", key === "video" && "download-main"], href: url, download: name },
       h("span", { class: "download-icon", html: icon(iconName, { size: 18 }) }),
       h("span", { class: "download-text" }, h("span", { class: "download-label" }, label), h("span", { class: "download-ext" }, ext)),
       h("span", { class: "download-arrow", html: icon("download", { size: 18 }) }))));
   }
+  // Inside the Claude app plain download links do nothing: save through its download prompt.
+  links.addEventListener("click", (e) => {
+    const a = e.target.closest("a.download");
+    if (!a || typeof globalThis.reelforgeSaveFile !== "function") return;
+    e.preventDefault();
+    globalThis.reelforgeSaveFile(a.href, a.getAttribute("download"));
+  });
   const warnings = (result && result.warnings) || [];
   return h("section", { class: "card result-card", "aria-labelledby": "result-title" },
     h("div", { class: "result-grid" },
