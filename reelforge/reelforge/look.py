@@ -10,8 +10,11 @@ split tint, vignette, grain) then goes on top of the matched clip.
 
 The default target is ``REFERENCE_STATS``, measured from the reference reel
 (warm vintage film: teal sky, yellow-greens, lifted blacks, soft contrast).
-With ``LookStyle.match == "uploads"`` the target is measured from the user's
-own reference pictures/videos instead.
+Statistics alone can't turn a blue sky teal while turning grass yellow, so the
+built-in reference look also bakes the reference's hue-selective
+``film_palette`` into the same LUT. With ``LookStyle.match == "uploads"`` the
+target is measured from the user's own reference pictures/videos instead (pure
+statistical match, no palette).
 """
 from __future__ import annotations
 
@@ -190,9 +193,17 @@ def media_stats(path: Path, samples: int = 8, *, start: float = 0.0,
 
 # --------------------------------------------------------------------------- statistical match -> 3D LUT
 
-STD_RATIO = (0.6, 1.6)          # contrast/saturation change allowed per channel
-MAX_SHIFT = (15.0, 20.0, 20.0)  # largest L*, a*, b* mean shift: a night clip is brightened, not flattened grey
+# Per-channel limits of the spread ratio sigma_t/sigma_s (L* = contrast, a*/b* =
+# saturation). Stock footage is far less colourful than the reference
+# (a* spread 2-7 vs ~10), so chroma may stretch further than lightness.
+STD_RATIO = ((0.6, 1.6), (0.6, 2.0), (0.6, 2.0))
+MAX_SHIFT = (15.0, 25.0, 25.0)  # largest L*, a*, b* mean shift: a night clip is brightened, not flattened grey
 _KNEE = 88.0                    # L* above this rolls off smoothly instead of clipping to white
+# Highlights take on only part of the cast: the reference's clouds and snow are
+# cream/mint-grey (b* ~ +10 at L* 80-95), not as yellow as its sunlit grass.
+_WHITES = (65.0, 97.0)          # source L* range over which the cast fades ...
+_WHITE_KEEP = 0.6               # ... to this fraction of the pixel's own colour
+_PURE_WHITE = (85.0, 100.0)     # L* range where the film palette fades out
 
 
 def _shoulder(L: np.ndarray) -> np.ndarray:
@@ -202,29 +213,96 @@ def _shoulder(L: np.ndarray) -> np.ndarray:
     return np.where(L > _KNEE, _KNEE + room * np.tanh((L - _KNEE) / room), L)
 
 
+def _smoothstep(x: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    t = np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
 def transfer(lab: np.ndarray, source: LabStats, target: LabStats, strength: float = 1.0) -> np.ndarray:
     """Reinhard colour transfer of L*a*b* values from ``source`` statistics
     towards ``target``: ``(x - mu_s) * sigma_t / sigma_s + mu_t`` per channel,
     with the spread ratio and the mean shift clamped so extreme clips (night,
     fog, a single colour) are moved towards the look without breaking, then
-    blended with the original by ``strength`` (0..1)."""
+    blended with the original by ``strength`` (0..1).
+
+    Two film-like refinements keep the global shift from looking like a
+    colour filter: highlights roll off instead of clipping, and near-white
+    pixels (clouds, snow) keep their own colour rather than taking on the
+    target's cast."""
     mu_s, mu_t = np.array(source.mean), np.array(target.mean)
-    ratio = np.clip(np.array(target.std) / np.maximum(np.array(source.std), 1e-3), *STD_RATIO)
+    lo, hi = np.array(STD_RATIO).T
+    ratio = np.clip(np.array(target.std) / np.maximum(np.array(source.std), 1e-3), lo, hi)
     shift = np.clip(mu_t - mu_s, -np.array(MAX_SHIFT), np.array(MAX_SHIFT))
     out = (lab - mu_s) * ratio + mu_s + shift
     out[..., 0] = _shoulder(out[..., 0])
+    # Judged on the *source* lightness: a compressed bright sky must not drag
+    # its clouds down into the full cast.
+    whites = _WHITE_KEEP * _smoothstep(lab[..., 0], *_WHITES)[..., None]
+    out[..., 1:] += (lab[..., 1:] - out[..., 1:]) * whites
     s = min(1.0, max(0.0, float(strength)))
     return lab + s * (out - lab)
 
 
-def match_lut(source: LabStats, target: LabStats, strength: float, path: Path, size: int = 33) -> Path:
+# The reference's palette is hue-selective, which no global shift can copy:
+# skies are a deep teal (measured hue ~195 deg, chroma ~32) while grass is a
+# warm yellow-green (~97 deg) and skin stays natural. After the statistical
+# match, stock skies sit around 190-260 deg with little chroma and foliage
+# around 120-150 deg. This hue-vs-hue / hue-vs-chroma curve closes the gap:
+# (hue deg, hue rotation deg, chroma gain, L* change at full chroma).
+FILM_HUES = (
+    (0.0, 0.0, 1.0, 0.0),       # magenta-red
+    (45.0, 0.0, 1.0, 0.0),      # skin, orange: untouched
+    (80.0, 0.0, 1.05, 0.0),     # yellow
+    (115.0, -12.0, 1.0, 0.0),   # yellow-green
+    (145.0, -25.0, 1.0, 0.0),   # green -> warmer
+    (175.0, -5.0, 1.45, -3.0),  # green-cyan
+    (200.0, 0.0, 1.8, -7.0),    # cyan: the teal sky, richer and a bit deeper
+    (235.0, -25.0, 1.7, -7.0),  # azure -> teal
+    (265.0, -45.0, 1.5, -5.0),  # blue sky -> teal
+    (300.0, -20.0, 1.0, 0.0),   # violet
+    (360.0, 0.0, 1.0, 0.0),
+)
+_RICH = 45.0                    # chroma at which the palette stops adding saturation
+
+
+def film_palette(lab: np.ndarray, amount: float = 1.0) -> np.ndarray:
+    """The reference reel's hue-selective film palette on L*a*b* values:
+    blues and azures turn teal and richer, greens warm towards yellow-green,
+    skin and reds are left alone. Near-neutral and near-white pixels barely
+    move (the change scales with chroma and fades out in the highlights)."""
+    a = min(1.0, max(0.0, float(amount)))
+    if a == 0.0:
+        return lab
+    table = np.array(FILM_HUES)
+    chroma = np.hypot(lab[..., 1], lab[..., 2])
+    hue = np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) % 360.0
+    rotate, gain, dl = (np.interp(hue, table[:, 0], table[:, i]) for i in (1, 2, 3))
+    weight = a * (1.0 - _smoothstep(lab[..., 0], *_PURE_WHITE)) * _smoothstep(chroma, 2.0, 12.0)
+    new_hue = np.radians(hue + rotate * weight)
+    # Vibrance rather than saturation: muted colours gain the most and colours
+    # already as rich as the reference's (chroma >= _RICH) are left alone, so
+    # footage that already has the look is not over-cooked.
+    vibrance = (gain - 1.0) * np.clip(1.0 - chroma / _RICH, 0.0, 1.0)
+    new_chroma = chroma * (1.0 + vibrance * weight)
+    out = np.empty_like(lab)
+    out[..., 0] = lab[..., 0] + dl * weight * np.clip(chroma / 25.0, 0.0, 1.0)
+    out[..., 1] = new_chroma * np.cos(new_hue)
+    out[..., 2] = new_chroma * np.sin(new_hue)
+    return out
+
+
+def match_lut(source: LabStats, target: LabStats, strength: float, path: Path, size: int = 33,
+              *, film: float = 0.0) -> Path:
     """Write the ``transfer`` from ``source`` to ``target`` as an Adobe/Resolve
-    ``.cube`` 3D LUT (red index fastest) for ffmpeg's ``lut3d`` filter."""
+    ``.cube`` 3D LUT (red index fastest) for ffmpeg's ``lut3d`` filter.
+    ``film`` (0..1) adds the reference ``film_palette`` on top, also scaled by
+    ``strength``."""
     path = Path(path)
     grid = np.linspace(0.0, 1.0, size)
     b, g, r = np.meshgrid(grid, grid, grid, indexing="ij")  # last axis (red) varies fastest
     rgb = np.stack([r, g, b], axis=-1).reshape(-1, 3)
-    graded = lab_to_rgb(transfer(rgb_to_lab(rgb), source, target, strength))
+    lab = transfer(rgb_to_lab(rgb), source, target, strength)
+    graded = lab_to_rgb(film_palette(lab, film * min(1.0, max(0.0, float(strength)))))
     lines = ['TITLE "reelforge look match"', f"LUT_3D_SIZE {size}",
              "DOMAIN_MIN 0.0 0.0 0.0", "DOMAIN_MAX 1.0 1.0 1.0"]
     lines += [f"{x:.6f} {y:.6f} {z:.6f}" for x, y, z in graded]
@@ -268,7 +346,83 @@ def grade_filter(look: LookStyle, vs: VideoStyle, lut: Path | None = None) -> st
         chain.append(f"colorbalance={look.tint.strip()}")
     if look.vignette.strip():
         chain.append(f"vignette=angle={look.vignette.strip()}")
-    if look.grain > 0:
+    if look.grain > 0:  # temporal luma noise: film grain without colour speckles
         chain.append(f"noise=c0s={min(40, int(look.grain))}:c0f=t")
-    chain.append("format=yuv420p")
+    # Explicit BT.709 so players and the later MoviePy decode agree on colours.
+    chain += ["scale=out_color_matrix=bt709:out_range=tv", "format=yuv420p"]
     return ",".join(chain)
+
+
+# --------------------------------------------------------------------------- clips
+
+_BT709 = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
+
+
+def _stats_key(stats: LabStats | None) -> list | None:
+    return None if stats is None else [round(x, 2) for x in (*stats.mean, *stats.std)]
+
+
+# Everything that shapes a match LUT besides its inputs: part of the clip cache
+# key, so tuning the look invalidates clips graded the old way.
+_LUT_RECIPE = repr((STD_RATIO, MAX_SHIFT, _KNEE, _WHITES, _WHITE_KEEP, _PURE_WHITE, FILM_HUES, _RICH))
+
+
+def prepare_clip(src: Path, out_dir: Path, vs: VideoStyle, look: LookStyle,
+                 target: LabStats | None = None, trim_in: float = 0.0,
+                 trim_out: float | None = None) -> Path:
+    """Normalise one source video into a graded H.264 clip (no audio) at the
+    output size and frame rate: at most ``vs.max_clip_seconds`` long, starting
+    at ``trim_in`` and ending at ``trim_out`` when given. With a ``target`` (and
+    ``look.match`` not "off") the clip first gets its own LUT that moves its
+    measured colours (of the used span only) towards the target; the built-in
+    "reference" look adds the reference's ``film_palette``. Results are cached
+    by source file version, filter chain, trims and target, so re-renders are
+    instant."""
+    src = Path(src).resolve()
+    trim_in = max(0.0, float(trim_in or 0.0))
+    seconds = float(vs.max_clip_seconds)
+    if trim_out is not None and trim_out > trim_in:
+        seconds = min(seconds, float(trim_out) - trim_in)
+    matching = target is not None and look.match != "off" and look.match_strength > 0
+    film = 1.0 if look.match == "reference" else 0.0
+    st = src.stat()  # same-named clips from different folders must not collide
+    key = json.dumps([str(src), st.st_size, st.st_mtime_ns, grade_filter(look, vs),
+                      round(trim_in, 3), round(seconds, 3),
+                      [_stats_key(target), round(look.match_strength, 3), film, _LUT_RECIPE]
+                      if matching else None])
+    tag = hashlib.sha1(key.encode()).hexdigest()[:10]
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", src.stem)[:40] or "clip"
+    dst = Path(out_dir) / f"{stem}_{tag}.mp4"
+    if dst.exists() and dst.stat().st_size > 0:
+        return dst
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    lut = None
+    if matching:
+        measured = media_stats(src, start=trim_in, end=trim_in + seconds)
+        lut = match_lut(measured, target, look.match_strength, dst.with_suffix(".cube"), film=film)
+    part = dst.with_name(dst.stem + ".part.mp4")
+    run(["ffmpeg", "-y", "-v", "error", "-ss", f"{trim_in:.3f}", "-i", str(src), "-t", f"{seconds:.3f}",
+         "-an", "-sn", "-dn", "-vf", grade_filter(look, vs, lut),
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", *_BT709, str(part)])
+    part.replace(dst)  # atomic: an interrupted render never leaves a truncated clip in the cache
+    return dst
+
+
+def target_stats(look: LookStyle, reference_paths: list[Path]) -> LabStats | None:
+    """What every clip is matched to: the built-in reference look, the pooled
+    look of the user's reference uploads (falling back to the built-in look if
+    none can be read), or nothing when matching is off."""
+    if look.match == "off":
+        return None
+    if look.match == "uploads":
+        stats = []
+        for path in reference_paths:
+            try:
+                stats.append(media_stats(Path(path)))
+            except (MediaError, OSError) as exc:
+                log.warning("look: ignoring reference %s (%s)", path, exc)
+        if stats:
+            return combine(stats)
+    elif look.match != "reference":
+        log.warning("look: unknown match mode %r, using the reference look", look.match)
+    return REFERENCE_STATS

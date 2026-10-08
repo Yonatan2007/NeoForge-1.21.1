@@ -1,247 +1,179 @@
 # reelforge
 
-You give it a script. You get back a ready-to-post 9:16 Reel/Short in a moody,
-cinematic voiceover style (the @jackkgriffith look): a serious AI voiceover from
-Higgsfield, dark atmospheric stock B-roll cut on the voice, and bold Montserrat
-captions that pop in word by word, with the key emotional words in yellow or red.
+Script in, ready-to-post reel out. reelforge turns a short philosophical
+script into a vertical video in the style of
+[this reel](https://www.instagram.com/reel/DY7jc7CRZmp/):
 
-```
-script.txt
-  │
-  ├─► script.py      words, sentences, emphasis words, stock search terms
-  ├─► Higgsfield     voiceover (through the Claude connector) ─► voice.wav, loudness-normalised
-  ├─► alignment.py   Whisper word times, aligned back onto the script's exact words
-  ├─► captions.py    caption chunks, timing, pop-in animation, captions.srt
-  ├─► assemble.py    shot plan: cuts on sentence starts
-  ├─► footage.py     Mixkit (no key) + optional Pexels/Pixabay ─► 1080x1920 graded clips
-  └─► assemble.py    MoviePy timeline, crossfades, caption overlay, voice + music ─► <slug>.mp4
-```
+* bright, warm, film-graded nature footage (mountains, lakes, meadows, people
+  small in the landscape), cut on the voice;
+* the **opening sentence written along the skyline** of the first shot —
+  each word follows the ridge, rotated to its slope, letters bending around
+  the peaks, the last word dropped large below the line;
+* after that, **one white lowercase word at a time**, centred;
+* a voiceover (Higgsfield through Claude, your own recording, a free offline
+  voice, or none at all), optional music you trim and place yourself, and
+  your own pictures or videos mixed with free stock footage.
 
-## Setup
+Everything has a default that matches the reference reel, and everything can
+be changed — in the web UI, per project, or once as your own saved defaults.
+
+## Quick start
 
 ```bash
 cd reelforge
-pip install -r requirements.txt        # moviepy 2, numpy, Pillow, requests, faster-whisper
-cp .env.example .env                   # then fill in your keys (see below)
+pip install -r requirements.txt        # needs FFmpeg on PATH
+python -m reelforge ui                 # opens http://127.0.0.1:8765
 ```
 
-FFmpeg must be on your `PATH`. The Montserrat Black font downloads itself on
-the first run; pass `--font` to use another font, such as The Bold Font.
+1. **New project** → paste or upload your script.
+2. **Voice** → upload a voiceover (or pick "Higgsfield via Claude", "Piper" or
+   "No voice — music only").
+3. **Music** (optional) → upload a song, drag the highlighted part of the
+   waveform you want, and drag where it sits in the video.
+4. **Footage** (optional) → drop pictures/videos. For each one choose
+   **Use in video** or **Reference only** (only guides which stock clips are
+   picked and how the colours look).
+5. **Length** → automatic, or the exact number of seconds you want.
+6. **Render** → watch the progress, then download the MP4, the captions
+   (`.srt`) and a cover image.
 
-### API keys and environment variables
+The **Style** tab holds every look setting (captions, hook, colour grade,
+format, pacing). "Save as my defaults" makes them the starting point of every
+new project.
 
-| Variable | Needed for | Where to get it |
-|---|---|---|
-| `PEXELS_API_KEY` | optional; adds Pexels to the stock search | <https://www.pexels.com/api/>, free, 200 requests/hour |
-| `PIXABAY_API_KEY` | optional; adds Pixabay to the stock search | <https://pixabay.com/api/docs/>, free; the key is shown when you're logged in |
-| `HIGGSFIELD_VOICE_ID` | optional; the narrator voice | `list_voices` in the Higgsfield connector (each voice has a `preview_url`) |
-| `HF_KEY`, `HIGGSFIELD_TTS_ENDPOINT` | optional headless route only (`--tts higgsfield-api`) | <https://console.higgsfield.ai> |
-| `WHISPER_MODEL` / `WHISPER_DEVICE` | optional; default `base.en` / `cpu` | `small.en` is more accurate; `cuda` if you have a GPU |
-| `REELFORGE_CACHE` | optional; default `~/.cache/reelforge` | downloads, graded clips, search cache |
+## The web UI
 
-Stock footage works with no keys at all: the built-in source is
-[Mixkit](https://mixkit.co), searched for vertical clips. The Pexels and
-Pixabay keys only add more choice. The Higgsfield connector needs no key
-either. It uses the Higgsfield account you connected to Claude.
+| Tab | What you can do |
+|---|---|
+| Script | type or upload `.txt`; see word count, estimated length, the hook sentence and how the captions will split. Mark words `*like this*` (yellow) or `**like this**` (red) when colour emphasis is on |
+| Voice | upload a file, copy the Higgsfield request for Claude, use Piper offline, or make a music-only reel (captions timed to reading pace) |
+| Music | waveform with a draggable selection (in/out), placement on the video timeline (start/end), volume, fades, loop, automatic lowering under the voice ("ducking") |
+| Footage | drag-and-drop images/videos, role toggle (use in video / reference only), drag to reorder, pin to a shot, trim videos, length and camera motion for photos, stock sources and custom searches |
+| Style | presets and every caption / hook / video / colour setting, generated from the settings model so nothing is hidden; save/reset your defaults |
+| Length | target duration and how it is reached |
+| Render | plan preview (shots, sources, captions, warnings), render with live progress and cancel, video player and downloads |
 
-## Usage
+Projects live in `~/.config/reelforge/projects/` (change with `REELFORGE_HOME`);
+each has a `project.json`, `uploads/` and `output/`.
 
-### With Claude and the Higgsfield connector (recommended)
+## What the defaults do (the "reference" preset)
 
-In Claude Code, open this repo and say *"make a reel from this script: …"*.
-The project skill at `.claude/skills/jackk-reel/SKILL.md` runs the whole flow:
+| | |
+|---|---|
+| Format | 9:16, 1080×1920, 30 fps (also 4:5, 1:1 — the reference reel itself is square — and 16:9) |
+| Footage | sunny nature/adventure searches; the first shot is chosen for a clear skyline |
+| Look | each clip is colour-matched to the reference reel (warm teal film look), slight black lift and grain |
+| Hook | opening sentence along the skyline, near-black on bright sky (white on dark), first/stressed/last words big |
+| Captions | Inter Bold, lowercase, white, one word at a time, centred, soft shadow |
+| Cuts | hard cuts on sentence starts, shots 3–7 s |
 
-1. `python -m reelforge plan scripts/<slug>.txt` previews the caption chunks
-   and the emphasis words, and writes `output/<slug>/higgsfield_request.json`.
-2. Claude calls the connector's `generate_audio` with exactly those params
-   (default: `text2speech_v2` with the ElevenLabs engine, about 1 credit for
-   50 words). It then waits with `jobs_wait` and receives an `.mp3` `result_url`.
-3. `python -m reelforge render scripts/<slug>.txt --voiceover "<result_url>"`
-   builds the video.
+Other presets: **moody** (dark rain/night B-roll, bold uppercase Montserrat
+captions with yellow/red key words, crossfades — the first version of this
+app) and **bold** (reference footage with punchy 3-word captions).
 
-Why the hand-off: a Python process can't call Claude's MCP connectors, and the
-connector's sign-in never leaves Claude. Higgsfield's public REST API documents
-only image and video models (as of Oct 2026), so the connector is the supported
-TTS route. When Higgsfield publishes a speech endpoint for your API key, the
-experimental `--tts higgsfield-api` route covers headless runs. It submits,
-polls `status_url` with backoff, and reads `audio.url`.
+## Voiceover options
 
-### By hand
+* **Higgsfield via Claude (recommended).** The Higgsfield account is connected
+  to Claude, not to this program, so Claude generates the voice: in Claude
+  Code say *"make a reel from this script"* (the project skill in
+  `.claude/skills/jackk-reel/` runs the whole flow), or copy the request from
+  the Voice tab and ask Claude to run it. The result (an `.mp3` link or file)
+  goes into the project's voice file.
+* **Your own recording** — any audio or video file.
+* **Piper** — free offline voice for drafts (`pip install piper-tts` + a voice
+  model from huggingface.co/rhasspy/piper-voices).
+* **No voice** — a music-only reel; captions are timed to a reading pace.
+
+## How the length is fitted
+
+Speech is never cut. With a target length:
+1. a voice that is too long is sped up (up to 1.12× by default),
+2. a short voice gets a longer opening (up to 2 s of picture and music),
+3. the rest becomes a longer ending.
+If the voice cannot fit even at the fastest tempo, the video runs longer and
+the plan/render shows a warning.
+
+## Footage
+
+* **Your media first.** Pictures become smooth slow-zoom/pan clips; videos can
+  be trimmed. They fill shots in upload order (or the shot you pin them to).
+* **Stock for the rest.** [Mixkit](https://mixkit.co) works with no key and
+  only clips under its Free licence are used (commercial and social use, no
+  attribution required). Add `PEXELS_API_KEY` / `PIXABAY_API_KEY` for more
+  choice. Every clip used is listed in `credits.txt`.
+* **Reference uploads** are not shown in the video: they rank stock clips by
+  visual similarity, add colour-based search terms, and (with *Look → match
+  uploads*) set the colour grade.
+
+## Settings reference (CLI and `project.json`)
+
+Everything the UI shows is a field in `reelforge/config.py`:
+`style.caption.*`, `style.hook.*`, `style.video.*`, `style.look.*`,
+`voice.*`, `music.*`, `footage.*`, `duration.*`. From the command line:
 
 ```bash
-python -m reelforge plan   scripts/last-conversation.txt
-python -m reelforge render scripts/last-conversation.txt --voiceover voice.mp3
-python -m reelforge render scripts/last-conversation.txt --voiceover voice.mp3 \
-    --footage-dir ~/broll --music ~/ambient.mp3 --words-per-caption 1
-python -m reelforge render scripts/last-conversation.txt --tts piper \
-    --piper-model en_US-ryan-high.onnx     # free offline draft voice for iterating on visuals
+python -m reelforge render my-script.txt --voiceover voice.mp3 \
+    --music song.mp3 --set music.source_in=12.5 --set music.source_out=40 \
+    --footage-dir ~/my-clips --reference-dir ~/looks-i-like \
+    --duration 30 --aspect 9:16 --set style.caption.font_size=80
+python -m reelforge plan my-script.txt          # preview, no rendering
+python -m reelforge render --project ~/.config/reelforge/projects/<id>/project.json
+python -m reelforge defaults --set style.caption.case=upper   # change your defaults
+python -m reelforge defaults --reset
+python -m reelforge presets
 ```
 
-Each render writes `output/<slug>/` containing `<slug>.mp4` (H.264 High,
-yuv420p, 30 fps, AAC, faststart), `captions.srt`, `timings.json` and
-`credits.txt` (stock attribution).
+### API keys and environment variables (all optional)
 
-Useful flags: `--queries "rain window night;empty road night"` overrides
-the stock searches. `--reveal phrase` pops the whole caption at once.
-`--no-uppercase`, `--y 0.45` and `--font-size 84` adjust the text.
-`--portrait-only` rejects landscape stock clips. `--no-auto-emphasis` colours
-only the words you mark.
+| Variable | For | Where to get it |
+|---|---|---|
+| `PEXELS_API_KEY` | adds Pexels to the stock search | <https://www.pexels.com/api/> |
+| `PIXABAY_API_KEY` | adds Pixabay to the stock search | <https://pixabay.com/api/docs/> |
+| `HIGGSFIELD_VOICE_ID` | default narrator voice | the Higgsfield connector's `list_voices` |
+| `HF_KEY`, `HIGGSFIELD_TTS_ENDPOINT` | experimental headless Higgsfield route | <https://console.higgsfield.ai> |
+| `WHISPER_MODEL`, `WHISPER_DEVICE` | word timing model (default `base.en`, `cpu`) | |
+| `REELFORGE_HOME` | projects and saved defaults (default `~/.config/reelforge`) | |
+| `REELFORGE_CACHE` | downloads and graded clips (default `~/.cache/reelforge`) | |
 
-**Script markup (optional):** `*word*` or `*several words*` is coloured
-yellow, and `**word**` red. The asterisks are removed before the text goes to
-the voice model.
+## How it works
 
-## How it works, step by step
+```
+script ─► script.py      words, sentences, emphasis, the hook sentence
+voice  ─► media.py       clean-up, loudness, silence trim, tempo (timing.py fits the length)
+       ─► alignment.py   Whisper word times aligned onto the script's own words
+shots  ─► assemble.py    cuts on sentence starts; the hook shot is never cut
+footage─► pipeline.py    your media first, stock for the rest (footage.py; skyline-scored hook clip)
+       ─► usermedia.py   photos → smooth Ken Burns clips; reference signatures
+       ─► look.py        cover-crop to the output size, colour match (Lab statistics → 3D LUT), grain
+text   ─► hook.py        skyline detection and text-on-path layout for the opening sentence
+       ─► captions.py    one-word (or phrase) captions with pop-in
+audio  ─► music.py       trim, place, loop, fade, duck under the voice, final mix
+render ─► assemble.py    MoviePy timeline + overlays → H.264/AAC MP4, cover, SRT, credits
+ui     ─► server.py      FastAPI app (schema.py describes every setting) + ui/static
+```
 
-### 1. Script analysis (`script.py`, `lexicon.py`)
-* The script is split into words. Each word keeps its punctuation and knows
-  whether it ends a sentence (`.!?`) or a clause (`, ; : —`).
-* **Emphasis:** phrases from the lexicon are matched first, such as
-  "thank you", "i'm \*proud\* of you" and "last time". Single words follow:
-  finality words like *last, never, nobody, gone* go **red**, and emotional
-  anchors like *today, sorry, proud, stop* go **yellow**. Each match becomes a
-  *group* with a priority: phrases score 10 + 2·level + length, words
-  2·level, plus 1 when the word ends a sentence.
-* **Stock searches:** script words trigger visual concepts. *last* gives
-  "clock ticking dark", *sorry* gives "rain on window night", and so on.
-  The concepts are used in story order, alternating with an atmosphere palette
-  (night drives, rain, fog, dark ocean, city lights).
+**Word timing.** Whisper gives timestamps but mishears stylised lines ("The
+I'm sorry" → "Dan, sorry"), so the captions always show the script's words
+and borrow only Whisper's clock: both word lists are normalised and aligned
+with `difflib`; equal runs copy times, replaced runs share the heard span by
+word length, unheard words are placed by the measured speaking rate next to
+the nearest pause. Without Whisper, energy-based voice detection and a
+dynamic-programming fit of sentences to speech regions estimate the timings.
 
-### 2. Voiceover
-The script text is sent to Higgsfield, and the returned audio goes through
-`highpass 70 Hz → compressor 3:1 → loudnorm −16 LUFS`, giving a 48 kHz WAV.
+**Hook layout.** The skyline is found per column where the sky (modelled
+from the top rows) meets terrain; the curve is smoothed and offset above the
+ridge, then the words are laid along its arc length — each glyph rotated to
+the local tangent where the curve bends sharply. The first, stressed and last
+words are larger; the last word drops below the line end. With no usable
+skyline the text follows a gentle diagonal instead.
 
-### 3. Word timing: the sync maths (`alignment.py`)
-Whisper gives timestamps but mishears stylised lines. On the test read it
-heard "The I'm sorry" as "Dan, sorry". So the captions always show the
-**script's** words and borrow only Whisper's **clock**:
-
-1. Normalise both word lists (lower case, no punctuation or apostrophes) and
-   align them with `difflib.SequenceMatcher`, which finds the longest common
-   subsequences.
-2. For **equal** runs, copy the times across.
-3. For **replace** runs of the same length ("I'm" heard as "aim"), copy one to one.
-4. For **replace** runs of different lengths ("The I'm" heard as "Dan,"),
-   spread the heard span [a, b] over the script words by weight
-   wᵢ = len(wordᵢ) + 2:
-
-   `startᵢ = a + (b − a) · Σⱼ<ᵢ wⱼ / Σ w`
-5. For **deleted** words (never heard), estimate their duration as
-   `ρ · Σ w`, where ρ is the median seconds-per-weight of the matched words.
-   If the run starts a sentence, place it just before the next heard word,
-   because the gap is the pause. Otherwise place it just after the previous
-   heard word.
-   Whisper words with zero length are treated the same way. Whisper tends to
-   return them right after a pause.
-6. **Monotonic pass:** each start is at least the previous word's start, and
-   each word lasts at least 80 ms.
-
-With the real ElevenLabs voiceover, 100% of the script's words matched exactly.
-
-**Without Whisper (fallback):** energy-based voice detection finds speech
-regions. A frame of 20 ms counts as speech when its RMS level is above
-`max(p95 − 35 dB, p10 + 6 dB)`. A dynamic program then cuts sentences and
-regions into matching groups, minimising
-
-`Σ ((V − E)/σ)² + 2·(sentence breaks with no pause) − Σ gap/longest_gap`
-
-where V is the voiced time of a region group, `E = T·W_g/W` is the expected
-time at the average speaking rate, and `σ = 0.3 s + 0.25·E`. Words are then
-laid out by weight along the voiced timeline, with silences skipped. Against
-Whisper on the test reads this lands about 150–260 ms off on average.
-
-### 4. Captions (`captions.py`)
-**Chunking rules:**
-* At most 3 words or 18 characters per caption.
-* A caption always breaks at `. ! ? , ;` and at any pause longer than 0.35 s.
-* An emphasis phrase is never split, and may stretch a caption to 5 words.
-* A caption doesn't end on *a / the / of …*.
-* A sentence's last word is never left alone: it is absorbed if it fits,
-  otherwise the word before it moves down with it.
-* At most one emphasis group per caption: the highest priority wins, and
-  marked words always stay.
-
-For the example script this gives "YOUR **LAST CONVERSATION**",
-"SO **STOP** SAVING IT.", "THE I'M **PROUD** OF YOU." and
-"**NOBODY** GETS / A **WARNING** BEFORE / THE **LAST TIME.**"
-
-**Timing** (λ = 50 ms lead, h = 0.45 s hold):
-* Caption start: `Sₖ = max(0, t_first − λ)`.
-* Caption end: `Eₖ = min(t_last_end + h, Sₖ₊₁)`. If the gap left before the
-  next caption is under 0.2 s, `Eₖ = Sₖ₊₁` so captions don't blink.
-* Each word appears at `aᵢ = max(Sₖ, tᵢ − λ)`, which builds the caption up as
-  the words are spoken.
-* Text 50 ms early reads as in sync. Text that arrives late reads as lag.
-
-**Pop-in animation** at time t, with p = (t − aᵢ) / 0.18 s:
-* `scale = 0.55 + 0.45 · easeOutBack(p)`, where
-  `easeOutBack(p) = 1 + 2.70158·(p − 1)³ + 1.70158·(p − 1)²`
-* `opacity = min(1, p / 0.35)`
-
-This overshoots to about 1.045× at p ≈ 0.6 and settles at exactly 1.0. Each
-word is pre-rendered once as a sprite: Montserrat Black, a 7 px black stroke
-and a blurred drop shadow, in premultiplied RGBA. The sprite is scaled about
-its own centre, so the layout never shifts while words pop. Frame n is
-evaluated at t = n / 30, so timing is quantised to 33 ms or less.
-
-### 5. Shots and footage (`assemble.plan_shots`, `footage.py`)
-* **Cuts:** every sentence start minus 0.12 s is a candidate cut (cut just
-  before the line). A cut is skipped if it is within 2.0 s of the previous cut
-  or of the end. Shots longer than 4.5 s are split into ⌈L / 4.5⌉ equal parts.
-* **Sources:** Mixkit is always searched (no key). The app reads each
-  clip's licence from its page and keeps only clips under the Mixkit Free
-  License. That licence allows commercial use, social media and ads, with no
-  attribution required. Restricted-licence clips are personal-use only and
-  are skipped. It downloads the 1080x1920 file, falling back to 720p.
-  Searches that find nothing are retried with fewer words ("clock ticking
-  dark" becomes "clock ticking", then "clock"). Pexels and Pixabay join the
-  search when their keys are set.
-* **Clip choice:** for each query, candidates from every source are scored
-
-  `3·portrait + 1·(short side ≥ 1080) ± 1·(long enough) + 2.5·(1 − |luma − 0.22| / 0.5)`
-
-  where luma is the mean brightness of the clip's thumbnail. The score
-  favours dim but not black, i.e. moody footage. A clip is never used twice.
-  Searches are cached for 24 h, as Pixabay's terms require. Requests that hit
-  a rate limit (HTTP 429) back off and retry.
-* **Normalising** (FFmpeg, much faster than per-frame Python):
-  `scale … force_original_aspect_ratio=increase` → centre `crop=1080:1920` →
-  `fps=30` → `eq` (contrast 1.12, saturation 0.62, brightness −0.05) →
-  vignette → split-tone `colorbalance` (cool shadows, warm highlights) →
-  temporal film grain.
-
-### 6. Assembly (`assemble.py`, MoviePy 2)
-Segment *i* starts at shot *i* and runs `x = 0.35 s` into the next shot. In
-that overlap the frame is `(1 − α)·previous + α·current`, with
-`α = (t − sᵢ)/x`. Outside the overlaps, a frame is read straight from one
-clip. That takes about 15 ms per frame, against about 106 ms with MoviePy's
-mask-based compose concatenation. A clip shorter than its shot is looped, and
-a reused clip starts from a different offset. On top come a 0.25 s fade-in,
-a 0.6 s fade-out, the caption overlay, the voice (delayed 0.2 s) and an
-optional music bed at 12% volume. Export is H.264 CRF 18 (16 Mb/s cap) with
-AAC at 192 kb/s.
-
-## Tuning the look
-Every knob is in `reelforge/config.py`: `CaptionStyle` for fonts, colours,
-stroke, pop timing and words per caption, and `VideoStyle` for shot lengths,
-crossfade, grade and grain. The word lists in `reelforge/lexicon.py` (emphasis
-words and visual concepts) are the generator's "taste". Edit them freely.
+**Colour match.** Each clip's mean and spread in CIE Lab are mapped onto the
+reference look (L' = (L − μs)·σt/σs + μt per channel, clamped and blended by
+strength), baked into a 3D LUT and applied by FFmpeg with the rest of the
+grade in one pass.
 
 ## Tests
-```bash
-pip install pytest && python -m pytest -q
-```
-The 32 tests cover parsing, emphasis, alignment (including misheard words),
-the fallback fit, chunking, timing invariants, sprite rendering, the
-Mixkit/Pexels/Pixabay parsing, licence filtering, rate-limit back-off, shot planning, crossfade maths, and a tiny
-real end-to-end render.
 
-## Notes
-* Mixkit has been run live. The Pexels and Pixabay code follows their
-  current API docs (Pexels `/v1/videos/search`; Pixabay `/api/videos/`) but
-  has only been tested against recorded responses, not live keys.
-* The Mixkit Free, Pexels and Pixabay licences all allow commercial use
-  without attribution, though crediting creators is appreciated.
-  `credits.txt` lists every clip used, with its page URL.
-* Mixkit's catalogue is smaller than Pexels'. If a shot doesn't fit, use
-  `--queries` to steer the searches (one per shot, in order).
+```bash
+pip install pytest httpx && python -m pytest -q
+```
