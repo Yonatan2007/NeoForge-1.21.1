@@ -14,7 +14,8 @@ import {
 } from "../store.js";
 
 const STYLE_SECTIONS = ["caption", "hook", "video", "look"];
-const OTHER_TABS = new Set(["music", "duration", "footage", "voice"]);
+// Sections edited on their own tabs (or per file on the Footage tab), never on Style.
+const OTHER_TABS = new Set(["music", "duration", "footage", "voice", "project", "footage_item"]);
 const SECTION_INTRO = {
   caption: "The words that pop up while the voice speaks.",
   hook: "The first sentence, laid along the skyline of the first shot.",

@@ -112,8 +112,8 @@ ALIGN: Options = (("auto", "Automatic (Whisper if installed)"), ("whisper", "Whi
                   ("estimate", "Estimate from the audio"))
 STOCK_SOURCES: Options = (("mixkit", "Mixkit (free, no key needed)"), ("pexels", "Pexels (needs an API key)"),
                           ("pixabay", "Pixabay (needs an API key)"))
-PALETTES: Options = (("bright", "Bright (sunny nature, the reference)"),
-                     ("moody", "Moody (night, rain, city)"))
+PALETTES: Options = (("bright", "Bright (sunny nature)"),
+                     ("moody", "Moody (night, rain)"))
 ROLES: Options = (("footage", "Use in the video"), ("reference", "Reference only (steers stock and colour)"))
 KINDS: Options = (("auto", "Detect automatically"), ("image", "Picture"), ("video", "Video"))
 MOTIONS: Options = (("auto", "Automatic"), ("zoom-in", "Slow zoom in"), ("zoom-out", "Slow zoom out"),

@@ -87,8 +87,19 @@ def split_hook(script: Script, project: Project) -> tuple[list[Word], list[Word]
     return hook, body
 
 
-def _hook_end(hook_words: list[Word], project: Project) -> float:
-    return hook_words[-1].end + project.style.hook.hold if hook_words else 0.0
+def _hook_cut(hook_words: list[Word]) -> float:
+    """Earliest time the hook shot may be cut: once its last word is spoken."""
+    return hook_words[-1].end if hook_words else 0.0
+
+
+def _hook_display_end(hook_words: list[Word], body: list[Word], project: Project,
+                      shot_end: float) -> float:
+    """The hook text stays ``hold`` seconds after its last word, but never
+    past the hook shot or into the first normal caption."""
+    end = min(shot_end, hook_words[-1].end + project.style.hook.hold)
+    if body:
+        end = min(end, body[0].start - project.style.caption.lead)
+    return max(end, hook_words[-1].end)
 
 
 @dataclass
@@ -183,7 +194,7 @@ def plan_project(project: Project, project_dir: Path, settings: Settings) -> dic
     hook_words, body = split_hook(script, project)
     hook_terrain = project.style.hook.mode == "terrain" and bool(hook_words)
     shots = plan_shots(script.words, plan.total, vs,
-                       keep_until=_hook_end(hook_words, project) if hook_terrain else 0.0)
+                       keep_until=_hook_cut(hook_words) if hook_terrain else 0.0)
     try:
         sources, w = assign_sources(project, script, len(shots), hook_terrain)
         warnings += w
@@ -322,8 +333,8 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
 
     hook_words, body = split_hook(script, project)
     hook_terrain = hs.mode == "terrain" and bool(hook_words)
-    keep_until = _hook_end(hook_words, project) if hook_terrain else 0.0
-    shots = plan_shots(script.words, total, vs, keep_until=keep_until)
+    shots = plan_shots(script.words, total, vs,
+                       keep_until=_hook_cut(hook_words) if hook_terrain else 0.0)
 
     # 3. Footage ----------------------------------------------------------------
     report("footage", 0.0, f"{len(shots)} shots; finding footage")
@@ -413,7 +424,7 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
     overlays: list = []
     hook_end = 0.0
     if hook_terrain:
-        hook_end = min(shots[0][1], keep_until)
+        hook_end = _hook_display_end(hook_words, body, project, shots[0][1])
         mid = (hook_words[0].start + hook_words[-1].end) / 2
         overlays.append(hookmod.HookRenderer(
             hook_words, hs, fonts.resolve(hs.font, hs.font_weight, settings.cache_dir),

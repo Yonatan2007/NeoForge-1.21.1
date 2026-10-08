@@ -320,7 +320,7 @@ PRESETS: dict[str, dict] = {
 PRESET_LABELS = {
     "reference": "Reference (bright film, terrain hook)",
     "moody": "Moody night (dark B-roll, bold captions)",
-    "bold": "Bright footage + bold captions",
+    "bold": "Bold captions (bright footage, 3-word captions)",
 }
 
 

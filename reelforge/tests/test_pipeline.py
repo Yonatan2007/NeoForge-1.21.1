@@ -62,3 +62,15 @@ def test_project_paths_are_relative_to_the_project(tmp_path):
     assert project_path("uploads/a.mp3", tmp_path) == str(tmp_path / "uploads/a.mp3")
     assert project_path("/abs/a.mp3", tmp_path) == "/abs/a.mp3"
     assert project_path("https://x/y.mp3", tmp_path) == "https://x/y.mp3"
+
+
+def test_plan_cuts_the_hook_shot_when_the_second_sentence_starts(tmp_path):
+    from reelforge.config import Settings
+    from reelforge.pipeline import plan_project
+
+    p = project(queries=["sea", "sky"])
+    p.voice.source = "none"
+    plan = plan_project(p, tmp_path, Settings(home_dir=tmp_path))
+    assert plan["hook"][-1] == "trust?"
+    assert plan["shots"][0]["text"].endswith("trust?")  # the hook shot holds the hook only
+    assert plan["shots"][1]["text"].startswith("Not")
