@@ -2,13 +2,17 @@
 
 import { callout } from "../components.js";
 import { formatSeconds, h } from "../dom.js";
-import { findSection, renderFields } from "../fields.js";
+import { findField, findSection, renderFields } from "../fields.js";
 import { lengthPlan, parseScript } from "../script-model.js";
 import { on, projectBinding, schemaSections, setValue, state, uploadFor } from "../store.js";
 
 const QUICK = [15, 30, 45, 60, 90];
-const MIN_TARGET = 3;
-const MAX_TARGET = 600;
+
+/** The target length the server accepts (from its schema; 5-180 s otherwise). */
+function targetLimits() {
+  const f = findField(schemaSections(), "duration.target");
+  return { min: (f && f.min) ?? 5, max: (f && f.max) ?? 180 };
+}
 
 function currentPlan() {
   const parsed = parseScript(state.project.script);
@@ -55,6 +59,7 @@ function fitBar() {
 export function render(panel) {
   const ds = state.project.duration;
   let lastFixed = ds.target || 30;
+  const { min: MIN_TARGET, max: MAX_TARGET } = targetLimits();
 
   const secs = h("input", { id: "target-secs", type: "number", class: "input input-num", min: MIN_TARGET, max: MAX_TARGET, step: 1, value: ds.target || lastFixed, inputmode: "numeric" });
   const quick = h("div", { class: "chips", role: "group", "aria-label": "Common lengths" });

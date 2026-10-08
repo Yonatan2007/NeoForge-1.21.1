@@ -63,7 +63,33 @@ def test_prepare_clip_trims_sizes_and_caches(tmp_path):
                              trim_in=0.5, trim_out=2.0) == out and out.stat().st_mtime_ns == mtime
 
 
+def test_a_start_past_the_end_uses_the_end_of_the_clip(tmp_path):
+    src = tmp_path / "short.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25",
+                    "-t", "1", str(src)], check=True)
+    vs = VideoStyle(aspect="1:1", draft=True, fps=12)
+    out = look.prepare_clip(src, tmp_path / "prep", vs, LookStyle(match="off"), trim_in=5.0)
+    assert look.video_duration(out) == pytest.approx(1.0, abs=0.15)
+
+
 def test_target_stats_by_match_mode(tmp_path):
     assert look.target_stats(LookStyle(match="off"), []) is None
     assert look.target_stats(LookStyle(match="reference"), []) == look.REFERENCE_STATS
     assert look.target_stats(LookStyle(match="uploads"), []) == look.REFERENCE_STATS
+
+
+def test_16_bit_greyscale_images_are_measured_correctly(tmp_path):
+    from PIL import Image
+    mid = np.full((64, 64), 32768, np.uint16)  # 50 % grey in 16 bits
+    Image.fromarray(mid).save(tmp_path / "grey16.png")
+    Image.fromarray(np.full((64, 64), 128, np.uint8)).save(tmp_path / "grey8.png")
+    l16 = look.media_stats(tmp_path / "grey16.png").mean[0]
+    l8 = look.media_stats(tmp_path / "grey8.png").mean[0]
+    assert l16 == pytest.approx(l8, abs=1.0) and l16 < 60  # not measured as white (L = 100)
+
+
+def test_filter_path_keeps_posix_backslashes(tmp_path):
+    import os
+    if os.sep != "/":
+        pytest.skip("POSIX paths only")
+    assert "\\\\" in look._filter_path(tmp_path / "a\\b.cube")  # escaped, not turned into "/"

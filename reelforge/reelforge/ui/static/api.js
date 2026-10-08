@@ -24,9 +24,14 @@ export class ApiError extends Error {
   }
 }
 
-/** True when the backend does not offer this endpoint at all. */
+/**
+ * True when the backend does not offer this endpoint at all. A 404 about a
+ * missing project or file ("Not found: …") is an ordinary error, not that.
+ */
 export function isUnsupported(err) {
-  return err instanceof ApiError && (err.status === 404 || err.status === 405 || err.status === 501);
+  if (!(err instanceof ApiError)) return false;
+  if (err.status === 405 || err.status === 501) return true;
+  return err.status === 404 && !/^Not found: /.test(err.message);
 }
 
 /** FastAPI puts messages in `detail` (a string, or a list of validation errors). */

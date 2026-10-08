@@ -3,6 +3,7 @@ usermedia) are replaced by small fakes, so these tests need no FFmpeg, no
 network and run in a few seconds."""
 import dataclasses
 import io
+import json
 import socket
 import sys
 import threading
@@ -346,6 +347,38 @@ def test_uploads_update_the_project_by_role(client):
                      "evil_name.jpg": "footage", "evil_name-2.jpg": "reference"}
 
 
+def test_script_files_in_utf16_are_read_and_binary_files_refused(client):
+    pid = new_project(client)["id"]
+    r = upload(client, pid, "notepad.txt", "Кто ты? Say it today.".encode("utf-16"), "script")
+    assert r.status_code == 200 and r.json()["project"]["script"] == "Кто ты? Say it today."
+    bad = upload(client, pid, "raw.txt", "no BOM here".encode("utf-16-le"), "script")
+    assert bad.status_code == 415
+    assert client.get(f"/api/projects/{pid}").json()["project"]["script"] == "Кто ты? Say it today."
+
+
+def test_bad_colour_and_pair_shapes_are_422_not_500(client):
+    pid = new_project(client)["id"]
+    p = client.get(f"/api/projects/{pid}").json()["project"]
+    for path, value in ((("style", "caption", "text_color"), []), (("style", "caption", "shadow_offset"), [3]),
+                        (("footage", "items"), None)):
+        bad = json.loads(json.dumps(p))
+        target = bad
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        r = client.put(f"/api/projects/{pid}", json=bad)
+        assert r.status_code == 422, (path, r.status_code, r.text)
+
+
+def test_projects_are_saved_as_utf8(client, home):
+    pid = new_project(client)["id"]
+    p = client.get(f"/api/projects/{pid}").json()["project"]
+    p["script"] = "Кто ты, если забудешь всё? 🌄"
+    assert client.put(f"/api/projects/{pid}", json=p).status_code == 200
+    raw = (home / "projects" / pid / "project.json").read_bytes()
+    assert "забудешь всё? 🌄" in raw.decode("utf-8")
+
+
 def test_uploads_are_checked(client, home):
     pid = new_project(client)["id"]
     r = upload(client, pid, "song.mp3", b"ID3", "footage")
@@ -377,7 +410,8 @@ def test_deleting_an_upload_removes_its_references(client, home):
     p = view["project"]
     assert p["voice"]["file"] is None and p["music"]["file"] is None and p["footage"]["items"] == []
     assert view["uploads"] == [] and not (home / "projects" / pid / "thumbs" / "a.jpg.jpg").exists()
-    assert client.delete(f"/api/projects/{pid}/uploads/a.jpg").status_code == 404
+    again = client.delete(f"/api/projects/{pid}/uploads/a.jpg")  # a double click is harmless
+    assert again.status_code == 200 and again.json()["project"]["footage"]["items"] == []
     assert client.delete(f"/api/projects/{pid}/uploads/%2E%2E").status_code == 404
     assert client.delete(f"/api/projects/{pid}/uploads/..%2Fproject.json").status_code in (404, 405)
     assert (home / "projects" / pid / "project.json").is_file()

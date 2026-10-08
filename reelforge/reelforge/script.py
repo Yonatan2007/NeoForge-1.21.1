@@ -17,11 +17,16 @@ _TRAIL = r"[\"'”’)\]]*$"
 _SENTENCE_END = re.compile(r"[.!?…]+" + _TRAIL)
 _CLAUSE_END = re.compile(r"([,;:]|—|–|-{2}|\.\.\.)" + _TRAIL)
 _DASHES = {"—", "–", "-", "--"}
+# a sentence mark typed with a space before it ("Qui es-tu ?"), but not a
+# free-standing ellipsis, which stays a pause
+_DETACHED_END = re.compile(r"(?:[!?]+[.…]*|\.)" + _TRAIL)
+_DETACHED_MARK = re.compile(r"[.,;:!?…]+" + _TRAIL)
 
 
 def normalize(token: str) -> str:
-    """Lower-case, drop punctuation and apostrophes: "I'm," -> "im"."""
-    return re.sub(r"[^a-z0-9]", "", token.lower())
+    """Lower-case, drop punctuation and apostrophes: "I'm," -> "im".
+    Letters of every alphabet are kept ("à", "мир", "שם")."""
+    return re.sub(r"[\W_]+", "", token.lower())
 
 
 @dataclass
@@ -104,6 +109,10 @@ def parse_script(raw: str, auto_emphasis: bool = True) -> Script:
         if tok in _DASHES or not normalize(tok):
             if words:  # a free-standing dash or ellipsis is a pause after the previous word
                 words[-1].ends_clause = True
+                if _DETACHED_END.fullmatch(tok):
+                    words[-1].ends_sentence = True
+                if _DETACHED_MARK.fullmatch(tok):
+                    words[-1].text += tok
             continue
         if words and words[-1].ends_sentence:
             sentence += 1

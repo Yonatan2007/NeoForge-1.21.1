@@ -64,3 +64,30 @@ def test_project_file_round_trip_with_preset_switch(tmp_path):
     p, d = cli._build_project(args(script=None, project=str(path), preset="moody"), Settings(home_dir=tmp_path))
     assert d == path.parent and p.script == "Hello there." and p.style.caption.case == "upper"
     assert json.loads(path.read_text())["script"] == "Hello there."
+
+
+def test_relative_paths_are_resolved_from_the_current_folder(tmp_path, monkeypatch):
+    (tmp_path / "voice.wav").write_bytes(b"x")
+    (tmp_path / "model.onnx").write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+    p, _ = cli._build_project(args(out="output", voiceover="voice.wav", piper_model="model.onnx"),
+                              Settings(home_dir=tmp_path / "home"))
+    assert p.voice.file == str(tmp_path / "voice.wav")
+    assert p.voice.piper_model == str(tmp_path / "model.onnx")
+    p, _ = cli._build_project(args(out="output", voiceover="https://x/v.mp3"),
+                              Settings(home_dir=tmp_path / "home"))
+    assert p.voice.file == "https://x/v.mp3"
+
+
+def test_rerunning_with_the_same_folder_adds_nothing_twice(tmp_path):
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    (clips / "a.mp4").write_bytes(b"x")
+    settings = Settings(home_dir=tmp_path / "home")
+    p, d = cli._build_project(args(out=str(tmp_path), footage_dir=str(clips)), settings)
+    config.save_project(p, d / "project.json")
+    for _ in range(2):
+        p, d = cli._build_project(args(script=None, project=str(d / "project.json"),
+                                       footage_dir=str(clips)), settings)
+        config.save_project(p, d / "project.json")
+    assert len(p.footage.items) == 1

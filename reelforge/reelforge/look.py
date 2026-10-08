@@ -124,6 +124,16 @@ def combine(stats: list[LabStats]) -> LabStats:
                     tuple(float(x) for x in np.sqrt(variances.mean(0))))
 
 
+def to_8bit(im: Image.Image) -> Image.Image:
+    """16-bit or float greyscale scaled to 8 bits; a plain ``convert("RGB")``
+    clips those to white. Other modes are returned unchanged."""
+    if im.mode in ("I", "I;16", "I;16B", "I;16L", "F"):
+        arr = np.asarray(im, dtype=np.float32)
+        top = 65535.0 if arr.max() > 255 else 255.0
+        return Image.fromarray(np.clip(arr / top * 255.0 + 0.5, 0, 255).astype(np.uint8))
+    return im
+
+
 def _read_image(path: Path) -> np.ndarray | None:
     """RGB pixels of a still image (EXIF rotation applied), or None for anything
     Pillow can't open - videos, but also e.g. HEIC that ffmpeg may still read."""
@@ -131,7 +141,7 @@ def _read_image(path: Path) -> np.ndarray | None:
         with Image.open(path) as im:
             im = ImageOps.exif_transpose(im)
             im.thumbnail((_STAT_SIDE * 2, _STAT_SIDE * 2))
-            return np.asarray(im.convert("RGB"))
+            return np.asarray(to_8bit(im).convert("RGB"))
     except (UnidentifiedImageError, OSError):
         return None
 
@@ -157,6 +167,19 @@ def _video_duration(path: Path) -> float | None:
         return float(value) if value not in (None, "N/A") else None
     except (MediaError, ValueError):
         return None
+
+
+def video_duration(path: Path) -> float | None:
+    """Length of a video in seconds, or None when it cannot be read."""
+    return _video_duration(Path(path))
+
+
+def _has_video(path: Path) -> bool:
+    try:
+        streams = probe(path).get("streams", [])
+    except (MediaError, ValueError):
+        return False
+    return any(st.get("codec_type") == "video" for st in streams)
 
 
 @functools.lru_cache(maxsize=256)
@@ -321,7 +344,7 @@ def _filter_path(path: Path) -> str:
     (``\\ ' :``). So the path is single-quoted for the option level and that
     is backslash-escaped for the graph level; spaces, commas, colons
     (Windows drives) and apostrophes in cache paths are then safe."""
-    quoted = "'" + str(path).replace("\\", "/").replace("'", "'\\''") + "'"
+    quoted = "'" + Path(path).as_posix().replace("'", "'\\''") + "'"  # "/" only for Windows paths
     return re.sub(r"([\\'\[\],;])", r"\\\1", quoted)
 
 
@@ -381,6 +404,13 @@ def prepare_clip(src: Path, out_dir: Path, vs: VideoStyle, look: LookStyle,
     src = Path(src).resolve()
     trim_in = max(0.0, float(trim_in or 0.0))
     seconds = float(vs.max_clip_seconds)
+    length = _video_duration(src) if trim_in > 0 else None
+    if length is not None and trim_in >= length - 1.0 / vs.fps:
+        # a start past the end (or a shorter file uploaded in its place) would
+        # give ffmpeg nothing to encode: use the end of the clip instead
+        log.warning("look: %s starts at %.1fs but is only %.1fs long; using its last part",
+                    src.name, trim_in, length)
+        trim_in, trim_out = max(0.0, length - seconds), None
     if trim_out is not None and trim_out > trim_in:
         seconds = min(seconds, float(trim_out) - trim_in)
     matching = target is not None and look.match != "off" and look.match_strength > 0
@@ -404,6 +434,10 @@ def prepare_clip(src: Path, out_dir: Path, vs: VideoStyle, look: LookStyle,
     run(["ffmpeg", "-y", "-v", "error", "-ss", f"{trim_in:.3f}", "-i", str(src), "-t", f"{seconds:.3f}",
          "-an", "-sn", "-dn", "-vf", grade_filter(look, vs, lut),
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", *_BT709, str(part)])
+    if not _has_video(part):  # never cache an empty file: the render would fail much later
+        part.unlink(missing_ok=True)
+        raise MediaError(f"{src.name}: no video frames between {trim_in:.1f}s and "
+                         f"{trim_in + seconds:.1f}s; check the clip's start and end times")
     part.replace(dst)  # atomic: an interrupted render never leaves a truncated clip in the cache
     return dst
 

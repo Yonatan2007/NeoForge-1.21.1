@@ -246,10 +246,11 @@ def time_words(script: Script, samples: np.ndarray, method: str = "auto",
     if method in ("auto", "whisper"):
         try:
             asr = transcribe(samples, model_name, device)
-        except ImportError:
+        except Exception as exc:  # not installed, model not downloadable offline, no GPU...
             if method == "whisper":
                 raise
-            log.warning("faster-whisper not installed; estimating word timings from audio energy")
+            log.warning("whisper unavailable (%s); estimating word timings from audio energy",
+                        exc if not isinstance(exc, ImportError) else "faster-whisper not installed")
         else:
             score = align(script.words, asr, duration)
             log.info("whisper alignment: %.0f%% of script words matched exactly", score * 100)

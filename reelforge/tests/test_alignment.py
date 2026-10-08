@@ -1,5 +1,6 @@
 import numpy as np
 
+from reelforge import alignment
 from reelforge.alignment import AsrWord, align, estimate, speech_regions
 from reelforge.script import normalize, parse_script
 
@@ -81,3 +82,20 @@ def test_zero_length_word_after_pause_is_re_estimated():
     nobody, gets = s.words[2], s.words[3]
     assert 0.6 <= nobody.start < 2.0 - 0.1   # pulled back into the pause
     assert nobody.end <= gets.start + 1e-9 and gets.start == 2.0
+
+
+def test_auto_falls_back_to_estimation_when_whisper_cannot_load(monkeypatch):
+    def offline(*_args, **_kw):
+        raise OSError("model not cached and the machine is offline")
+
+    monkeypatch.setattr(alignment, "transcribe", offline)
+    s = parse_script("Say it today. Just say it.")
+    sr = alignment.SAMPLE_RATE
+    samples = np.zeros(sr * 3, np.float32)
+    samples[int(0.2 * sr):int(1.2 * sr)] = 0.3
+    samples[int(1.6 * sr):int(2.6 * sr)] = 0.3
+    assert alignment.time_words(s, samples, "auto") == "estimate"
+    assert all(w.end > w.start for w in s.words)
+    import pytest
+    with pytest.raises(OSError):
+        alignment.time_words(s, samples, "whisper")

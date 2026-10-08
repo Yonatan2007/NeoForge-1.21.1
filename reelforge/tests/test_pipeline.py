@@ -2,7 +2,7 @@ import pytest
 
 from reelforge import config
 from reelforge.config import FootageItem, Project
-from reelforge.pipeline import assign_sources, project_path, split_hook
+from reelforge.pipeline import assign_sources, project_path, slugify, split_hook
 from reelforge.script import parse_script
 
 
@@ -74,3 +74,9 @@ def test_plan_cuts_the_hook_shot_when_the_second_sentence_starts(tmp_path):
     assert plan["hook"][-1] == "trust?"
     assert plan["shots"][0]["text"].endswith("trust?")  # the hook shot holds the hook only
     assert plan["shots"][1]["text"].startswith("Not")
+
+
+def test_slugs_keep_every_alphabet():
+    assert slugify("Say it today. Just say it.") == "say-it-today-just-say-it"
+    assert slugify("Кто ты, если забудешь всё?") == "кто-ты-если-забудешь-всё"
+    assert slugify("Привет") != slugify("Пока") and slugify("?!") == "reel"

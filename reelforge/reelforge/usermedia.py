@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from .look import rgb_to_lab
+from .look import rgb_to_lab, to_8bit
 from .media import MediaError, probe, run
 
 log = logging.getLogger(__name__)
@@ -232,10 +232,7 @@ def _flatten(im: Image.Image) -> Image.Image:
     """RGB, whatever came in: palette, greyscale, CMYK, 16-bit, or transparency.
     Transparent areas get a backdrop that contrasts with the visible content
     (white behind a dark logo, black behind a light cut-out)."""
-    if im.mode in ("I", "I;16", "I;16B", "I;16L", "F"):
-        arr = np.asarray(im, dtype=np.float32)
-        top = 65535.0 if arr.max() > 255 else 255.0
-        im = Image.fromarray(np.clip(arr / top * 255.0 + 0.5, 0, 255).astype(np.uint8))
+    im = to_8bit(im)
     has_alpha = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
     if not has_alpha:
         return im.convert("RGB")

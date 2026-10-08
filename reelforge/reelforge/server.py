@@ -20,6 +20,7 @@ working even if an optional media tool is missing.
 """
 from __future__ import annotations
 
+import codecs
 import collections
 import json
 import logging
@@ -168,14 +169,26 @@ def waveform(path: Path, buckets: int) -> dict:
 
 
 def read_text(path: Path) -> str:
-    """A script file as text, whatever editor wrote it."""
+    """A script file as text, whatever editor wrote it: UTF-8, UTF-16 with a
+    byte-order mark (Notepad "Unicode", PowerShell 5) or Windows-1252.
+    Raises ValueError for anything that is not plain text."""
     data = path.read_bytes()
-    for encoding in ("utf-8-sig", "cp1252"):
+    text = None
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
         try:
-            return data.decode(encoding)
+            text = data.decode("utf-16")
         except UnicodeDecodeError:
-            continue
-    return data.decode("latin-1")
+            pass
+    else:
+        for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+            try:
+                text = data.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+    if text is None or "\x00" in text:
+        raise ValueError(f"“{path.name}” is not a plain-text file: save the script as text (UTF-8).")
+    return text
 
 
 # --------------------------------------------------------------------------- workspace
@@ -214,7 +227,8 @@ class Workspace:
         path = self.root / pid / "project.json"
         tmp = path.with_suffix(".json.tmp")
         tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(config.to_dict(project), indent=2, ensure_ascii=False) + "\n")
+        tmp.write_text(json.dumps(config.to_dict(project), indent=2, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
         tmp.replace(path)  # atomic: a crash never leaves half a project file
 
     def create(self, project: Project) -> str:
@@ -453,7 +467,7 @@ class Context:
         saved: dict = {}
         if (out / "render.json").is_file():
             try:
-                saved = json.loads((out / "render.json").read_text())
+                saved = json.loads((out / "render.json").read_text(encoding="utf-8"))
             except ValueError:
                 saved = {}
         videos = sorted(out.glob("*.mp4"), key=lambda p: p.stat().st_mtime) if out.is_dir() else []
@@ -698,6 +712,12 @@ def _store_upload(ctx: Context, pid: str, stream, filename: str, role: str) -> d
         if info["kind"] not in kinds:
             path.unlink()
             raise HTTPException(415, f"“{filename}” can't be used as {role}: please upload {wanted}.")
+        if role == "script":
+            try:
+                read_text(path)
+            except ValueError as exc:  # never replace the script with garbage
+                path.unlink()
+                raise HTTPException(415, str(exc)) from None
         project = ctx.workspace.load(pid)
         rel = f"uploads/{path.name}"
         _attach(project, rel, role, info["kind"], path)
@@ -750,9 +770,8 @@ def delete_upload(pid: str, name: str, ctx: Ctx) -> dict:
     if name != Path(name).name or name.startswith("."):
         raise NotFound(name)
     path = safe_join(pdir / "uploads", name)
-    if not path.is_file():
-        raise NotFound(name)
     rel = f"uploads/{name}"
+    # idempotent: a second click (or a file removed by hand) still cleans the references
     with ctx.workspace.lock(pid):
         project = ctx.workspace.load(pid)
         if project.voice.file == rel:
@@ -761,7 +780,7 @@ def delete_upload(pid: str, name: str, ctx: Ctx) -> dict:
             project.music.file, project.music.source_in, project.music.source_out = None, 0.0, None
         project.footage.items = [i for i in project.footage.items if i.path != rel]
         ctx.workspace.save(pid, project)
-        path.unlink()
+        path.unlink(missing_ok=True)
         (pdir / "thumbs" / f"{name}.jpg").unlink(missing_ok=True)
     return ctx.project_view(pid, project)
 
@@ -836,7 +855,8 @@ def render(pid: str, ctx: Ctx, data: OptionalProjectBody = None) -> dict:
         out = project_dir / "output"
         out.mkdir(exist_ok=True)
         (out / "render.json").write_text(json.dumps(result | {"finished": _iso(time.time())},
-                                                    indent=2, ensure_ascii=False) + "\n")
+                                                    indent=2, ensure_ascii=False) + "\n",
+                                         encoding="utf-8")
         job.add_log(f"finished: {result.get('video')}")
         return result | {"outputs": ctx.outputs(pid)}
 

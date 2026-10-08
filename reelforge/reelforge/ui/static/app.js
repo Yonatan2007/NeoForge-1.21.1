@@ -131,6 +131,12 @@ function nameInput() {
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") input.blur();
   });
+  // the server names an untitled reel after an uploaded script file
+  cleanupShell.push(on("change", ({ paths } = {}) => {
+    if (!(paths || []).includes("name") || document.activeElement === input) return;
+    input.value = state.project.name || "";
+    fit();
+  }));
   fit();
   return input;
 }

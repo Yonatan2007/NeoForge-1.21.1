@@ -220,7 +220,7 @@ export function fileUrl(path) {
 
 // Which parts of the project an upload of each role changes on the server.
 const UPLOAD_KEYS = {
-  script: ["script"],
+  script: ["script", "name"], // an untitled reel is named after its script file
   voice: ["voice.file"],
   music: ["music.file", "music.source_in", "music.source_out"],
   footage: ["footage.items"],
@@ -254,7 +254,9 @@ export async function uploadFile(file, role, { onProgress, signal } = {}) {
     if (role === "voice" && !["file", "higgsfield"].includes(state.project.voice.source)) {
       state.project.voice.source = server.voice.source;
     }
-    if (version === before) savedVersion = version; // nothing local pending: in sync with server
+    // An autosave sent while the server was still processing the upload may
+    // have replaced the project without the new file: send it again.
+    if (version !== before) touched(keys);
   }
   if (res.file) {
     state.uploads = state.uploads.filter((u) => u.name !== res.file.name).concat([res.file]);
@@ -269,6 +271,7 @@ export async function removeUpload(path) {
   const id = state.projectId;
   const name = basename(path);
   await flush().catch(() => {});
+  const before = version;
   const res = await optional("deleteUpload", () => api.deleteUpload(id, name));
   if (id !== state.projectId) return;
   const p = state.project;
@@ -276,7 +279,8 @@ export async function removeUpload(path) {
     p.voice.file = res.project.voice.file;
     p.music.file = res.project.music.file;
     p.footage.items = res.project.footage.items;
-    savedVersion = version;
+    // edits made during the request were saved (or will be) with the old references
+    if (version !== before) touched(["voice.file", "music.file", "footage.items"]);
   } else {
     // Backend cannot delete files: just drop the references.
     if (p.voice.file === path) p.voice.file = null;

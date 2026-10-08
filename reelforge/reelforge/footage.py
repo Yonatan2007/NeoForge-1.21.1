@@ -75,7 +75,8 @@ def rendition_rank(width: int, height: int) -> tuple:
 def score(c: Candidate, min_duration: float, portrait_weight: float = 3.0,
           luma_target: float = LUMA_TARGETS["bright"]) -> float:
     """Heuristic fit of a clip: portrait orientation (worth ``portrait_weight``,
-    which the caller lowers for square or wide output), a full-HD source,
+    which the caller lowers for square output and makes negative for wide
+    output, so landscape clips win there), a full-HD source,
     enough length for a shot, and thumbnail brightness near ``luma_target``."""
     s = portrait_weight if c.portrait else 0.0
     s += 1.0 if min(c.width, c.height) >= 1080 else 0.0
@@ -139,16 +140,21 @@ class _Provider:
         r.raise_for_status()
         return r
 
-    def search(self, query: str, per_page: int = 15, allow_landscape: bool = True) -> list[Candidate]:
+    def search(self, query: str, per_page: int = 15, allow_landscape: bool = True,
+               wide: bool = False) -> list[Candidate]:
         """Candidates for ``query``, cached for a day. ``allow_landscape``
-        lets a provider widen a thin portrait search to other orientations."""
-        slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
-        variant = "" if allow_landscape else "_portrait"
-        cache = self.cache_dir / f"{self.name}_{slug}_{per_page}{variant}.json"
+        lets a provider widen a thin portrait search to other orientations;
+        ``wide`` (16:9 output) asks for landscape clips instead."""
+        # the slug keeps cache files readable; the hash keeps every query apart
+        # (non-Latin searches have an empty slug) and the name short
+        slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")[:50]
+        digest = hashlib.sha1(query.encode()).hexdigest()[:10]
+        variant = ("_wide" if wide else "") + ("" if allow_landscape else "_portrait")
+        cache = self.cache_dir / f"{self.name}_{slug}_{digest}_{per_page}{variant}.json"
         if cache.exists() and time.time() - cache.stat().st_mtime < SEARCH_TTL:
             data = json.loads(cache.read_text())
         else:
-            data = self._request(query, per_page, allow_landscape)
+            data = self._request(query, per_page, allow_landscape, wide)
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(json.dumps(data))
         return self.parse(data, query)
@@ -176,10 +182,10 @@ class Pexels(_Provider):
     name = "pexels"
     url = "https://api.pexels.com/v1/videos/search"
 
-    def _request(self, query: str, per_page: int, allow_landscape: bool) -> dict:
-        # Pexels has plenty of portrait video, so the portrait filter always applies.
+    def _request(self, query: str, per_page: int, allow_landscape: bool, wide: bool = False) -> dict:
+        # Pexels has plenty of video in both orientations, so the filter always applies.
         return self._fetch(self.url, headers={"Authorization": self.key},
-                           params={"query": query, "orientation": "portrait",
+                           params={"query": query, "orientation": "landscape" if wide else "portrait",
                                    "size": "medium", "per_page": per_page}).json()
 
     @staticmethod
@@ -204,7 +210,7 @@ class Pixabay(_Provider):
     name = "pixabay"
     url = "https://pixabay.com/api/videos/"
 
-    def _request(self, query: str, per_page: int, allow_landscape: bool) -> dict:
+    def _request(self, query: str, per_page: int, allow_landscape: bool, wide: bool = False) -> dict:
         # Pixabay has no orientation filter: every result comes back, ranked later.
         return self._fetch(self.url, params={"key": self.key, "q": query[:100], "video_type": "film",
                                              "safesearch": "true", "per_page": max(3, per_page)}).json()
@@ -259,10 +265,14 @@ class Mixkit(_Provider):
                          params={"orientation": "vertical"} if vertical else None)
         return list(dict.fromkeys(re.findall(r'href="/free-stock-video/([a-z0-9-]+-\d+)/"', page)))
 
-    def _request(self, query: str, per_page: int, allow_landscape: bool) -> dict:
+    def _request(self, query: str, per_page: int, allow_landscape: bool, wide: bool = False) -> dict:
         words, found = query.split(), []
         while words and not found:  # "clock ticking dark" -> "clock ticking" -> "clock"
             phrase = " ".join(words)
+            if wide:  # the unfiltered listing is mostly landscape
+                found = [(slug, False) for slug in self._discover(phrase, vertical=False)]
+                words = words[:-1]
+                continue
             found = [(slug, True) for slug in self._discover(phrase, vertical=True)]
             if allow_landscape and len(found) < self.per_query:
                 seen = {slug for slug, _ in found}
@@ -346,11 +356,12 @@ class Mixkit(_Provider):
         return html.unescape(m.group(1))
 
 
-def _search(query: str, providers: list[_Provider], allow_landscape: bool) -> list[Candidate]:
+def _search(query: str, providers: list[_Provider], allow_landscape: bool,
+            wide: bool = False) -> list[Candidate]:
     cands: list[Candidate] = []
     for p in providers:
         try:
-            cands += p.search(query, allow_landscape=allow_landscape)
+            cands += p.search(query, allow_landscape=allow_landscape, wide=wide)
         except requests.RequestException as exc:
             log.warning("%s search failed for %r: %s", p.name, query, exc)
     return cands
@@ -364,7 +375,7 @@ def _download(c: Candidate, provider: _Provider, dst: Path) -> Path:
     for url in fallbacks:
         try:
             return download(provider.resolve(url), dst, timeout=120)
-        except (requests.HTTPError, FootageError) as exc:
+        except (requests.RequestException, FootageError) as exc:  # incl. timeouts on a 4K file
             log.info("%s: %s unavailable (%s), trying the next file", c.key, url, exc)
     return download(provider.resolve(last), dst, timeout=120)
 
@@ -373,7 +384,7 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
                   min_duration: float, allow_landscape: bool = True, shortlist: int = 6,
                   count: int | None = None, extra_score: ExtraScore | None = None,
                   portrait_weight: float = 3.0, palette: str = "bright",
-                  exclude: set[str] | None = None) -> list[tuple[Candidate, Path]]:
+                  exclude: set[str] | None = None, wide: bool = False) -> list[tuple[Candidate, Path]]:
     """One clip per query (in order) until ``count`` clips, never the same clip twice.
 
     Each query's candidates are ranked by ``score``; the best ``shortlist``
@@ -392,7 +403,7 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
     for query in queries:
         if count is not None and len(picks) >= count:
             break
-        cands = [c for c in _search(query, providers, allow_landscape)
+        cands = [c for c in _search(query, providers, allow_landscape, wide)
                  if c.key not in used and (c.portrait or allow_landscape)]
         if not cands:
             log.warning("no footage for %r", query)
@@ -425,7 +436,8 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
 
 def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min_duration: float,
             rank: ExtraScore, allow_landscape: bool = True, shortlist: int = 8,
-            portrait_weight: float = 3.0, palette: str = "bright") -> tuple[Candidate, Path] | None:
+            portrait_weight: float = 3.0, palette: str = "bright",
+            wide: bool = False) -> tuple[Candidate, Path] | None:
     """The single best clip across several searches, judged mostly by
     ``rank(candidate, thumbnail)`` (e.g. how clear a skyline is for the hook
     shot). Unlike ``fetch_footage`` it compares candidates of every query
@@ -435,7 +447,7 @@ def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min
     seen: set[str] = set()
     ranked: list[tuple[float, Candidate]] = []
     for query in dict.fromkeys(queries):
-        cands = [c for c in _search(query, providers, allow_landscape)
+        cands = [c for c in _search(query, providers, allow_landscape, wide)
                  if c.key not in seen and (c.portrait or allow_landscape)]
         cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target), reverse=True)
         for c in cands[:shortlist]:
@@ -462,6 +474,6 @@ def write_credits(picks: list[tuple[Candidate, Path]], path: Path) -> Path:
     lines = ["Stock footage used (Mixkit Free / Pexels / Pixabay licences; credit appreciated):", ""]
     for c, _ in picks:
         lines.append(f"- {c.provider}: {c.author or 'unknown'} - {c.page_url}  [query: {c.query}]")
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     (path.with_suffix(".json")).write_text(json.dumps([asdict(c) for c, _ in picks], indent=2))
     return path

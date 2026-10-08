@@ -14,6 +14,22 @@ def test_normalize():
     assert normalize("—") == ""
 
 
+def test_every_alphabet_is_kept():
+    assert normalize("à") == "à" and normalize("Мир,") == "мир" and normalize("שם?") == "שם"
+    assert [w.text for w in parse_script("Je pense à toi. Où es-tu?").words] == \
+        ["Je", "pense", "à", "toi.", "Où", "es-tu?"]
+    s = parse_script("Привет мир. Как дела?")
+    assert [w.norm for w in s.words] == ["привет", "мир", "как", "дела"] and s.sentence_count == 2
+
+
+def test_a_sentence_mark_after_a_space_still_ends_the_sentence():
+    s = parse_script("Who are you ? Nobody knows . Qui es-tu ?")
+    assert [w.text for w in s.words] == ["Who", "are", "you?", "Nobody", "knows.", "Qui", "es-tu?"]
+    assert s.sentence_count == 3 and s.words[2].ends_sentence
+    s = parse_script("I waited ... and waited — then left!")  # pauses, not sentence ends
+    assert s.sentence_count == 1 and s.words[1].ends_clause and not s.words[1].ends_sentence
+
+
 def test_words_sentences_and_clauses():
     s = parse_script(EXAMPLE)
     assert len(s.words) == 50

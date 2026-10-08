@@ -64,6 +64,12 @@ def _media_items(directory: Path, role: str) -> list[dict]:
     return [config.to_dict(FootageItem(path=str(p.resolve()), role=role)) for p in files]
 
 
+def _local(path: str) -> str:
+    """A file given on the command line, made absolute so it still resolves
+    from the project folder; URLs and missing paths pass through."""
+    return str(Path(path).resolve()) if Path(path).exists() else path
+
+
 def _build_project(args: argparse.Namespace, settings: Settings) -> tuple[Project, Path]:
     if args.project:
         project = config.load_project(args.project)
@@ -80,11 +86,11 @@ def _build_project(args: argparse.Namespace, settings: Settings) -> tuple[Projec
                                  {k: data[k] for k in ("name", "script", "voice", "music", "footage",
                                                        "duration")})
     if args.voiceover:
-        data["voice"].update(source="file", file=args.voiceover)
+        data["voice"].update(source="file", file=_local(args.voiceover))
     if args.tts:
         data["voice"]["source"] = args.tts
     if args.piper_model:
-        data["voice"]["piper_model"] = args.piper_model
+        data["voice"]["piper_model"] = _local(args.piper_model)
     if args.voice_id:
         data["voice"]["voice_id"] = args.voice_id
     if args.voice_preset:
@@ -92,11 +98,12 @@ def _build_project(args: argparse.Namespace, settings: Settings) -> tuple[Projec
     if args.align:
         data["voice"]["align"] = args.align
     if args.music:
-        data["music"]["file"] = str(Path(args.music).resolve()) if Path(args.music).exists() else args.music
-    if args.footage_dir:
-        data["footage"]["items"] += _media_items(Path(args.footage_dir), "footage")
-    if args.reference_dir:
-        data["footage"]["items"] += _media_items(Path(args.reference_dir), "reference")
+        data["music"]["file"] = _local(args.music)
+    for folder, role in ((args.footage_dir, "footage"), (args.reference_dir, "reference")):
+        if folder:  # re-running with the same folder on a saved project adds nothing twice
+            have = {i["path"] for i in data["footage"]["items"]}
+            data["footage"]["items"] += [i for i in _media_items(Path(folder), role)
+                                         if i["path"] not in have]
     if args.queries:
         data["footage"]["queries"] = [q.strip() for q in args.queries.split(";") if q.strip()]
     if args.no_stock:

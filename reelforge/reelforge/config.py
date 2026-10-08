@@ -41,7 +41,7 @@ def load_dotenv(path: str | os.PathLike = ".env") -> None:
     p = Path(path)
     if not p.is_file():
         return
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -347,6 +347,8 @@ def _parse_color(value) -> RGB:
         if len(h) == 3:
             h = "".join(c * 2 for c in h)
         return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    if len(value) < 3:
+        raise ValueError(f"a colour needs red, green and blue values, got {list(value)!r}")
     return tuple(int(x) for x in value)[:3]  # type: ignore[return-value]
 
 
@@ -366,6 +368,8 @@ def _coerce(tp, value):
     if origin is tuple:
         if tp == RGB or (len(args) == 3 and all(a is int for a in args)):
             return _parse_color(value)
+        if args and Ellipsis not in args and len(value) != len(args):
+            raise ValueError(f"expected {len(args)} values, got {list(value)!r}")
         return tuple(_coerce(a, v) for a, v in zip(args, value)) if args else tuple(value)
     if tp is float:
         return float(value)
@@ -427,7 +431,7 @@ def load_defaults(settings: Settings) -> Project:
     path = defaults_path(settings)
     if path.is_file():
         try:
-            saved = json.loads(path.read_text())
+            saved = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
             log.warning("ignoring unreadable defaults file %s", path)
     base = preset_dict(saved.get("preset", "reference"))
@@ -442,7 +446,7 @@ def save_defaults(project: Project, settings: Settings) -> Path:
     data["music"]["file"] = None
     path = defaults_path(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
 
 
@@ -451,7 +455,7 @@ def reset_defaults(settings: Settings) -> None:
 
 
 def load_project(path: str | os.PathLike) -> Project:
-    data = json.loads(Path(path).read_text())
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     base = preset_dict(data.get("preset", "reference"))
     return from_dict(Project, deep_merge(base, data))
 
@@ -459,5 +463,5 @@ def load_project(path: str | os.PathLike) -> Project:
 def save_project(project: Project, path: str | os.PathLike) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(to_dict(project), indent=2, ensure_ascii=False) + "\n")
+    path.write_text(json.dumps(to_dict(project), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path

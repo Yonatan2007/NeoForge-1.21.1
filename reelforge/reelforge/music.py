@@ -42,7 +42,8 @@ MIX_LUFS = -14.0                 # final soundtrack (what Reels/TikTok/Shorts pl
 MIX_LIMIT = 0.89                 # limiter ceiling, about -1 dBFS
 MAX_NORM_GAIN = 30.0             # never boost/cut by more than this to reach a loudness target
 SILENT_LUFS = -69.0              # ebur128 reports -70 LUFS for silence / clips too short to gate
-MIN_SELECTION = 0.1              # seconds; shorter music selections are rejected
+MIN_SELECTION = 0.5              # seconds; shorter selections are rejected (loudness is
+                                 # measured in 0.4 s blocks, so they could not be levelled)
 LOOP_XFADE = 0.05                # seconds of equal-power crossfade at each loop seam
 
 # Ducking. The voice becomes a 0/1 "speaking" control signal (relative to its

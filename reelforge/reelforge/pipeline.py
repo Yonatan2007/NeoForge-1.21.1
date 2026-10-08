@@ -38,7 +38,7 @@ STAGES = {
     "finish": (0.97, 1.00),
 }
 # How much a portrait source matters for each output shape.
-PORTRAIT_WEIGHT = {"9:16": 3.0, "4:5": 2.0, "1:1": 0.5, "16:9": 0.0}
+PORTRAIT_WEIGHT = {"9:16": 3.0, "4:5": 2.0, "1:1": 0.5, "16:9": -3.0}  # negative: landscape wins
 # Extra searches tried for the hook shot; the clearest skyline across all wins.
 HOOK_SEARCHES = ("mountains", "hills", "hiking", "snow mountains")
 SKYLINE_WEIGHT = 12.0     # the hook clip is chosen almost only by its skyline
@@ -65,7 +65,7 @@ class _Reporter:
 
 
 def slugify(text: str, max_words: int = 6) -> str:
-    return "-".join(re.findall(r"[a-z0-9]+", text.lower())[:max_words]) or "reel"
+    return "-".join(re.findall(r"[^\W_]+", text.lower())[:max_words])[:60].strip("-") or "reel"
 
 
 def project_path(p: str, project_dir: Path) -> str:
@@ -287,6 +287,8 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
     work, out_dir = project_dir / "work", project_dir / "output"
     work.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("credits.txt", "credits.json"):  # a render without stock has no credits
+        (out_dir / stale).unlink(missing_ok=True)
     style = project.style
     vs, cs, hs = style.video, style.caption, style.hook
     warnings: list[str] = []
@@ -353,10 +355,11 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
     stock_paths: dict[int, Path] = {}
     if stock_slots:
         providers = _providers(project, settings)
+        wide = vs.aspect == "16:9"
         common = dict(min_duration=vs.max_shot + vs.crossfade,
-                      allow_landscape=project.footage.allow_landscape,
+                      allow_landscape=project.footage.allow_landscape or wide,
                       portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0),
-                      palette=project.footage.palette)
+                      palette=project.footage.palette, wide=wide)
 
         def likeness(c, img) -> float:
             return REFERENCE_WEIGHT * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
@@ -415,6 +418,10 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
             else:
                 key = ("video", str(path), item.trim_in, item.trim_out)
                 if key not in done:
+                    length = look.video_duration(path) if item.trim_in else None
+                    if length is not None and item.trim_in >= length - 1.0 / vs.fps:
+                        warnings.append(f"{path.name}: 'Start at' {item.trim_in:g} s is past the end "
+                                        f"of the clip ({length:.1f} s), so its last part is used.")
                     done[key] = look.prepare_clip(path, prep_dir, vs, style.look, target,
                                                   trim_in=item.trim_in, trim_out=item.trim_out)
         prepared.append(done[key])

@@ -417,16 +417,19 @@ def validate(data: dict) -> Project:
         raise ValueError(f"Unknown look preset {preset!r}; choose one of {', '.join(PRESETS)}.")
     try:
         project = config.from_dict(Project, config.deep_merge(config.preset_dict(preset), data))
-    except (TypeError, ValueError, IndexError, AttributeError) as exc:
+    except (TypeError, ValueError, IndexError, AttributeError, OverflowError) as exc:
         raise ValueError(f"Some settings have the wrong type ({exc}).") from exc
 
     problems: list[str] = []
-    for f in FIELDS.values():
-        if f.path.startswith(ITEM):
-            for n, item in enumerate(project.footage.items):
-                problems += _check(f, _get(item, f.path[len(ITEM):]), f"Clip {n + 1}: ")
-        else:
-            problems += _check(f, _get(project, f.path), "")
+    try:
+        for f in FIELDS.values():
+            if f.path.startswith(ITEM):
+                for n, item in enumerate(project.footage.items):
+                    problems += _check(f, _get(item, f.path[len(ITEM):]), f"Clip {n + 1}: ")
+            else:
+                problems += _check(f, _get(project, f.path), "")
+    except (TypeError, IndexError, AttributeError, OverflowError) as exc:  # wrong shape, e.g. a list where a value belongs
+        raise ValueError(f"Some settings have the wrong shape ({exc}).") from exc
     if problems:
         raise ValueError("\n".join(problems))
     return project
@@ -461,7 +464,9 @@ def _check(f: Field, value, prefix: str) -> list[str]:
         if isinstance(value, str):  # the hook colour: "auto" or "#rrggbb"
             if value not in [v for v, _ in f.options] and not _HEX.match(value):
                 return [f"{name}: {value!r} is not a colour like #ffcc00."]
-        elif not all(0 <= c <= 255 for c in value):
-            return [f"{name}: colour channels must be 0-255."]
+        elif (not isinstance(value, (list, tuple)) or len(value) != 3
+              or not all(isinstance(c, (int, float)) and not isinstance(c, bool) and 0 <= c <= 255
+                         for c in value)):
+            return [f"{name}: a colour needs red, green and blue values of 0-255."]
     return []
 

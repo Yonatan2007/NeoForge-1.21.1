@@ -35,7 +35,7 @@ function shotCount() {
   return clamp(Math.round(total / (((vs.min_shot || 3) + (vs.max_shot || 7)) / 2)), 3, 30);
 }
 
-function numberBox({ label, value, placeholder, step = 0.1, onCommit, id }) {
+function numberBox({ label, value, placeholder, step = 0.1, min = 0, max = 3600, onCommit, id }) {
   const input = h("input", { id, type: "text", inputmode: "decimal", class: "input input-num", value: value == null ? "" : String(value), placeholder: placeholder || "", autocomplete: "off" });
   input.addEventListener("change", () => {
     const t = input.value.trim();
@@ -44,7 +44,7 @@ function numberBox({ label, value, placeholder, step = 0.1, onCommit, id }) {
       input.value = value == null ? "" : String(value);
       return;
     }
-    value = v == null ? null : Math.max(0, Math.round(v / step) * step);
+    value = v == null ? null : Math.min(max, Math.max(min, Math.round(v / step) * step));
     input.value = value == null ? "" : String(+value.toFixed(2));
     onCommit(value);
   });
@@ -107,7 +107,7 @@ function clipCard(item, index, ctx) {
         MOTIONS.map((m) => h("option", { value: m, selected: item.motion === m }, m === "auto" ? "Auto" : m.replace("-", " ").replace(/^./, (c) => c.toUpperCase()))));
       motion.addEventListener("change", () => set("motion", motion.value));
       details.append(
-        numberBox({ id: `${idp}-secs`, label: "Seconds", value: item.seconds, placeholder: String(state.project.style.video.image_seconds ?? 4), onCommit: (v) => set("seconds", v) }),
+        numberBox({ id: `${idp}-secs`, label: "Seconds", min: 1, max: 30, value: item.seconds, placeholder: String(state.project.style.video.image_seconds ?? 4), onCommit: (v) => set("seconds", v) }),
         h("div", { class: "field field-compact" }, h("label", { class: "field-label", for: motionId }, "Motion"), motion));
     }
   }

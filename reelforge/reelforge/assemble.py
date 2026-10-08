@@ -27,20 +27,29 @@ def plan_shots(words: list[Word], total: float, vs: VideoStyle,
     longer than ``max_shot`` are split evenly: a shot of length L becomes
     ceil(L / max_shot) equal parts.
 
-    ``keep_until`` protects the opening: no cut happens before it and the
-    first shot is never split, so the hook text stays on one picture."""
+    ``keep_until`` protects the opening: no cut happens before it, so the hook
+    text stays on one picture. A sentence starting sooner than ``cut_preroll``
+    after it is cut at ``keep_until`` instead. If the first shot would run
+    past ``max_shot``, it ends at max(keep_until, min_shot) and the rest is
+    split like any other shot."""
     cuts = [0.0]
     for i, w in enumerate(words):
         if i > 0 and words[i - 1].ends_sentence:
-            c = w.start - vs.cut_preroll
-            if c < keep_until:
-                continue
+            c = max(w.start - vs.cut_preroll, keep_until)
             if c - cuts[-1] >= vs.min_shot and total - c >= vs.min_shot:
                 cuts.append(c)
     cuts.append(total)
     bounds = [0.0]
     for a, b in zip(cuts, cuts[1:]):
-        parts = 1 if (a == 0.0 and keep_until > 0) else max(1, math.ceil((b - a) / vs.max_shot - 1e-9))
+        if a == 0.0 and keep_until > 0 and b - a > vs.max_shot:
+            head = max(keep_until, vs.min_shot)
+            if b - head >= vs.min_shot:
+                bounds.append(head)
+                a = head
+            else:
+                bounds.append(b)
+                continue
+        parts = max(1, math.ceil((b - a) / vs.max_shot - 1e-9))
         bounds += [a + (b - a) * k / parts for k in range(1, parts + 1)]
     return list(zip(bounds, bounds[1:]))
 

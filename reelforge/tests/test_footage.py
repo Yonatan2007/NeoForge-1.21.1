@@ -79,7 +79,7 @@ class FakeProvider(footage._Provider):
         super().__init__("", cache_dir, Site(routes or {}))
         self.cands = cands
 
-    def search(self, query, per_page=15, allow_landscape=True):
+    def search(self, query, per_page=15, allow_landscape=True, wide=False):
         return [Candidate(**{**c.__dict__, "query": query, "alt_urls": list(c.alt_urls)})
                 for c in self.cands]
 
@@ -280,7 +280,7 @@ def test_fetch_footage_stops_at_count_and_falls_back_to_alt_urls(tmp_path, monke
         return Path(dst)
 
     class OneEach(FakeProvider):
-        def search(self, query, per_page=15, allow_landscape=True):
+        def search(self, query, per_page=15, allow_landscape=True, wide=False):
             return [cand(query, download_url="uhd-2160", alt_urls=["hd-1080", "sd-720"], query=query)]
 
     monkeypatch.setattr(footage, "download", fake_download)
@@ -332,3 +332,58 @@ def test_credits_list_every_clip(tmp_path):
     path = footage.write_credits([(c, tmp_path / "c.mp4")], tmp_path / "credits.txt")
     assert "https://mixkit.co/v-1/" in path.read_text()
     assert json.loads(path.with_suffix(".json").read_text())[0]["thumb_size"] == [720, 1280]
+
+
+class Counting(footage._Provider):
+    name = "count"
+
+    def __init__(self, cache_dir):
+        super().__init__("", cache_dir)
+        self.calls = []
+
+    def _request(self, query, per_page, allow_landscape, wide=False):
+        self.calls.append((query, wide))
+        return {"query": query}
+
+    @staticmethod
+    def parse(data, query):
+        return [data["query"]]
+
+
+def test_search_cache_keeps_every_query_apart(tmp_path):
+    p = Counting(tmp_path)
+    assert p.search("горы") == ["горы"] and p.search("море") == ["море"]
+    assert p.search("日本の山") == ["日本の山"] and p.search("горы") == ["горы"]  # cached
+    long = "mountain " * 40
+    assert p.search(long) == [long]  # a long custom search still fits in a file name
+    assert p.search("горы", wide=True) == ["горы"]
+    assert p.calls == [("горы", False), ("море", False), ("日本の山", False), (long, False),
+                       ("горы", True)]
+
+
+def test_wide_output_prefers_landscape_clips():
+    portrait = Candidate(provider="x", id="p", width=1080, height=1920, duration=10.0,
+                         download_url="u", page_url="u", author="", thumbnail=None, query="q")
+    landscape = Candidate(provider="x", id="l", width=1920, height=1080, duration=10.0,
+                          download_url="u", page_url="u", author="", thumbnail=None, query="q")
+    assert score(portrait, 7.0, 3.0) > score(landscape, 7.0, 3.0)
+    assert score(landscape, 7.0, -3.0) > score(portrait, 7.0, -3.0)
+
+
+def test_download_tries_the_next_file_after_a_network_error(tmp_path, monkeypatch):
+    c = Candidate(provider="fake", id="1", width=1080, height=1920, duration=10.0, author="",
+                  thumbnail=None, query="q", page_url="p", download_url="https://x/4k.mp4",
+                  alt_urls=["https://x/1080.mp4"])
+    tried = []
+
+    def fake_download(url, dst, timeout=None):
+        tried.append(url)
+        if "4k" in url:
+            raise requests.ConnectionError("connection reset")
+        dst.write_bytes(b"video")
+        return dst
+
+    monkeypatch.setattr(footage, "download", fake_download)
+    prov = FakeProvider(tmp_path, [])
+    assert footage._download(c, prov, tmp_path / "1.mp4").read_bytes() == b"video"
+    assert tried == ["https://x/4k.mp4", "https://x/1080.mp4"]

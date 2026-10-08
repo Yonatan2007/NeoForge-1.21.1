@@ -76,6 +76,8 @@ def test_render_project_end_to_end(tmp_path):
     p.footage.stock = False
     p.style.video.aspect, p.style.video.draft, p.style.video.fps = "1:1", True, 12
     p.style.video.preset = "ultrafast"
+    (tmp_path / "proj" / "output").mkdir()
+    (tmp_path / "proj" / "output" / "credits.txt").write_text("a stock clip from an older render")
     stages = []
     result = render_project(p, tmp_path / "proj", Settings(cache_dir=tmp_path / "cache",
                                                           home_dir=tmp_path / "home"),
@@ -86,6 +88,7 @@ def test_render_project_end_to_end(tmp_path):
     assert "video,540,540" in probe.stdout and "audio" in probe.stdout
     assert (tmp_path / "proj" / result["cover"]).stat().st_size > 0
     assert (tmp_path / "proj" / result["srt"]).read_text().count("-->") >= 2
+    assert result["credits"] is None  # no stock in this render: the old credits are gone
     fracs = [f for _, f in stages]
     assert fracs == sorted(fracs) and fracs[-1] == pytest.approx(1.0)
 
@@ -98,6 +101,34 @@ def test_hook_shot_is_never_cut_or_split():
     shots = plan_shots(s.words, 6.0, vs, keep_until=3.4)
     assert shots[0][0] == 0.0 and shots[0][1] >= 3.4
     assert all(b - a <= 2.0 + 1e-9 for a, b in shots[1:])
+
+
+def timed(text, times):
+    s = parse_script(text)
+    for w, (a, b) in zip(s.words, times):
+        w.start, w.end = a, b
+    return s.words
+
+
+def test_a_short_hook_does_not_turn_the_reel_into_one_shot():
+    # hook "Why do we wait?" ends at 1.5 s; the next sentence runs to the end
+    text = "Why do we wait? " + " ".join(["word"] * 40) + "."
+    times = [(i * 0.4, i * 0.4 + 0.35) for i in range(4)] + \
+            [(1.6 + i * 0.45, 1.6 + i * 0.45 + 0.4) for i in range(40)]
+    words = timed(text, times)
+    shots = plan_shots(words, 19.4, VideoStyle(), keep_until=1.5)
+    assert shots[0] == (0.0, 3.0)  # the hook picture, at least min_shot long
+    assert len(shots) >= 3 and all(b - a <= 7.0 + 1e-9 for a, b in shots)
+    assert shots[-1][1] == 19.4
+
+
+def test_hook_is_cut_when_the_next_sentence_follows_immediately():
+    words = timed("If you lost it, who would you trust? Not who would show up for you.",
+                  [(0.3 * i, 0.3 * i + 0.3) for i in range(8)] + [(3.2 + 0.3 * i, 3.5 + 0.3 * i)
+                                                                 for i in range(7)])
+    words[7].end = 3.1  # "trust?" is drawn out; "Not" starts 0.1 s later
+    shots = plan_shots(words, 9.1, VideoStyle(), keep_until=3.1)
+    assert shots[0] == (0.0, 3.1)  # closer than the pre-roll: cut where the hook ends
 
 
 class Mark:
