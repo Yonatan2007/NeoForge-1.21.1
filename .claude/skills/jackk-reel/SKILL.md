@@ -10,9 +10,12 @@ step through the Higgsfield connector and hand the result to the app.
 
 1. **Setup (once per container)**
    `pip install -r reelforge/requirements.txt` (needs `ffmpeg` on PATH).
-   Stock search needs `PEXELS_API_KEY` and/or `PIXABAY_API_KEY` in the
-   environment or `reelforge/.env`. If neither is set and the user supplied
-   no clips, ask for a key or a folder of clips before rendering.
+   Stock footage works without any keys. Mixkit is built in, and the app
+   only uses clips under Mixkit's Free license, which allows commercial and
+   social use. `PEXELS_API_KEY` / `PIXABAY_API_KEY` are optional extras.
+   Never ask the user to paste a key into chat. Keys belong in the
+   environment's settings. Never generate B-roll with Higgsfield video models
+   unless the user explicitly asks for it. The user wants real stock footage.
 
 2. **Save the script** to `reelforge/scripts/<slug>.txt`, keeping the user's line
    breaks and punctuation. The user may mark words with `*word*` (yellow) or
@@ -37,6 +40,9 @@ step through the Higgsfield connector and hand the result to the app.
    `python -m reelforge render scripts/<slug>.txt --voiceover "<result_url>"`.
    Add `--footage-dir <dir>` to use the user's own clips, `--music <file>`
    for a music bed, or `--queries "a;b;c"` to override the stock searches.
+   After rendering, look at a frame from each shot. If a clip clashes with the
+   line (for example a smiling face under a sad line), re-render with
+   `--queries` giving one search per shot, in order.
 
 6. **Deliver** `reelforge/output/<slug>/<slug>.mp4` with `captions.srt` and,
    for stock footage, `credits.txt`. Before calling the video done, check a

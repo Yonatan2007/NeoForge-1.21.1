@@ -111,8 +111,8 @@ class VideoStyle:
     max_clip_seconds: float = 20.0
     music_volume: float = 0.12
     crf: int = 18
-    maxrate: str = "16M"                   # caps grain-heavy shots; IG re-encodes anyway
-    bufsize: str = "32M"
+    maxrate: str = "10M"                   # ~25 MB per 20 s; IG re-encodes to ~4 Mb/s anyway
+    bufsize: str = "20M"
     preset: str = "medium"
     audio_bitrate: str = "192k"
 

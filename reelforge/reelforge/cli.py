@@ -72,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     sp_render.add_argument("--music", type=Path, help="optional music bed (mixed low, looped)")
     sp_render.add_argument("--align", choices=["auto", "whisper", "estimate"], default="auto")
     sp_render.add_argument("--portrait-only", action="store_true", help="reject landscape stock clips")
+    sp_render.add_argument("--no-mixkit", action="store_true",
+                           help="do not use the keyless Mixkit source (Pexels/Pixabay keys only)")
 
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -92,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         voice_preset=args.voice_preset, voice_id=args.voice_id, footage_dir=args.footage_dir,
         queries=[q.strip() for q in args.queries.split(";") if q.strip()] if args.queries else None,
         music=args.music, align=args.align, auto_emphasis=not args.no_auto_emphasis,
-        allow_landscape=not args.portrait_only)
+        allow_landscape=not args.portrait_only, mixkit=not args.no_mixkit)
     out = render(text, out_dir, settings, style, opts)
     print(out)
     return 0

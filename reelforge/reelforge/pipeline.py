@@ -30,6 +30,7 @@ class RenderOptions:
     voice_id: str | None = None
     footage_dir: Path | None = None
     queries: list[str] | None = None
+    mixkit: bool = True                  # keyless free stock source
     music: Path | None = None
     align: str = "auto"                  # "auto" | "whisper" | "estimate"
     auto_emphasis: bool = True
@@ -123,10 +124,13 @@ def render(text: str, out_dir: Path, settings: Settings, style: Style,
             providers.append(footage.Pexels(settings.pexels_api_key, settings.cache_dir))
         if settings.pixabay_api_key:
             providers.append(footage.Pixabay(settings.pixabay_api_key, settings.cache_dir))
-        queries = opts.queries or footage_queries(script, len(shots))
+        if opts.mixkit:
+            providers.append(footage.Mixkit(settings.cache_dir))
+        # Spare queries cover searches that come back empty.
+        queries = opts.queries or footage_queries(script, len(shots) + 6)
         picks = footage.fetch_footage(queries, providers, settings.cache_dir,
                                       min_duration=vs.max_shot + vs.crossfade,
-                                      allow_landscape=opts.allow_landscape)
+                                      allow_landscape=opts.allow_landscape, count=len(shots))
         footage.write_credits(picks, out_dir / "credits.txt")
         sources = [path for _, path in picks]
     prepared = [footage.prepare_clip(p, settings.cache_dir / "prepared", vs) for p in sources]

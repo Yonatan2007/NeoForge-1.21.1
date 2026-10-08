@@ -13,7 +13,7 @@ script.txt
   ├─► alignment.py   Whisper word times, aligned back onto the script's exact words
   ├─► captions.py    caption chunks, timing, pop-in animation, captions.srt
   ├─► assemble.py    shot plan: cuts on sentence starts
-  ├─► footage.py     Pexels/Pixabay search ─► download ─► 1080x1920 graded clips
+  ├─► footage.py     Mixkit (no key) + optional Pexels/Pixabay ─► 1080x1920 graded clips
   └─► assemble.py    MoviePy timeline, crossfades, caption overlay, voice + music ─► <slug>.mp4
 ```
 
@@ -32,15 +32,17 @@ the first run; pass `--font` to use another font, such as The Bold Font.
 
 | Variable | Needed for | Where to get it |
 |---|---|---|
-| `PEXELS_API_KEY` | stock footage (set this one, Pixabay, or both) | <https://www.pexels.com/api/>, free, 200 requests/hour |
-| `PIXABAY_API_KEY` | stock footage | <https://pixabay.com/api/docs/>, free; the key is shown when you're logged in |
+| `PEXELS_API_KEY` | optional; adds Pexels to the stock search | <https://www.pexels.com/api/>, free, 200 requests/hour |
+| `PIXABAY_API_KEY` | optional; adds Pixabay to the stock search | <https://pixabay.com/api/docs/>, free; the key is shown when you're logged in |
 | `HIGGSFIELD_VOICE_ID` | optional; the narrator voice | `list_voices` in the Higgsfield connector (each voice has a `preview_url`) |
 | `HF_KEY`, `HIGGSFIELD_TTS_ENDPOINT` | optional headless route only (`--tts higgsfield-api`) | <https://console.higgsfield.ai> |
 | `WHISPER_MODEL` / `WHISPER_DEVICE` | optional; default `base.en` / `cpu` | `small.en` is more accurate; `cuda` if you have a GPU |
 | `REELFORGE_CACHE` | optional; default `~/.cache/reelforge` | downloads, graded clips, search cache |
 
-The Higgsfield connector needs no key. It uses the Higgsfield account you
-connected to Claude.
+Stock footage works with no keys at all: the built-in source is
+[Mixkit](https://mixkit.co), searched for vertical clips. The Pexels and
+Pixabay keys only add more choice. The Higgsfield connector needs no key
+either. It uses the Higgsfield account you connected to Claude.
 
 ## Usage
 
@@ -186,13 +188,22 @@ evaluated at t = n / 30, so timing is quantised to 33 ms or less.
 * **Cuts:** every sentence start minus 0.12 s is a candidate cut (cut just
   before the line). A cut is skipped if it is within 2.0 s of the previous cut
   or of the end. Shots longer than 4.5 s are split into ⌈L / 4.5⌉ equal parts.
-* **Clip choice:** for each query, candidates from both providers are scored
+* **Sources:** Mixkit is always searched (no key). The app reads each
+  clip's licence from its page and keeps only clips under the Mixkit Free
+  License. That licence allows commercial use, social media and ads, with no
+  attribution required. Restricted-licence clips are personal-use only and
+  are skipped. It downloads the 1080x1920 file, falling back to 720p.
+  Searches that find nothing are retried with fewer words ("clock ticking
+  dark" becomes "clock ticking", then "clock"). Pexels and Pixabay join the
+  search when their keys are set.
+* **Clip choice:** for each query, candidates from every source are scored
 
   `3·portrait + 1·(short side ≥ 1080) ± 1·(long enough) + 2.5·(1 − |luma − 0.22| / 0.5)`
 
   where luma is the mean brightness of the clip's thumbnail. The score
   favours dim but not black, i.e. moody footage. A clip is never used twice.
-  Searches are cached for 24 h, as Pixabay's terms require.
+  Searches are cached for 24 h, as Pixabay's terms require. Requests that hit
+  a rate limit (HTTP 429) back off and retry.
 * **Normalising** (FFmpeg, much faster than per-frame Python):
   `scale … force_original_aspect_ratio=increase` → centre `crop=1080:1920` →
   `fps=30` → `eq` (contrast 1.12, saturation 0.62, brightness −0.05) →
@@ -220,14 +231,17 @@ words and visual concepts) are the generator's "taste". Edit them freely.
 ```bash
 pip install pytest && python -m pytest -q
 ```
-The 29 tests cover parsing, emphasis, alignment (including misheard words),
+The 32 tests cover parsing, emphasis, alignment (including misheard words),
 the fallback fit, chunking, timing invariants, sprite rendering, the
-Pexels/Pixabay response parsing, shot planning, crossfade maths, and a tiny
+Mixkit/Pexels/Pixabay parsing, licence filtering, rate-limit back-off, shot planning, crossfade maths, and a tiny
 real end-to-end render.
 
 ## Notes
-* The Pexels and Pixabay code follows their current API docs (Pexels
-  `/v1/videos/search`; Pixabay `/api/videos/`). It was exercised with recorded
-  response shapes, not with live keys.
-* Pexels and Pixabay licences allow commercial use without attribution, but
-  crediting creators is appreciated. `credits.txt` lists every clip used.
+* Mixkit has been run live. The Pexels and Pixabay code follows their
+  current API docs (Pexels `/v1/videos/search`; Pixabay `/api/videos/`) but
+  has only been tested against recorded responses, not live keys.
+* The Mixkit Free, Pexels and Pixabay licences all allow commercial use
+  without attribution, though crediting creators is appreciated.
+  `credits.txt` lists every clip used, with its page URL.
+* Mixkit's catalogue is smaller than Pexels'. If a shot doesn't fit, use
+  `--queries` to steer the searches (one per shot, in order).

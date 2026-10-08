@@ -74,3 +74,66 @@ def test_grade_filter_crops_to_vertical():
     vf = footage.grade_filter(VideoStyle())
     assert "scale=1080:1920:force_original_aspect_ratio=increase" in vf
     assert "crop=1080:1920" in vf and vf.endswith("format=yuv420p")
+
+
+MIXKIT_PAGE = """<html><script type="application/ld+json" data-test-id="schema_org_data-0">
+{"@context":"https://schema.org","@graph":[
+ {"@type":"VideoObject","@id":"https://mixkit.co/free-stock-video/other-clip-5/#video","name":"x"},
+ {"@type":"VideoObject","@id":"https://mixkit.co/free-stock-video/rain-bokeh-at-night-99841/#video",
+  "name":"Rain bokeh at night","license":"https://mixkit.co/license/#videoFree","duration":"PT0M23S",
+  "thumbnailUrl":"https://assets.mixkit.co/t.jpg",
+  "contentUrl":"https://assets.mixkit.co/videos/99841/99841-video-720.mp4"}]}
+</script></html>"""
+
+
+def test_mixkit_reads_video_object_and_keeps_free_license_only():
+    obj = footage.Mixkit.video_object(MIXKIT_PAGE, "rain-bokeh-at-night-99841")
+    assert obj["name"] == "Rain bokeh at night"
+    restricted = dict(obj, license="https://mixkit.co/license/#videoRestricted")
+    (c,) = footage.Mixkit.parse({"videos": [obj, restricted]}, "rain")
+    assert (c.provider, c.id, c.duration, c.portrait) == ("mixkit", "99841", 23.0, True)
+    assert c.download_url.endswith("99841-video-1080.mp4")  # full HD first...
+    assert c.alt_url.endswith("99841-video-720.mp4")        # ...720p as fallback
+    assert c.page_url == "https://mixkit.co/free-stock-video/rain-bokeh-at-night-99841/"
+
+
+def test_fetch_footage_stops_at_count_and_falls_back_to_alt_url(tmp_path, monkeypatch):
+    import requests
+
+    def fake_download(url, dst, **kw):
+        if url.endswith("1080"):
+            raise requests.HTTPError("404")
+        return Path(dst)
+
+    class OneEach(FakeProvider):
+        def search(self, query, per_page=15):
+            base = dict(provider="fake", page_url="", author="", thumbnail=None, query=query)
+            return [Candidate(id=query, download_url="hd-1080", alt_url="sd-720", width=1080,
+                              height=1920, duration=10, **base)]
+
+    monkeypatch.setattr(footage, "download", fake_download)
+    picks = fetch_footage(["a", "b", "c"], [OneEach()], tmp_path, min_duration=5, count=2)
+    assert [c.id for c, _ in picks] == ["a", "b"]
+
+
+def test_provider_backs_off_on_429(tmp_path):
+    import requests
+
+    class Resp:
+        def __init__(self, code):
+            self.status_code, self.headers, self.text = code, {"Retry-After": "0"}, "ok"
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(str(self.status_code))
+
+    class Session(requests.Session):
+        def __init__(self):
+            super().__init__()
+            self.codes = [429, 503, 200]
+
+        def get(self, url, **kw):
+            return Resp(self.codes.pop(0))
+
+    m = footage.Mixkit(tmp_path, session=Session(), delay=0)
+    assert m._get("https://mixkit.co/x") == "ok"

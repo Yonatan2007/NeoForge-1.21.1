@@ -1,5 +1,6 @@
-"""Stock footage: search Pexels and Pixabay, score candidates for mood and
-fit, download, and normalise each clip to a graded 1080x1920 H.264 file."""
+"""Stock footage: search Mixkit (no key needed), Pexels and Pixabay, score
+candidates for mood and fit, download, and normalise each clip to a graded
+1080x1920 H.264 file."""
 from __future__ import annotations
 
 import hashlib
@@ -10,6 +11,7 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from PIL import Image, ImageStat
@@ -39,6 +41,7 @@ class Candidate:
     thumbnail: str | None
     query: str
     luma: float | None = None
+    alt_url: str | None = None  # fallback download (e.g. 720p when 1080p is missing)
 
     @property
     def key(self) -> str:
@@ -78,6 +81,18 @@ class _Provider:
         self.session = session or requests.Session()
         self.session.headers.setdefault("User-Agent", USER_AGENT)
 
+    def _fetch(self, url: str, tries: int = 4, **kwargs) -> requests.Response:
+        """GET with back-off on 429/5xx, honouring Retry-After."""
+        for attempt in range(tries):
+            r = self.session.get(url, timeout=30, **kwargs)
+            retryable = r.status_code == 429 or r.status_code >= 500
+            if not retryable or attempt == tries - 1:
+                break
+            wait = r.headers.get("Retry-After", "")
+            time.sleep(float(wait) if wait.isdigit() else 5.0 * (attempt + 1))
+        r.raise_for_status()
+        return r
+
     def search(self, query: str, per_page: int = 15) -> list[Candidate]:
         slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
         cache = self.cache_dir / f"{self.name}_{slug}_{per_page}.json"
@@ -103,11 +118,9 @@ class Pexels(_Provider):
     url = "https://api.pexels.com/v1/videos/search"
 
     def _request(self, query: str, per_page: int) -> dict:
-        r = self.session.get(self.url, timeout=30, headers={"Authorization": self.key},
-                             params={"query": query, "orientation": "portrait",
-                                     "size": "medium", "per_page": per_page})
-        r.raise_for_status()
-        return r.json()
+        return self._fetch(self.url, headers={"Authorization": self.key},
+                           params={"query": query, "orientation": "portrait",
+                                   "size": "medium", "per_page": per_page}).json()
 
     @staticmethod
     def parse(data: dict, query: str) -> list[Candidate]:
@@ -130,11 +143,8 @@ class Pixabay(_Provider):
     url = "https://pixabay.com/api/videos/"
 
     def _request(self, query: str, per_page: int) -> dict:
-        r = self.session.get(self.url, timeout=30,
-                             params={"key": self.key, "q": query[:100], "video_type": "film",
-                                     "safesearch": "true", "per_page": max(3, per_page)})
-        r.raise_for_status()
-        return r.json()
+        return self._fetch(self.url, params={"key": self.key, "q": query[:100], "video_type": "film",
+                                             "safesearch": "true", "per_page": max(3, per_page)}).json()
 
     @staticmethod
     def parse(data: dict, query: str) -> list[Candidate]:
@@ -149,6 +159,69 @@ class Pixabay(_Provider):
             out.append(Candidate("pixabay", str(hit["id"]), hit.get("pageURL", ""), best["url"],
                                  int(best["width"]), int(best["height"]), float(hit.get("duration") or 0),
                                  hit.get("user", ""), thumb, query))
+        return out
+
+
+class Mixkit(_Provider):
+    """Keyless free stock video from https://mixkit.co, vertical clips only.
+
+    Only items under the Mixkit Stock Video *Free* License are used: free for
+    commercial work, social media and ads, no attribution required. Items under
+    the *Restricted* License (personal, non-monetised use only) are skipped."""
+    name = "mixkit"
+    base = "https://mixkit.co"
+
+    def __init__(self, cache_dir: Path, session: requests.Session | None = None,
+                 per_query: int = 8, delay: float = 1.0):
+        super().__init__("", cache_dir, session)
+        self.per_query, self.delay = per_query, delay
+
+    def _get(self, url: str, **kwargs) -> str:
+        time.sleep(self.delay)  # be polite: a search costs ~1 + per_query page loads
+        return self._fetch(url, **kwargs).text
+
+    def _request(self, query: str, per_page: int) -> dict:
+        words, slugs = query.split(), []
+        while words and not slugs:  # "clock ticking dark" -> "clock ticking" -> "clock"
+            page = self._get(f"{self.base}/free-stock-video/discover/{quote(' '.join(words))}/",
+                             params={"orientation": "vertical"})
+            slugs = list(dict.fromkeys(re.findall(r'href="/free-stock-video/([a-z0-9-]+-\d+)/"', page)))
+            words = words[:-1]
+        videos = []
+        for slug in slugs[: self.per_query]:
+            obj = self.video_object(self._get(f"{self.base}/free-stock-video/{slug}/"), slug)
+            if obj:
+                videos.append(obj)
+        return {"videos": videos}
+
+    @staticmethod
+    def video_object(page: str, slug: str) -> dict | None:
+        """The schema.org VideoObject describing ``slug`` on its detail page."""
+        for blk in re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', page, re.S):
+            try:
+                data = json.loads(blk)
+            except ValueError:
+                continue
+            for item in data.get("@graph", []) if isinstance(data, dict) else []:
+                if item.get("@type") == "VideoObject" and f"/{slug}/" in item.get("@id", ""):
+                    return item
+        return None
+
+    @staticmethod
+    def parse(data: dict, query: str) -> list[Candidate]:
+        out = []
+        for v in data.get("videos", []):
+            url = v.get("contentUrl") or ""
+            if not v.get("license", "").endswith("#videoFree") or not url.endswith(".mp4"):
+                continue
+            m = re.search(r"-(\d+)/", v.get("@id", ""))
+            d = re.fullmatch(r"PT(?:(\d+)M)?(?:(\d+)S)?", v.get("duration") or "")
+            seconds = int(d.group(1) or 0) * 60 + int(d.group(2) or 0) if d else 0
+            hd = re.sub(r"-720\.mp4$", "-1080.mp4", url)
+            # Results come from the vertical filter, so treat them as 1080x1920.
+            out.append(Candidate("mixkit", m.group(1) if m else url, v["@id"].split("#")[0], hd,
+                                 1080, 1920, float(seconds), "Mixkit", v.get("thumbnailUrl"), query,
+                                 alt_url=url if hd != url else None))
         return out
 
 
@@ -167,14 +240,16 @@ def thumbnail_luma(url: str | None, session: requests.Session) -> float | None:
 
 def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Path,
                   min_duration: float, allow_landscape: bool = True,
-                  shortlist: int = 6) -> list[tuple[Candidate, Path]]:
-    """One clip per query, never the same clip twice."""
+                  shortlist: int = 6, count: int | None = None) -> list[tuple[Candidate, Path]]:
+    """One clip per query (in order) until ``count`` clips, never the same clip twice."""
     if not providers:
-        raise FootageError("no stock provider configured: set PEXELS_API_KEY and/or "
-                           "PIXABAY_API_KEY, or pass --footage-dir with your own clips")
+        raise FootageError("no stock provider configured: enable Mixkit, set PEXELS_API_KEY "
+                           "and/or PIXABAY_API_KEY, or pass --footage-dir with your own clips")
     used: set[str] = set()
     picks: list[tuple[Candidate, Path]] = []
     for query in queries:
+        if count is not None and len(picks) >= count:
+            break
         cands: list[Candidate] = []
         for p in providers:
             try:
@@ -191,7 +266,13 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
             c.luma = thumbnail_luma(c.thumbnail, providers[0].session)
         best = max(top, key=lambda c: score(c, min_duration))
         used.add(best.key)
-        path = download(best.download_url, cache_dir / "footage" / f"{best.key}.mp4", timeout=120)
+        dst = cache_dir / "footage" / f"{best.key}.mp4"
+        try:
+            path = download(best.download_url, dst, timeout=120)
+        except requests.HTTPError:
+            if not best.alt_url:
+                raise
+            path = download(best.alt_url, dst, timeout=120)
         log.info("footage %-28s <- %s (%dx%d, %.0fs)", query, best.key, best.width, best.height, best.duration)
         picks.append((best, path))
     if not picks:
@@ -242,7 +323,7 @@ def prepare_clip(src: Path, out_dir: Path, vs: VideoStyle) -> Path:
 
 
 def write_credits(picks: list[tuple[Candidate, Path]], path: Path) -> Path:
-    lines = ["Stock footage used (Pexels / Pixabay licences, attribution appreciated):", ""]
+    lines = ["Stock footage used (Mixkit Free / Pexels / Pixabay licences; credit appreciated):", ""]
     for c, _ in picks:
         lines.append(f"- {c.provider}: {c.author or 'unknown'} - {c.page_url}  [query: {c.query}]")
     path.write_text("\n".join(lines) + "\n")
