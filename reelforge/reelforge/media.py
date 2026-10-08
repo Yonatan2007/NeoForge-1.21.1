@@ -86,3 +86,24 @@ def fetch(src: str, dst_dir: Path, name: str) -> Path:
     if not path.is_file():
         raise MediaError(f"file not found: {src}")
     return path
+
+
+def trim_and_tempo(src: str | Path, dst: str | Path, start: float, end: float,
+                   tempo: float = 1.0) -> Path:
+    """Cut ``src`` to [start, end] seconds and change its speed by ``tempo``
+    without changing pitch (ffmpeg ``atempo``, valid 0.5..2.0)."""
+    dst = Path(dst)
+    filters = [f"atrim=start={max(0.0, start):.3f}:end={end:.3f}", "asetpts=PTS-STARTPTS"]
+    if abs(tempo - 1.0) > 1e-3:
+        filters.append(f"atempo={min(2.0, max(0.5, tempo)):.4f}")
+    run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-af", ",".join(filters),
+         "-ar", "48000", "-ac", "2", str(dst)])
+    return dst
+
+
+def extract_frame(video: str | Path, t: float, dst: str | Path) -> Path:
+    """Save the frame at ``t`` seconds as an image (jpg/png by extension)."""
+    dst = Path(dst)
+    run(["ffmpeg", "-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(video),
+         "-frames:v", "1", "-q:v", "2", str(dst)])
+    return dst

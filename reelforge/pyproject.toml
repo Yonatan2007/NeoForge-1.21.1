@@ -4,26 +4,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reelforge"
-version = "1.0.0"
-description = "Script in, ready-to-post 9:16 voiceover reel out (Higgsfield voice, stock B-roll, animated captions)."
+version = "2.0.0"
+description = "Script in, ready-to-post vertical reel out: voiceover, stock or your own footage, terrain-following hook text, animated captions, music - with a web UI."
 requires-python = ">=3.10"
 dependencies = [
     "moviepy>=2.1,<3",
     "numpy>=1.24",
     "Pillow>=10",
     "requests>=2.31",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
 whisper = ["faster-whisper>=1.0"]
 piper = ["piper-tts>=1.2"]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27", "playwright>=1.40"]
 
 [project.scripts]
 reelforge = "reelforge.cli:main"
 
 [tool.setuptools]
 packages = ["reelforge"]
+
+[tool.setuptools.package-data]
+reelforge = ["ui/static/*", "ui/static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

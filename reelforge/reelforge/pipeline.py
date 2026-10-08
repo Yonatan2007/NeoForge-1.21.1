@@ -1,154 +1,446 @@
-"""End-to-end orchestration: script -> voice -> word timings -> captions ->
-shot plan -> stock footage -> assembled MP4."""
+"""End-to-end orchestration for a ``Project``:
+
+script -> voice -> length fit -> word timings -> hook + captions -> shot plan
+-> footage (the user's own media first, stock for the rest) -> colour grade
+-> overlays -> audio mix (voice + music) -> MP4, SRT, cover image, credits.
+
+``plan_project`` answers "what will happen" quickly (no downloads, no
+rendering) for the UI; ``render_project`` does the work and reports progress.
+"""
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
-from . import alignment, footage, media, voiceover
+from . import alignment, fonts, footage, media, timing, voiceover
 from .assemble import assemble, plan_shots
-from .captions import Caption, CaptionRenderer, build_captions, resolve_font, write_srt
-from .config import Settings, Style
-from .script import Script, footage_queries, parse_script
+from .captions import Caption, CaptionRenderer, build_captions, write_srt
+from .config import FootageItem, Project, Settings
+from .script import Script, Word, footage_queries, parse_script
 
 log = logging.getLogger("reelforge")
+
+Progress = Callable[[str, float, str], None]
+
+# Share of the overall progress bar per stage (start, end).
+STAGES = {
+    "voice": (0.00, 0.08),
+    "timing": (0.08, 0.18),
+    "footage": (0.18, 0.45),
+    "prepare": (0.45, 0.60),
+    "render": (0.60, 0.97),
+    "finish": (0.97, 1.00),
+}
+# How much a portrait source matters for each output shape.
+PORTRAIT_WEIGHT = {"9:16": 3.0, "4:5": 2.0, "1:1": 0.5, "16:9": 0.0}
+
+
+class Cancelled(RuntimeError):
+    """Raised when a render is cancelled from the UI."""
+
+
+class _Reporter:
+    def __init__(self, progress: Progress | None, cancel: threading.Event | None):
+        self.progress, self.cancel = progress, cancel
+
+    def __call__(self, stage: str, frac: float = 0.0, message: str = "") -> None:
+        if self.cancel is not None and self.cancel.is_set():
+            raise Cancelled("render cancelled")
+        a, b = STAGES[stage]
+        overall = a + (b - a) * min(1.0, max(0.0, frac))
+        if message:
+            log.info("[%s] %s", stage, message)
+        if self.progress:
+            self.progress(stage, overall, message)
 
 
 def slugify(text: str, max_words: int = 6) -> str:
     return "-".join(re.findall(r"[a-z0-9]+", text.lower())[:max_words]) or "reel"
 
 
+def project_path(p: str, project_dir: Path) -> str:
+    """Project files are stored relative to the project folder; URLs pass through."""
+    if p.startswith(("http://", "https://")):
+        return p
+    path = Path(p).expanduser()
+    return str(path if path.is_absolute() else Path(project_dir) / path)
+
+
+def split_hook(script: Script, project: Project) -> tuple[list[Word], list[Word]]:
+    """(hook words, caption words). With hook mode "center" every word is a
+    normal caption; "terrain" and "off" set the opening sentence(s) apart."""
+    hs = project.style.hook
+    if hs.mode == "center" or hs.sentences <= 0:
+        return [], list(script.words)
+    hook = [w for w in script.words if w.sentence < hs.sentences]
+    body = [w for w in script.words if w.sentence >= hs.sentences]
+    return hook, body
+
+
+def _hook_end(hook_words: list[Word], project: Project) -> float:
+    return hook_words[-1].end + project.style.hook.hold if hook_words else 0.0
+
+
 @dataclass
-class RenderOptions:
-    voiceover: str | None = None         # file path or URL, e.g. the Higgsfield result
-    tts: str | None = None               # "piper" | "higgsfield-api"
-    piper_model: str | None = None
-    voice_preset: str = "elevenlabs"
-    voice_id: str | None = None
-    footage_dir: Path | None = None
-    queries: list[str] | None = None
-    mixkit: bool = True                  # keyless free stock source
-    music: Path | None = None
-    align: str = "auto"                  # "auto" | "whisper" | "estimate"
-    auto_emphasis: bool = True
-    allow_landscape: bool = True
+class ShotSource:
+    kind: str                     # "user" | "stock"
+    item: FootageItem | None = None
+    query: str | None = None
+
+    def describe(self) -> str:
+        return f"user:{self.item.path}" if self.item else f"stock:{self.query}"
 
 
-def _preview(captions: list[Caption]) -> list[str]:
-    """Caption chunks with emphasis marked: [yellow] and {red}."""
-    lines = []
-    for c in captions:
-        parts = []
-        for w in c.words:
-            parts.append({1: f"[{w.text}]", 2: f"{{{w.text}}}"}.get(w.emphasis, w.text))
-        lines.append(" ".join(parts))
-    return lines
+def assign_sources(project: Project, script: Script, n_shots: int, hook_terrain: bool,
+                   ref_terms: list[str] | None = None) -> tuple[list[ShotSource], list[str]]:
+    """One source per shot: pinned user media, then user media in upload order,
+    then stock searches (the hook shot gets ``hook_query`` so it has a
+    skyline). Returns (sources, warnings)."""
+    fs = project.footage
+    warnings: list[str] = []
+    user = [i for i in fs.items if i.role == "footage"]
+    sources: list[ShotSource | None] = [None] * n_shots
+    for item in user:
+        if item.shot is not None and 0 <= item.shot < n_shots and sources[item.shot] is None:
+            sources[item.shot] = ShotSource("user", item)
+        elif item.shot is not None:
+            warnings.append(f"{Path(item.path).name}: shot {item.shot + 1} is not available, "
+                            "using it in upload order")
+    queue = [i for i in user if not any(s is not None and s.item is i for s in sources)]
+    for k in range(n_shots):
+        if sources[k] is None and queue:
+            sources[k] = ShotSource("user", queue.pop(0))
+    if queue:
+        warnings.append(f"{len(queue)} uploaded clip(s) not used: the video has only {n_shots} shots")
+
+    empty = [k for k in range(n_shots) if sources[k] is None]
+    if empty and fs.stock:
+        if fs.queries:
+            queries = [fs.queries[j % len(fs.queries)] for j in range(len(empty))]
+        else:
+            pool = list(dict.fromkeys((ref_terms or []) +
+                                      footage_queries(script, len(empty) + 4, palette=fs.palette)))
+            queries = [pool[j % len(pool)] for j in range(len(empty))]
+        for k, q in zip(empty, queries):
+            sources[k] = ShotSource("stock", query=q)
+        if hook_terrain and fs.hook_query and 0 in empty and not fs.queries:
+            sources[0] = ShotSource("stock", query=fs.hook_query)
+    elif empty and user:
+        for j, k in enumerate(empty):  # no stock: repeat the user's media
+            sources[k] = ShotSource("user", user[j % len(user)])
+    elif empty:
+        raise ValueError("No footage: upload pictures or videos, or turn on stock footage.")
+    return [s for s in sources if s is not None], warnings
 
 
-def plan(text: str, out_dir: Path, settings: Settings, style: Style,
-         voice_preset: str = "elevenlabs", voice_id: str | None = None,
-         auto_emphasis: bool = True) -> dict:
-    """Everything that can be decided before the voiceover exists, plus the
-    exact Higgsfield connector request that produces the voiceover."""
-    script = parse_script(text, auto_emphasis)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    request = voiceover.higgsfield_request(script, voice_preset, voice_id or settings.higgsfield_voice_id)
-    req_path = voiceover.write_request(request, out_dir / "higgsfield_request.json")
-    seconds = len(script.words) / 2.4 + style.video.voice_delay + style.video.tail  # ~145 wpm read
-    shots = max(3, round(seconds / ((style.video.min_shot + style.video.max_shot) / 2)))
-    summary = {
-        "words": len(script.words),
-        "sentences": script.sentence_count,
-        "estimated_seconds": round(seconds, 1),
-        "captions": _preview(build_captions(script.words, style.caption)),
-        "footage_queries": footage_queries(script, shots),
-        "higgsfield_request": str(req_path),
+# --------------------------------------------------------------------------- plan
+
+def _estimate_seconds(project: Project, project_dir: Path, script: Script) -> float:
+    v = project.voice
+    if v.source == "none":
+        return timing.reading_seconds(script.words, v.words_per_second)
+    if v.file and not v.file.startswith(("http://", "https://")):
+        path = Path(project_path(v.file, project_dir))
+        if path.is_file():
+            try:
+                return media.duration(path)
+            except media.MediaError:
+                pass
+    return len(script.words) / 2.6 + 0.4 * script.sentence_count  # typical narration pace
+
+
+def plan_project(project: Project, project_dir: Path, settings: Settings) -> dict:
+    """Fast preview of the reel: captions, hook, estimated length, shots and
+    their sources, stock queries, the Higgsfield request and warnings."""
+    script = parse_script(project.script, project.auto_emphasis)
+    if not script.words:
+        return {"captions": [], "hook": [], "estimated_seconds": 0.0,
+                "target_seconds": project.duration.target, "shots": [], "queries": [],
+                "higgsfield_request": None, "warnings": ["Write or upload a script first."],
+                "hook_preview": None}
+    vs, cs = project.style.video, project.style.caption
+    warnings: list[str] = []
+    speech = _estimate_seconds(project, Path(project_dir), script)
+    plan = timing.fit_duration(speech, project.duration, vs.voice_delay, vs.tail)
+    warnings += plan.warnings
+    timing.synthetic_timings(script.words, plan.intro, plan.intro + speech / plan.tempo)
+
+    hook_words, body = split_hook(script, project)
+    hook_terrain = project.style.hook.mode == "terrain" and bool(hook_words)
+    shots = plan_shots(script.words, plan.total, vs,
+                       keep_until=_hook_end(hook_words, project) if hook_terrain else 0.0)
+    try:
+        sources, w = assign_sources(project, script, len(shots), hook_terrain)
+        warnings += w
+    except ValueError as exc:
+        sources = []
+        warnings.append(str(exc))
+    rows = []
+    for k, (a, b) in enumerate(shots):
+        text = " ".join(w.text for w in script.words if a <= w.start < b)
+        rows.append({"start": round(a, 2), "end": round(b, 2), "text": text,
+                     "source": sources[k].describe() if k < len(sources) else None})
+    if project.voice.source == "higgsfield" and not project.voice.file:
+        warnings.append("Voice: ask Claude to generate the Higgsfield voiceover, then upload it "
+                        "or paste its link.")
+    if project.voice.source in ("file",) and not project.voice.file:
+        warnings.append("Voice: upload a voiceover file, or pick another voice source.")
+    captions = build_captions(body, cs)
+    request = voiceover.higgsfield_request(script, project.voice.higgsfield_preset,
+                                           project.voice.voice_id or settings.higgsfield_voice_id)
+    return {
+        "captions": [fonts.apply_case(c.text, cs.case) for c in captions],
+        "hook": [fonts.apply_case(w.text, cs.case) for w in hook_words] if hook_terrain else [],
+        "estimated_seconds": round(plan.total, 1),
+        "target_seconds": project.duration.target,
+        "shots": rows,
+        "queries": [s.query for s in sources if s.kind == "stock"],
+        "higgsfield_request": request,
+        "warnings": warnings,
+        "hook_preview": None,
     }
-    (out_dir / "plan.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
-    return summary
 
 
-def _voice(script: Script, work: Path, settings: Settings, opts: RenderOptions) -> Path:
-    if opts.voiceover:
-        return media.fetch(opts.voiceover, work, "voice_source")
-    if opts.tts == "piper":
-        if not opts.piper_model:
-            raise ValueError("--tts piper needs --piper-model /path/to/voice.onnx")
-        return voiceover.synthesize_piper(script.text, opts.piper_model, work / "voice_piper.wav")
-    if opts.tts == "higgsfield-api":
-        request = voiceover.higgsfield_request(script, opts.voice_preset,
-                                               opts.voice_id or settings.higgsfield_voice_id)
+# --------------------------------------------------------------------------- render
+
+def _voice_file(project: Project, project_dir: Path, work: Path, settings: Settings,
+                script: Script) -> Path | None:
+    v = project.voice
+    if v.source == "none":
+        return None
+    if v.source in ("file", "higgsfield"):
+        if not v.file:
+            if v.source == "higgsfield":
+                raise ValueError("No voiceover yet: ask Claude to generate it with Higgsfield "
+                                 "(Voice tab, 'copy request'), then upload it or paste its link.")
+            raise ValueError("Upload a voiceover (Voice tab) or choose another voice source.")
+        return media.fetch(project_path(v.file, project_dir), work, "voice_source")
+    if v.source == "piper":
+        if not v.piper_model:
+            raise ValueError("Piper needs a voice model (.onnx) in the Voice settings.")
+        return voiceover.synthesize_piper(script.text, project_path(v.piper_model, project_dir),
+                                          work / "voice_piper.wav")
+    if v.source == "higgsfield-api":
+        request = voiceover.higgsfield_request(script, v.higgsfield_preset,
+                                               v.voice_id or settings.higgsfield_voice_id)
         api = voiceover.HiggsfieldAPI(settings.higgsfield_key, settings.higgsfield_tts_endpoint)
         return api.synthesize(request["params"], work / "voice_higgsfield")
-    raise ValueError("no voiceover: pass --voiceover <file|url> (generate it with the Higgsfield "
-                     "connector; see `reelforge plan`) or --tts piper|higgsfield-api")
+    raise ValueError(f"unknown voice source {v.source!r}")
 
 
-def render(text: str, out_dir: Path, settings: Settings, style: Style,
-           opts: RenderOptions, logger: str | None = "bar") -> Path:
+def _providers(project: Project, settings: Settings) -> list:
+    wanted = set(project.footage.sources)
+    providers: list = []
+    if "pexels" in wanted and settings.pexels_api_key:
+        providers.append(footage.Pexels(settings.pexels_api_key, settings.cache_dir))
+    if "pixabay" in wanted and settings.pixabay_api_key:
+        providers.append(footage.Pixabay(settings.pixabay_api_key, settings.cache_dir))
+    if "mixkit" in wanted:
+        providers.append(footage.Mixkit(settings.cache_dir))
+    return providers
+
+
+def _frame_at(path: Path, t: float):
+    from moviepy import VideoFileClip
+
+    clip = VideoFileClip(str(path), audio=False)
+    try:
+        return clip.get_frame(min(max(0.0, t), max(0.0, clip.duration - 0.05)))
+    finally:
+        clip.close()
+
+
+def render_project(project: Project, project_dir: Path, settings: Settings,
+                   progress: Progress | None = None, cancel: threading.Event | None = None) -> dict:
+    """Build the reel. Returns output paths relative to ``project_dir``."""
+    from . import hook as hookmod, look, music, usermedia  # heavier modules, loaded on demand
+
+    report = _Reporter(progress, cancel)
     media.require_ffmpeg()
-    vs, cs = style.video, style.caption
-    work = out_dir / "work"
+    project_dir = Path(project_dir)
+    work, out_dir = project_dir / "work", project_dir / "output"
     work.mkdir(parents=True, exist_ok=True)
-    script = parse_script(text, opts.auto_emphasis)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    style = project.style
+    vs, cs, hs = style.video, style.caption, style.hook
+    warnings: list[str] = []
+    script = parse_script(project.script, project.auto_emphasis)
     if not script.words:
-        raise ValueError("the script is empty")
+        raise ValueError("The script is empty.")
 
-    # 1. Voice: fetch/generate, then clean up and loudness-normalise.
-    voice = media.prepare_voiceover(_voice(script, work, settings, opts), work / "voice.wav")
-
-    # 2. Word timings from the actual audio.
-    samples = media.decode_audio(voice, alignment.SAMPLE_RATE)
-    method = alignment.time_words(script, samples, opts.align, settings.whisper_model,
-                                  settings.whisper_device)
-    for w in script.words:
-        w.start += vs.voice_delay
-        w.end += vs.voice_delay
-    total = script.words[-1].end + vs.tail
-    log.info("voice %.1fs, timings via %s, video %.1fs", len(samples) / alignment.SAMPLE_RATE, method, total)
-
-    # 3. Captions and shot plan.
-    captions = build_captions(script.words, cs)
-    write_srt(captions, out_dir / "captions.srt")
-    shots = plan_shots(script.words, total, vs)
-
-    # 4. Footage: user clips or stock search driven by the script.
-    if opts.footage_dir:
-        sources = footage.local_footage(opts.footage_dir)
+    # 1. Voice ------------------------------------------------------------------
+    report("voice", 0.0, "preparing the voiceover")
+    raw = _voice_file(project, project_dir, work, settings, script)
+    voice_wav: Path | None = None
+    speech_start = 0.0
+    if raw is not None:
+        clean = media.prepare_voiceover(raw, work / "voice_clean.wav")
+        samples = media.decode_audio(clean, alignment.SAMPLE_RATE)
+        regions = alignment.speech_regions(samples)
+        if regions:  # trim leading/trailing silence so the length plan is exact
+            speech_start, speech_end = max(0.0, regions[0][0] - 0.05), regions[-1][1] + 0.15
+        else:
+            speech_start, speech_end = 0.0, len(samples) / alignment.SAMPLE_RATE
+        speech = speech_end - speech_start
     else:
-        providers: list = []
-        if settings.pexels_api_key:
-            providers.append(footage.Pexels(settings.pexels_api_key, settings.cache_dir))
-        if settings.pixabay_api_key:
-            providers.append(footage.Pixabay(settings.pixabay_api_key, settings.cache_dir))
-        if opts.mixkit:
-            providers.append(footage.Mixkit(settings.cache_dir))
-        # Spare queries cover searches that come back empty.
-        queries = opts.queries or footage_queries(script, len(shots) + 6)
-        picks = footage.fetch_footage(queries, providers, settings.cache_dir,
-                                      min_duration=vs.max_shot + vs.crossfade,
-                                      allow_landscape=opts.allow_landscape, count=len(shots))
+        speech = timing.reading_seconds(script.words, project.voice.words_per_second)
+    report("voice", 1.0, "voice ready")
+
+    # 2. Length and word timings --------------------------------------------------
+    plan = timing.fit_duration(speech, project.duration, vs.voice_delay, vs.tail)
+    warnings += plan.warnings
+    report("timing", 0.1, f"video length {plan.total:.1f} s (voice tempo {plan.tempo:.2f}x)")
+    if raw is not None:
+        voice_wav = media.trim_and_tempo(work / "voice_clean.wav", work / "voice.wav",
+                                         speech_start, speech_start + speech, plan.tempo)
+        samples = media.decode_audio(voice_wav, alignment.SAMPLE_RATE)
+        method = alignment.time_words(script, samples, project.voice.align,
+                                      settings.whisper_model, settings.whisper_device)
+        for w in script.words:
+            w.start += plan.intro
+            w.end += plan.intro
+    else:
+        method = "reading pace"
+        timing.synthetic_timings(script.words, plan.intro, plan.total - plan.outro)
+    total = plan.total
+    report("timing", 1.0, f"word timings via {method}")
+
+    hook_words, body = split_hook(script, project)
+    hook_terrain = hs.mode == "terrain" and bool(hook_words)
+    keep_until = _hook_end(hook_words, project) if hook_terrain else 0.0
+    shots = plan_shots(script.words, total, vs, keep_until=keep_until)
+
+    # 3. Footage ----------------------------------------------------------------
+    report("footage", 0.0, f"{len(shots)} shots; finding footage")
+    references = [Path(project_path(i.path, project_dir)) for i in project.footage.items
+                  if i.role == "reference"]
+    references = [p for p in references if p.is_file()]
+    ref_sigs = ([usermedia.signature(p) for p in references]
+                if references and project.footage.reference_matching else [])
+    ref_terms = usermedia.palette_terms(ref_sigs) if ref_sigs else []
+    sources, w = assign_sources(project, script, len(shots), hook_terrain, ref_terms)
+    warnings += w
+
+    stock_slots = [k for k, s in enumerate(sources) if s.kind == "stock"]
+    stock_paths: dict[int, Path] = {}
+    if stock_slots:
+        hook_query = sources[0].query if hook_terrain and 0 in stock_slots else None
+
+        def extra(c, img) -> float:
+            score = 3.0 * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
+            if hook_query is not None and c.query == hook_query and img is not None:
+                score += 4.0 * hookmod.skyline_score(img)
+            return score
+
+        queries = [sources[k].query for k in stock_slots]
+        spare = [q for q in footage_queries(script, len(queries) + 6, palette=project.footage.palette)
+                 if q not in queries]
+        picks = footage.fetch_footage(
+            queries + spare, _providers(project, settings), settings.cache_dir,
+            min_duration=vs.max_shot + vs.crossfade, allow_landscape=project.footage.allow_landscape,
+            count=len(stock_slots), extra_score=extra,
+            portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0))
+        if len(picks) < len(stock_slots):
+            warnings.append(f"Found {len(picks)} stock clips for {len(stock_slots)} shots; "
+                            "some clips repeat.")
+        for j, k in enumerate(stock_slots):
+            stock_paths[k] = picks[j % len(picks)][1]
         footage.write_credits(picks, out_dir / "credits.txt")
-        sources = [path for _, path in picks]
-    prepared = [footage.prepare_clip(p, settings.cache_dir / "prepared", vs) for p in sources]
+    report("footage", 1.0, "footage ready")
 
-    # 5. Assemble and export.
-    renderer = CaptionRenderer(captions, cs, resolve_font(cs.font_path, settings.cache_dir),
-                               vs.width, vs.height)
-    out = assemble(prepared, shots, voice, renderer, out_dir / f"{out_dir.name}.mp4", vs,
-                   opts.music, logger=logger)
+    # 4. Prepare (cover-crop to the output size, grade) -------------------------------
+    target = look.target_stats(style.look, references)
+    prepared: list[Path] = []
+    done: dict[tuple, Path] = {}
+    prep_dir = settings.cache_dir / "prepared"
+    for k, src in enumerate(sources):
+        a, b = shots[k]
+        report("prepare", k / len(sources), f"grading shot {k + 1}/{len(sources)}")
+        if src.kind == "stock":
+            key: tuple = ("stock", str(stock_paths[k]))
+            if key not in done:
+                done[key] = look.prepare_clip(stock_paths[k], prep_dir, vs, style.look, target)
+        else:
+            item = src.item
+            path = Path(project_path(item.path, project_dir))
+            kind = item.kind if item.kind != "auto" else usermedia.media_kind(path)
+            if kind == "image":
+                seconds = item.seconds or max(vs.image_seconds, (b - a) + vs.crossfade + 0.3)
+                key = ("image", str(path), seconds, item.motion, vs.aspect)
+                if key not in done:
+                    clip = usermedia.image_to_video(path, work / "images", seconds, item.motion,
+                                                    vs.width, vs.height, vs.fps)
+                    done[key] = look.prepare_clip(clip, prep_dir, vs, style.look, target)
+            else:
+                key = ("video", str(path), item.trim_in, item.trim_out)
+                if key not in done:
+                    done[key] = look.prepare_clip(path, prep_dir, vs, style.look, target,
+                                                  trim_in=item.trim_in, trim_out=item.trim_out)
+        prepared.append(done[key])
+    report("prepare", 1.0, "clips graded")
 
+    # 5. Overlays and audio -------------------------------------------------------------
+    overlays: list = []
+    hook_end = 0.0
+    if hook_terrain:
+        hook_end = min(shots[0][1], keep_until)
+        mid = (hook_words[0].start + hook_words[-1].end) / 2
+        overlays.append(hookmod.HookRenderer(
+            hook_words, hs, fonts.resolve(hs.font, hs.font_weight, settings.cache_dir),
+            _frame_at(prepared[0], mid), end=hook_end, case=cs.case))
+    captions = build_captions(body, cs)
+    if captions:
+        overlays.append(CaptionRenderer(
+            captions, cs, fonts.resolve(cs.font, cs.font_weight, settings.cache_dir),
+            vs.width, vs.height))
+    hook_cue = ([Caption(hook_words, max(0.0, hook_words[0].start - cs.lead),
+                         max(hook_end, hook_words[-1].end), [])] if hook_words else [])
+    write_srt(hook_cue + captions, out_dir / "captions.srt")
+
+    ms = project.music
+    if ms.file:
+        ms = dataclasses.replace(ms, file=project_path(ms.file, project_dir))
+        if ms.file.startswith(("http://", "https://")):
+            ms = dataclasses.replace(ms, file=str(media.fetch(ms.file, work, "music_source")))
+    music_wav = music.prepare_music(ms, total, work / "music.wav", voice_wav, plan.intro)
+    audio = (music.mix(voice_wav, music_wav, plan.intro, total, work / "mix.wav")
+             if (voice_wav or music_wav) else None)
+
+    # 6. Render -------------------------------------------------------------------------
+    name = slugify(project.name if project.name not in ("", "untitled") else project.script)
+    video = out_dir / f"{name}.mp4"
+    report("render", 0.0, "rendering video")
+    assemble(prepared, shots, audio, overlays, video, vs, logger=None,
+             on_progress=lambda f: report("render", f))
+
+    report("finish", 0.2, "writing cover and timings")
+    cover = media.extract_frame(video, (hook_end - 0.1) if hook_terrain else min(1.5, total / 2),
+                                out_dir / "cover.jpg")
     (out_dir / "timings.json").write_text(json.dumps({
+        "duration": total, "tempo": plan.tempo, "intro": plan.intro, "outro": plan.outro,
         "method": method,
-        "duration": total,
         "words": [{"text": w.text, "start": round(w.start, 3), "end": round(w.end, 3),
                    "emphasis": w.emphasis} for w in script.words],
+        "hook": [w.text for w in hook_words] if hook_terrain else [],
         "captions": [{"text": c.text, "start": round(c.start, 3), "end": round(c.end, 3)}
                      for c in captions],
-        "shots": [[round(a, 3), round(b, 3)] for a, b in shots],
-        "clips": [str(p) for p in sources],
+        "shots": [{"start": round(a, 3), "end": round(b, 3), "source": s.describe()}
+                  for (a, b), s in zip(shots, sources)],
+        "warnings": warnings,
     }, indent=2, ensure_ascii=False) + "\n")
-    return out
+    report("finish", 1.0, "done")
+
+    def rel(p: Path) -> str:
+        return str(Path(p).relative_to(project_dir))
+
+    credits = out_dir / "credits.txt"
+    return {"video": rel(video), "srt": rel(out_dir / "captions.srt"), "cover": rel(cover),
+            "credits": rel(credits) if credits.exists() else None,
+            "timings": rel(out_dir / "timings.json"), "duration": round(total, 2),
+            "warnings": warnings}

@@ -14,15 +14,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from .config import CaptionStyle
-from .media import download
+from . import fonts
+from .config import BASE_WIDTH, CaptionStyle
 from .script import Word
 
 log = logging.getLogger(__name__)
-
-MONTSERRAT_URL = ("https://raw.githubusercontent.com/JulietaUla/Montserrat/master/"
-                  "fonts/ttf/Montserrat-{weight}.ttf")
-FALLBACK_FONTS = ("DejaVuSans-Bold.ttf", "Arial Bold.ttf", "Arial.ttf")
 
 # A chunk should not end on one of these when it can be avoided.
 WEAK = set("a an the of to in on at by for with from and or but so your my his her "
@@ -44,6 +40,8 @@ class Caption:
 # --------------------------------------------------------------------------- chunking
 
 def _chunk(words: list[Word], st: CaptionStyle) -> list[list[Word]]:
+    if st.max_words == 1:  # strict word-by-word: no phrase grouping or absorbing
+        return [[w] for w in words]
     chunks: list[list[Word]] = []
     cur: list[Word] = []
 
@@ -147,27 +145,6 @@ def write_srt(captions: list[Caption], path: Path) -> Path:
 
 # --------------------------------------------------------------------------- rendering
 
-def resolve_font(path: str | None, cache_dir: Path, weight: str = "Black") -> str:
-    """Explicit path > cached/downloaded Montserrat > a system bold font."""
-    if path:
-        return path
-    target = cache_dir / "fonts" / f"Montserrat-{weight}.ttf"
-    try:
-        download(MONTSERRAT_URL.format(weight=weight), target, timeout=30)
-        ImageFont.truetype(str(target), 10)
-        return str(target)
-    except Exception as exc:  # offline, blocked, corrupt download
-        log.warning("could not fetch Montserrat (%s); using a system font", exc)
-        target.unlink(missing_ok=True)
-    for name in FALLBACK_FONTS:
-        try:
-            ImageFont.truetype(name, 10)
-            return name
-        except OSError:
-            continue
-    raise RuntimeError("no usable bold font found; pass --font /path/to/font.ttf")
-
-
 def ease_out_back(p: float, c1: float = 1.70158) -> float:
     """0 -> 1 with a ~10% overshoot near the end: the "pop"."""
     c3 = c1 + 1
@@ -184,23 +161,29 @@ class _Sprite:
 
 
 class CaptionRenderer:
-    def __init__(self, captions: list[Caption], style: CaptionStyle, font_path: str,
+    """Pixel sizes in ``style`` are at a 1080 px wide frame; they are scaled
+    by ``width / 1080`` so 9:16, 4:5, 1:1 and 16:9 all look the same."""
+
+    def __init__(self, captions: list[Caption], style: CaptionStyle, font: fonts.FontSpec | str,
                  width: int = 1080, height: int = 1920):
         self.captions = captions
         self.st = style
-        self.font_path = font_path
+        self.font_spec = font if isinstance(font, fonts.FontSpec) else fonts.FontSpec(str(font))
         self.width, self.height = width, height
+        self.k = width / BASE_WIDTH
         self._starts = [c.start for c in captions]
-        self._fonts: dict[int, ImageFont.FreeTypeFont] = {}
         self._layouts: dict[int, list[_Sprite]] = {}
 
     # -- layout ------------------------------------------------------------
     def _font(self, size: int) -> ImageFont.FreeTypeFont:
-        if size not in self._fonts:
-            self._fonts[size] = ImageFont.truetype(self.font_path, size)
-        return self._fonts[size]
+        return fonts.load(self.font_spec, size)
+
+    def _px(self, value: float) -> int:
+        return int(round(value * self.k))
 
     def _colour(self, w: Word):
+        if self.st.emphasis != "color":
+            return self.st.text_color
         return {1: self.st.highlight_color, 2: self.st.alert_color}.get(w.emphasis, self.st.text_color)
 
     def _wrap(self, widths: list[float], space: float) -> list[list[int]]:
@@ -208,7 +191,7 @@ class CaptionRenderer:
         line_w = 0.0
         for i, w in enumerate(widths):
             add = w if not lines[-1] else space + w
-            if lines[-1] and line_w + add > self.st.max_line_width:
+            if lines[-1] and line_w + add > self._px(self.st.max_line_width):
                 lines.append([i])
                 line_w = w
             else:
@@ -221,14 +204,16 @@ class CaptionRenderer:
             return self._layouts[idx]
         st = self.st
         cap = self.captions[idx]
-        texts = [w.text.upper() if st.uppercase else w.text for w in cap.words]
-        size = st.font_size
+        texts = [fonts.apply_case(w.text, st.case) for w in cap.words]
+        size = self._px(st.font_size)
+        stroke = self._px(st.stroke_width)
         while True:
             font = self._font(size)
-            widths = [font.getlength(t) + 2 * st.stroke_width for t in texts]
+            widths = [font.getlength(t) + 2 * stroke for t in texts]
             space = font.getlength(" ")
             lines = self._wrap(widths, space)
-            if (len(lines) <= st.max_lines and max(widths) <= st.max_line_width) or size <= 36:
+            if (len(lines) <= st.max_lines and max(widths) <= self._px(st.max_line_width)) \
+                    or size <= self._px(36):
                 break
             size = int(size * 0.92)  # shrink until it fits the safe area
 
@@ -250,20 +235,22 @@ class CaptionRenderer:
     def _sprite(self, text: str, font: ImageFont.FreeTypeFont, colour, cx: float, cy: float) -> _Sprite:
         st = self.st
         ascent, descent = font.getmetrics()
-        ox, oy = st.shadow_offset
-        pad = st.stroke_width + int(st.shadow_blur * 2) + max(abs(ox), abs(oy))
+        ox, oy = self._px(st.shadow_offset[0]), self._px(st.shadow_offset[1])
+        stroke, blur = self._px(st.stroke_width), st.shadow_blur * self.k
+        pad = stroke + int(blur * 2) + max(abs(ox), abs(oy)) + 2
         w = int(font.getlength(text)) + 2 * pad
         h = ascent + descent + 2 * pad
         origin = (w / 2, pad + ascent)  # middle of the baseline
 
-        mask = Image.new("L", (w, h), 0)
-        ImageDraw.Draw(mask).text((origin[0] + ox, origin[1] + oy), text, font=font, fill=255,
-                                  anchor="ms", stroke_width=st.stroke_width, stroke_fill=255)
-        mask = mask.filter(ImageFilter.GaussianBlur(st.shadow_blur))
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        img.putalpha(mask.point(lambda v: int(v * st.shadow_opacity)))
+        if st.shadow_opacity > 0:
+            mask = Image.new("L", (w, h), 0)
+            ImageDraw.Draw(mask).text((origin[0] + ox, origin[1] + oy), text, font=font, fill=255,
+                                      anchor="ms", stroke_width=stroke, stroke_fill=255)
+            mask = mask.filter(ImageFilter.GaussianBlur(blur))
+            img.putalpha(mask.point(lambda v: int(v * st.shadow_opacity)))
         ImageDraw.Draw(img).text(origin, text, font=font, fill=tuple(colour), anchor="ms",
-                                 stroke_width=st.stroke_width, stroke_fill=tuple(st.stroke_color))
+                                 stroke_width=stroke, stroke_fill=tuple(st.stroke_color))
         pm = img.convert("RGBa")
         arr = np.asarray(pm, dtype=np.float32)
         # The ascent+descent box is centred in the sprite, so the sprite centre

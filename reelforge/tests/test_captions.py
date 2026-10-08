@@ -17,7 +17,7 @@ def timed(text, rate=0.3):
 
 
 def test_chunks_read_naturally():
-    caps = build_captions(timed(EXAMPLE).words, CaptionStyle())
+    caps = build_captions(timed(EXAMPLE).words, CaptionStyle(max_words=3))
     assert [c.text for c in caps] == [
         "You've already had", "your last conversation", "with someone.",
         "You just don't", "know which one.", "So stop saving it.",
@@ -51,19 +51,19 @@ def test_pause_forces_new_caption():
     times = [(0.0, 0.2), (0.25, 0.4), (1.5, 1.7)]
     for w, (a, b) in zip(s.words, times):
         w.start, w.end = a, b
-    caps = build_captions(s.words, CaptionStyle())
+    caps = build_captions(s.words, CaptionStyle(max_words=3))
     assert [c.text for c in caps] == ["one two", "three"]
 
 
 def test_word_by_word_and_phrase_reveal():
     s = timed("Say it badly if you have to.")
     assert all(len(c.words) <= 2 for c in build_captions(s.words, CaptionStyle(max_words=1)))
-    caps = build_captions(s.words, CaptionStyle(reveal="phrase"))
+    caps = build_captions(s.words, CaptionStyle(max_words=3, reveal="phrase"))
     assert all(len(set(c.appear)) == 1 for c in caps)
 
 
 def test_srt(tmp_path):
-    caps = build_captions(timed("Just say it.").words, CaptionStyle())
+    caps = build_captions(timed("Just say it.").words, CaptionStyle(max_words=3))
     text = write_srt(caps, tmp_path / "c.srt").read_text()
     assert text.startswith("1\n00:00:00,000 --> 00:00:")
     assert "Just say it." in text
@@ -87,7 +87,8 @@ def _any_font():
 
 def test_renderer_draws_only_while_caption_is_live():
     s = timed("Say it today.")
-    st = CaptionStyle(font_size=40, max_line_width=300)
+    # sizes are given for a 1080 px frame and scaled to the 360 px test frame
+    st = CaptionStyle(font_size=120, max_line_width=900, max_words=3, emphasis="color")
     caps = build_captions(s.words, st)
     r = CaptionRenderer(caps, st, _any_font(), width=360, height=640)
     blank = np.zeros((640, 360, 3), np.uint8)
@@ -99,3 +100,14 @@ def test_renderer_draws_only_while_caption_is_live():
     # the emphasised word is drawn in the highlight colour
     yellow = (live[..., 0] > 200) & (live[..., 1] > 170) & (live[..., 2] < 80)
     assert yellow.sum() > 50
+
+
+def test_reference_style_is_one_plain_lowercase_word():
+    s = timed("Say it TODAY.")
+    st = CaptionStyle()
+    caps = build_captions(s.words, st)
+    assert [c.text for c in caps] == ["Say", "it", "TODAY."]
+    r = CaptionRenderer(caps, st, _any_font(), width=360, height=640)
+    live = r.overlay(np.zeros((640, 360, 3), np.uint8), caps[2].end - 0.01)
+    coloured = (np.abs(live[..., 0].astype(int) - live[..., 2].astype(int)) > 60)
+    assert live.max() > 200 and coloured.sum() == 0  # white only, no yellow/red emphasis

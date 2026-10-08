@@ -5,8 +5,7 @@ import numpy as np
 import pytest
 
 from reelforge.assemble import Timeline, plan_shots
-from reelforge.config import CaptionStyle, Settings, Style, VideoStyle
-from reelforge.pipeline import RenderOptions, render
+from reelforge.config import VideoStyle
 from reelforge.script import parse_script
 
 from .test_script import EXAMPLE
@@ -38,7 +37,7 @@ class Solid:
 
 def test_timeline_crossfades_linearly():
     vs = VideoStyle(crossfade=0.4, fade_in=0, fade_out=0)
-    tl = Timeline([Solid(0, 2.4), Solid(200, 2.0)], [0.0, 2.0], vs, None)
+    tl = Timeline([Solid(0, 2.4), Solid(200, 2.0)], [0.0, 2.0], vs)
     assert tl.frame(1.0)[0, 0, 0] == 0
     assert tl.frame(2.1)[0, 0, 0] == pytest.approx(50, abs=1)   # a = 0.25
     assert tl.frame(2.3)[0, 0, 0] == pytest.approx(150, abs=1)  # a = 0.75
@@ -46,36 +45,72 @@ def test_timeline_crossfades_linearly():
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
-def test_render_end_to_end(tmp_path):
-    """Tiny full render: synthetic voice, one synthetic clip, estimated timings."""
+def test_render_project_end_to_end(tmp_path):
+    """Tiny full render: synthetic voice, a user picture and a user clip, no
+    stock, estimated timings, draft size, terrain hook, music bed."""
     pytest.importorskip("moviepy")
-    font = None
-    for name in ("DejaVuSans-Bold.ttf", "Arial.ttf"):
-        try:
-            from PIL import ImageFont
-            ImageFont.truetype(name, 10)
-            font = name
-            break
-        except OSError:
-            continue
-    if font is None:
-        pytest.skip("no TrueType font available")
-    voice = tmp_path / "voice.wav"
-    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
-                    "sine=f=200:d=0.8,apad=pad_dur=0.5", "-f", "lavfi", "-i",
-                    "sine=f=300:d=0.9", "-filter_complex", "[0][1]concat=n=2:v=0:a=1",
-                    str(voice)], check=True)
-    clips = tmp_path / "clips"
-    clips.mkdir()
-    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=12",
-                    "-t", "1", str(clips / "a.mp4")], check=True)
-    style = Style(caption=CaptionStyle(font_path=font, font_size=24, max_line_width=240),
-                  video=VideoStyle(width=270, height=480, fps=12, preset="ultrafast"))
-    out = render("Stop waiting. Say it today.", tmp_path / "out" / "demo",
-                 Settings(cache_dir=tmp_path / "cache"), style,
-                 RenderOptions(voiceover=str(voice), footage_dir=clips, align="estimate"),
-                 logger=None)
+    from PIL import Image
+
+    from reelforge import config
+    from reelforge.config import FootageItem, Project, Settings
+    from reelforge.pipeline import render_project
+
+    def ff(*args):
+        subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
+
+    up = tmp_path / "proj" / "uploads"
+    up.mkdir(parents=True)
+    ff("-f", "lavfi", "-i", "sine=f=200:d=1.0,apad=pad_dur=0.5", "-f", "lavfi", "-i",
+       "sine=f=300:d=1.2", "-filter_complex", "[0][1]concat=n=2:v=0:a=1", str(up / "voice.wav"))
+    ff("-f", "lavfi", "-i", "sine=f=440:d=6", str(up / "music.wav"))
+    ff("-f", "lavfi", "-i", "testsrc2=s=640x360:r=12", "-t", "4", str(up / "clip.mp4"))
+    sky = Image.new("RGB", (400, 600), (90, 170, 220))
+    sky.paste((120, 110, 90), (0, 380, 400, 600))
+    sky.save(up / "mountain.png")
+
+    p = config.from_dict(Project, config.preset_dict("reference"))
+    p.script = "Stop waiting for a sign. Say it today."
+    p.voice = config.VoiceSettings(source="file", file="uploads/voice.wav", align="estimate")
+    p.music = config.MusicSettings(file="uploads/music.wav", source_in=1.0, source_out=3.0)
+    p.footage.items = [FootageItem(path="uploads/mountain.png"), FootageItem(path="uploads/clip.mp4")]
+    p.footage.stock = False
+    p.style.video.aspect, p.style.video.draft, p.style.video.fps = "1:1", True, 12
+    p.style.video.preset = "ultrafast"
+    stages = []
+    result = render_project(p, tmp_path / "proj", Settings(cache_dir=tmp_path / "cache",
+                                                          home_dir=tmp_path / "home"),
+                            progress=lambda st, f, m: stages.append((st, f)))
+    out = tmp_path / "proj" / result["video"]
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height",
                             "-of", "csv=p=0", str(out)], capture_output=True, text=True, check=True)
-    assert "video,270,480" in probe.stdout and "audio" in probe.stdout
-    assert (out.parent / "captions.srt").read_text().count("-->") >= 2
+    assert "video,540,540" in probe.stdout and "audio" in probe.stdout
+    assert (tmp_path / "proj" / result["cover"]).stat().st_size > 0
+    assert (tmp_path / "proj" / result["srt"]).read_text().count("-->") >= 2
+    fracs = [f for _, f in stages]
+    assert fracs == sorted(fracs) and fracs[-1] == pytest.approx(1.0)
+
+
+def test_hook_shot_is_never_cut_or_split():
+    vs = VideoStyle(min_shot=1.0, max_shot=2.0)
+    s = parse_script("One two three four five six. Seven eight. Nine ten.")
+    for i, w in enumerate(s.words):
+        w.start, w.end = i * 0.5, i * 0.5 + 0.4
+    shots = plan_shots(s.words, 6.0, vs, keep_until=3.4)
+    assert shots[0][0] == 0.0 and shots[0][1] >= 3.4
+    assert all(b - a <= 2.0 + 1e-9 for a, b in shots[1:])
+
+
+class Mark:
+    def __init__(self, value):
+        self.value = value
+
+    def overlay(self, frame, t):
+        out = frame.copy()
+        out[0, 0, 1] = self.value
+        return out
+
+
+def test_timeline_applies_overlays_in_order():
+    vs = VideoStyle(crossfade=0, fade_in=0, fade_out=0)
+    tl = Timeline([Solid(10, 3.0)], [0.0], vs, [Mark(1), Mark(2)])
+    assert tl.frame(1.0)[0, 0, 1] == 2 and tl.frame(1.0)[1, 1, 0] == 10
