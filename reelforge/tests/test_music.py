@@ -115,7 +115,8 @@ def test_waveform_peaks_follow_the_envelope_and_are_normalised(tmp_path):
 
 def test_waveform_peaks_of_five_minute_mp3_are_fast(tmp_path):
     import time
-    track = synth(tmp_path / "long.mp3", "sine=f=220:d=300:r=44100", "-ac", "2", "-q:a", "9")
+    track = synth(tmp_path / "long.mp3", "sine=f=220:d=300:r=44100", "-ac", "2", "-q:a", "9",
+                  "-compression_level", "9")
     t0 = time.perf_counter()
     w = music.waveform_peaks(track)
     assert time.perf_counter() - t0 < 2.0
@@ -238,9 +239,9 @@ def test_missing_music_file_is_an_error(tmp_path):
 # --------------------------------------------------------------------------- ducking
 
 def duck_depth(a: np.ndarray, shift: float = 0.0) -> tuple[float, float]:
-    """(level while the voice speaks, level between/before) of a music bed."""
+    """(level while the voice speaks, level before/between) of a music bed."""
     during = np.mean([level(a, s + shift + 0.5, e + shift - 0.5) for s, e in VOICE_BURSTS])
-    between = np.mean([level(a, 0.3, 1.5), level(a, 5.2 + shift, 6.5 + shift)])
+    between = np.mean([level(a, 0.3, 1.5), level(a, 5.6 + shift, 6.5 + shift)])
     return float(during), float(between)
 
 
@@ -249,22 +250,36 @@ def duck_depth(a: np.ndarray, shift: float = 0.0) -> tuple[float, float]:
 def test_music_ducks_by_duck_db_while_the_voice_speaks(tmp_path, media, voice, duck_db):
     a = bed(tmp_path, media["tone"], 11.0, media[voice], duck=True, duck_db=duck_db)
     during, between = duck_depth(a)
-    assert during - between == pytest.approx(duck_db, abs=0.75)   # same depth for a voice 34 dB softer
+    assert during - between == pytest.approx(duck_db, abs=0.3)    # same depth for a voice 34 dB softer
+
+
+def gain_curve(a: np.ndarray, plain: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """dB of the ducked over the unducked music in 10 ms windows."""
+    return np.array([level(a, x, x + 0.01) - level(plain, x, x + 0.01) for x in t])
 
 
 def test_ducking_is_smooth_and_follows_voice_delay(tmp_path, media):
     a = bed(tmp_path, media["tone"], 11.0, media["voice"], voice_delay=0.5, duck=True, duck_db=-8)
     plain = bed(tmp_path, media["tone"], 11.0)
     during, between = duck_depth(a, shift=0.5)
-    assert during - between == pytest.approx(-8, abs=0.75)
-    # Gain curve (ducked vs. unducked music, 10 ms windows) around the first word at 2.5 s.
-    t = np.arange(1.0, 6.0, 0.01)
-    gain = np.array([level(a, x, x + 0.01) - level(plain, x, x + 0.01) for x in t])
-    assert np.abs(gain[t < 2.2]).max() < 0.1                        # untouched well before the voice
-    assert gain[np.searchsorted(t, 2.5)] < -6                       # mostly down when it starts
-    assert np.abs(np.diff(gain)).max() < 1.0                        # dB per 10 ms: no clicks/jumps
-    down, up = gain[(t > 2.2) & (t < 2.7)], gain[(t > 4.4) & (t < 5.6)]
-    assert np.all(np.diff(down) < 0.05) and np.all(np.diff(up) > -0.05)   # one smooth dip, one swell
+    assert during - between == pytest.approx(-8, abs=0.3)
+    t = np.arange(1.0, 6.5, 0.01)                                   # first word: 2.5-4.5 s
+    gain = gain_curve(a, plain, t)
+    assert np.abs(gain[t < 2.2]).max() < 0.05                       # untouched well before the voice
+    assert gain[np.searchsorted(t, 2.5)] < -6.5                     # mostly down when it starts
+    assert np.abs(np.diff(gain)).max() < 0.6                        # dB per 10 ms: S-curves, no jumps
+    down, up = gain[(t > 2.2) & (t < 2.8)], gain[(t > 4.5) & (t < 6.0)]
+    assert np.all(np.diff(down) < 0.01) and np.all(np.diff(up) > -0.01)   # one dip, one swell
+    assert gain[np.searchsorted(t, 4.6)] < -7.5 and gain[np.searchsorted(t, 5.5)] > -0.5
+
+
+def test_short_pauses_do_not_let_the_music_swell(tmp_path, media):
+    gappy = synth(tmp_path / "gappy.wav",
+                  "aevalsrc='if(between(t,2,3)+between(t,3.2,4.5),0.3*sin(2*PI*700*t),0)':s=48000:d=6")
+    a = bed(tmp_path, media["tone"], 6.0, gappy, duck=True, duck_db=-8)
+    plain = bed(tmp_path, media["tone"], 6.0)
+    gain = gain_curve(a, plain, np.arange(2.3, 4.4, 0.01))
+    assert gain.max() < -7.8 and gain.min() > -8.2
 
 
 def test_no_ducking_when_off_or_without_voice(tmp_path, media):

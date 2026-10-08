@@ -37,8 +37,10 @@ def test_user_footage_fills_shots_in_order_with_pins_first():
 def test_hook_shot_gets_the_hook_query_when_stock():
     p = project(queries=None, hook_query="mountains")
     p.footage.items = []
-    srcs, _ = assign_sources(p, parse_script(p.script), 3, hook_terrain=True)
+    srcs, _ = assign_sources(p, parse_script(p.script), 5, hook_terrain=True)
     assert srcs[0].query == "mountains" and all(s.kind == "stock" for s in srcs)
+    queries = [s.query for s in srcs]
+    assert queries.count("mountains") == 1 and len(set(queries)) == 5  # no shot repeats the hook search
 
 
 def test_without_stock_user_media_repeats_and_nothing_is_an_error():

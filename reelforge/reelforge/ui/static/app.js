@@ -189,7 +189,7 @@ function stepStatus(tab) {
 
 function stepNav(active) {
   const list = h("ol", { class: "steps-list" });
-  const items = TABS.map((t, i) => {
+  const items = TABS.map((t) => {
     const sub = h("span", { class: "step-sub" });
     const marker = h("span", { class: "step-marker", "aria-hidden": "true" });
     const link = h("a", { class: "step", href: projectHref(state.projectId, t.id), "aria-current": t.id === active ? "page" : null },
@@ -197,14 +197,14 @@ function stepNav(active) {
       h("span", { class: "step-icon", html: icon(t.icon, { size: 18 }) }),
       h("span", { class: "step-text" }, h("span", { class: "step-label" }, t.label), sub));
     list.append(h("li", {}, link));
-    return { t, i, sub, marker, link };
+    return { t, sub, marker, link };
   });
   const paint = () => {
-    for (const { t, i, sub, marker, link } of items) {
+    for (const { t, sub, marker, link } of items) {
       const st = stepStatus(t.id);
       sub.textContent = st.text;
       link.dataset.state = st.busy ? "busy" : st.warn ? "warn" : st.ok ? "ok" : "idle";
-      marker.innerHTML = st.ok && t.id !== active ? icon("check", { size: 12 }) : String(i + 1);
+      marker.innerHTML = st.ok && !st.busy ? icon("check", { size: 12 }) : "";
     }
   };
   paint();
@@ -409,6 +409,13 @@ on("save", ({ status, error }) => {
 });
 
 window.addEventListener("hashchange", route);
+
+// The skip link must not touch the hash (that is the router's).
+document.querySelector(".skip-link")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  const main = document.getElementById("main");
+  if (main) main.focus();
+});
 
 (async function boot() {
   renderLoading();

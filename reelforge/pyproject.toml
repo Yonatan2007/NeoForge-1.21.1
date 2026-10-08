@@ -29,7 +29,7 @@ reelforge = "reelforge.cli:main"
 packages = ["reelforge"]
 
 [tool.setuptools.package-data]
-reelforge = ["ui/static/*", "ui/static/**/*"]
+reelforge = ["ui/static/*", "ui/static/**/*", "data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

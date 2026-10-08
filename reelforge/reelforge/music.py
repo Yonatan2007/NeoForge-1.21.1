@@ -45,17 +45,19 @@ SILENT_LUFS = -69.0              # ebur128 reports -70 LUFS for silence / clips 
 MIN_SELECTION = 0.1              # seconds; shorter music selections are rejected
 LOOP_XFADE = 0.05                # seconds of equal-power crossfade at each loop seam
 
-# Ducking. The voice is turned into a 0/1 "speaking" signal (independent of
-# how loud it is), held over short pauses and fed as the sidechain of a hard
-# knee compressor: a constant full-scale sidechain gives a constant gain
-# reduction of exactly ``duck`` dB, and the compressor's attack/release make
-# the dips smooth instead of chopped.
+# Ducking. The voice becomes a 0/1 "speaking" control signal (relative to its
+# own loudness, so any voice level ducks the same), held over short pauses and
+# smoothed into S-curves: quick to dip, slow to swell back. That control is
+# mapped to the sidechain level of a hard-knee compressor so that its gain
+# reduction is exactly ``duck`` dB times the control - no pumping, no clicks,
+# and a depth that does not depend on how loud each word is.
 DUCK_MAX = 40.0                  # dB
-DUCK_LOOKAHEAD = 0.18            # s: the music starts dipping just before a word
-DUCK_HOLD = 0.30                 # s: pauses shorter than this don't let the music swell
-DUCK_ATTACK_MS = 400.0           # ~0.2 s from full level to the ducked level
-DUCK_RELEASE_MS = 2500.0         # ~0.6 s back to full level after an 8 dB duck
+DUCK_LOOKAHEAD = 0.25            # s: the dip starts this much before a word ...
+DUCK_DIP = 0.2                   # s: ... and takes this long (10-90 %)
+DUCK_SWELL = 0.6                 # s: the music swells back over this long (10-90 %) ...
+DUCK_HOLD = 0.30                 # s: ... once the voice paused for longer than this
 DUCK_RATIO = 20.0                # the compressor's maximum ratio
+_CONTROL_RATE = 8000             # the control signal needs no audio bandwidth
 _VOICE_REF_LUFS = -20.0          # sidechain voice is normalised to this ...
 _SPEECH_GATE_DB = -25.0          # ... and counts as speaking above this (relative) level
 
@@ -268,9 +270,9 @@ def _fades(play: int, fade_in: float, fade_out: float) -> str:
     return out
 
 
-def _shift(seconds: float) -> str:
+def _shift(seconds: float, rate: int = SAMPLE_RATE) -> str:
     """Filters that move a stream later (or earlier) by ``seconds``."""
-    n = _samples(seconds)
+    n = int(round(seconds * rate))
     if n > 0:
         return f",adelay=delays={n}S:all=1"
     if n < 0:
@@ -278,30 +280,48 @@ def _shift(seconds: float) -> str:
     return ""
 
 
+def _smooth(seconds: float) -> str:
+    """Two one-pole low-passes (critically damped): a step becomes an S-curve
+    whose 10-90 % rise takes ``seconds`` (= 3.36 time constants)."""
+    hz = 3.36 / (2 * math.pi * seconds)
+    return f"lowpass=f={hz:.4f}:p=1,lowpass=f={hz:.4f}:p=1"
+
+
 def _duck_chains(voice_input: int, voice_lufs: float, voice_delay: float, duck: float,
                  total: int) -> list[str]:
     """Graph sections that turn ``[bed]`` into the ducked ``[out]``.
 
-    Sidechain: the voice (normalised so the gate is relative to its own
-    level) -> mean-square envelope -> 1 while speaking, 0 otherwise; a copy
-    delayed by ``DUCK_HOLD`` rides in a second channel and the compressor
-    links channels by maximum, which bridges short pauses. With a constant
-    full-scale sidechain, a hard knee and ratio R the gain reduction is
-    ``-threshold_dB * (1 - 1/R)``, so the threshold is chosen to make it
-    exactly ``duck`` dB."""
+    Control signal (at a low rate): the voice, normalised so the speech gate
+    is relative to its own loudness, shifted ``DUCK_LOOKAHEAD`` early ->
+    mean-square envelope -> 1 while speaking, else 0 -> held over pauses
+    shorter than ``DUCK_HOLD`` (max with a delayed copy) -> the larger of a
+    fast and a slow S-curve smoothing, so dips are quick and swells slow.
+    The silence padded onto the voice lets the last swell finish.
+
+    The control ``g`` drives the sidechain at ``(g - 1) * R`` dB with
+    ``R = duck / (1 - 1/ratio)`` against a threshold of ``-R`` dB, so the
+    instant (attack/release ~0) hard-knee compressor reduces the music by
+    exactly ``g * duck`` dB."""
+    rate = _CONTROL_RATE
     level = _clamp(_VOICE_REF_LUFS - voice_lufs, MAX_NORM_GAIN)
     gate = 10 ** ((_VOICE_REF_LUFS + _SPEECH_GATE_DB) / 10)          # mean-square level
-    threshold = 10 ** (-duck / (1 - 1 / DUCK_RATIO) / 20)
-    hold = _samples(DUCK_HOLD)
+    span = duck / (1 - 1 / DUCK_RATIO)
+    tail = DUCK_HOLD + 2 * DUCK_SWELL + 1.0
+    mono = "aformat=channel_layouts=mono"   # aeval's output layout is unset; biquads then pass through
     return [
-        f"[{voice_input}:a:0]aresample={SAMPLE_RATE},aformat=sample_fmts=flt:channel_layouts=mono,"
-        f"volume={level:.3f}dB{_shift(voice_delay - DUCK_LOOKAHEAD)},asplit=2[va][vb]",
-        f"[va][vb]amultiply,lowpass=f=25:p=1,aeval='gte(val(0),{gate:.3e})',asplit=2[now][late]",
-        f"[late]adelay=delays={hold}S[held]",
-        f"[now]apad=pad_len={hold}[nowp]",
-        "[nowp][held]amerge=inputs=2,apad[sc]",
-        f"[bed][sc]sidechaincompress=threshold={threshold:.6f}:ratio={DUCK_RATIO:g}:knee=1:"
-        f"attack={DUCK_ATTACK_MS:g}:release={DUCK_RELEASE_MS:g}:detection=peak:link=maximum,"
+        f"[{voice_input}:a:0]aresample={rate},aformat=sample_fmts=flt:channel_layouts=mono,"
+        f"volume={level:.3f}dB{_shift(voice_delay - DUCK_LOOKAHEAD, rate)},apad=pad_dur={tail:g},"
+        "asplit=2[va][vb]",
+        f"[va][vb]amultiply,lowpass=f=25:p=1,aeval='gte(val(0),{gate:.3e})',{mono},"
+        "asplit=2[now][late]",
+        f"[late]adelay=delays={int(round(DUCK_HOLD * rate))}S[held]",
+        f"[now][held]amerge=inputs=2,aeval='max(val(0),val(1))',{mono},asplit=2[gf][gs]",
+        f"[gf]{_smooth(DUCK_DIP)}[ef]",
+        f"[gs]{_smooth(DUCK_SWELL)}[es]",
+        f"[ef][es]amerge=inputs=2,aeval='pow(10,(max(val(0),val(1))-1)*{span:.4f}/20)',{mono},"
+        f"aresample={SAMPLE_RATE},apad[sc]",
+        f"[bed][sc]sidechaincompress=threshold={10 ** (-span / 20):.6f}:ratio={DUCK_RATIO:g}:"
+        "knee=1:attack=0.01:release=0.01:detection=peak,"
         f"apad=whole_len={total},atrim=end_sample={total}[out]",
     ]
 

@@ -208,11 +208,16 @@ def load_image(path: str | os.PathLike, cover: tuple[int, int] | None = None) ->
     return _flatten(_ffmpeg_still(p))
 
 
-def _ffmpeg_still(path: Path, t: float = 0.0, max_side: int | None = None) -> Image.Image:
-    """First frame at ``t`` decoded by ffmpeg (auto-rotated), as a PIL image."""
+def _ffmpeg_still(path: Path, t: float = 0.0, max_side: int | None = None,
+                  keyframe: bool = False) -> Image.Image:
+    """The frame at ``t`` decoded by ffmpeg (auto-rotated), as a PIL image.
+    ``keyframe`` takes the nearest keyframe at or before ``t`` instead: one
+    frame to decode rather than a whole GOP, for when roughly-there will do
+    (``-copyts`` stops that earlier frame being dropped as "before t")."""
     vf = (["-vf", f"scale='min({max_side},iw)':'min({max_side},ih)'"
                   ":force_original_aspect_ratio=decrease"] if max_side else [])
-    cmd = ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(path),
+    seek = ["-skip_frame", "nokey", "-noaccurate_seek", "-copyts"] if keyframe else []
+    cmd = ["ffmpeg", "-v", "error", *seek, "-ss", f"{max(0.0, t):.3f}", "-i", str(path),
            "-frames:v", "1", *vf, "-f", "image2pipe", "-vcodec", "png", "-"]
     try:
         data = run(cmd).stdout
@@ -245,10 +250,10 @@ def _flatten(im: Image.Image) -> Image.Image:
     return backdrop
 
 
-def _video_frame(path: Path, t: float, max_side: int) -> Image.Image | None:
+def _video_frame(path: Path, t: float, max_side: int, keyframe: bool = False) -> Image.Image | None:
     """A frame at ``t`` seconds no larger than ``max_side``; None past the end."""
     try:
-        return _ffmpeg_still(path, t, max_side).convert("RGB")
+        return _ffmpeg_still(path, t, max_side, keyframe).convert("RGB")
     except MediaError:
         return None
 
@@ -427,21 +432,25 @@ def _encode(picture: Image.Image, boxes: list[tuple[float, float, float, float]]
 
 # --------------------------------------------------------------------------- visual signature
 
-# Layout of a signature vector (float32):
-#   colour-name histogram (sums to 1): 4 achromatic lightness bins (black, dark
-#   grey, light grey, white) + chromatic 2 lightness x 2 chroma (muted, vivid)
-#   x 12 Lab hue sectors (30 deg each), every pixel softly split between
-#   neighbouring bins so small colour shifts don't flip bins;
-#   L*a*b* mean and std (6); a 3x3 grid of mean L*a*b* (27) for the layout
-#   (bright sky on top, green below ...); edge density of the top, middle and
-#   bottom thirds (3) for texture (foliage vs still water vs studio wall).
+# A signature is a float32 vector made of:
+#   colour-name histogram (sums to 1): 4 grey bins by lightness (black, dark
+#     grey, light grey, white) + 2 lightness (dark, bright) x 2 chroma (muted,
+#     vivid) x 12 CIE Lab hue sectors of 30 deg (centred on 0, 30 ... 330:
+#     pink, red, orange, golden, yellow-green, green, green-cyan, teal, azure,
+#     sky blue, deep blue, purple). Every pixel is split softly between
+#     neighbouring bins, so a small colour shift never flips a bin.
+#   lightness histogram: 8 soft L* bins (the brightness distribution).
+#   L*a*b* mean and std (6).
+#   layout: mean L*a*b* of a 3x3 grid (27) - bright sky on top, green below ...
+#   texture: edge density of the top, middle and bottom thirds (3) - foliage
+#     vs still water vs a studio wall.
 SIG_SIDE = 128                    # pictures are described at this size
 SIG_FRAMES = 5                    # frames sampled from a video
 _HUES = 12
-_ACH = slice(0, 4)
+_GREY = slice(0, 4)
 _CHROM = slice(4, 4 + 2 * 2 * _HUES)
-_HIST = slice(0, _CHROM.stop)
-_STATS = slice(_HIST.stop, _HIST.stop + 6)
+_LIGHT = slice(_CHROM.stop, _CHROM.stop + 8)
+_STATS = slice(_LIGHT.stop, _LIGHT.stop + 6)
 _GRID = slice(_STATS.stop, _STATS.stop + 27)
 _EDGES = slice(_GRID.stop, _GRID.stop + 3)
 SIGNATURE_SIZE = _EDGES.stop
@@ -469,7 +478,7 @@ def _file_signature(path: str, size: int, mtime_ns: int) -> np.ndarray:
         return _frame_signature(load_image(p, (SIG_SIDE, SIG_SIDE)))
     length = _duration(_probe_or_empty(p), None)
     times = [length * (i + 0.5) / SIG_FRAMES for i in range(SIG_FRAMES)] if length else [0.0]
-    frames = [f for f in (_video_frame(p, t, SIG_SIDE) for t in times) if f is not None]
+    frames = [f for f in (_video_frame(p, t, SIG_SIDE, keyframe=True) for t in times) if f is not None]
     if not frames:
         raise MediaError(f"can't decode a frame of {p.name}")
     return np.mean([_frame_signature(f) for f in frames], axis=0).astype(np.float32)
@@ -483,7 +492,8 @@ def _frame_signature(im: Image.Image) -> np.ndarray:
     flat = lab.reshape(-1, 3)
     grid = [cell.reshape(-1, 3).mean(axis=0)
             for band in np.array_split(lab, 3, axis=0) for cell in np.array_split(band, 3, axis=1)]
-    return np.concatenate([_colour_histogram(flat), flat.mean(axis=0), flat.std(axis=0),
+    light = _soft_bins((flat[:, 0] - 6.25) / 12.5, 8).mean(axis=0)
+    return np.concatenate([_colour_histogram(flat), light, flat.mean(axis=0), flat.std(axis=0),
                            np.ravel(grid), _edge_density(lab[..., 0])]).astype(np.float32)
 
 
@@ -524,19 +534,36 @@ def _edge_density(lightness: np.ndarray) -> np.ndarray:
     return np.array([band.mean() for band in np.array_split(edges, 3, axis=0)])
 
 
+def _chroma_bins(sig: np.ndarray) -> np.ndarray:
+    """The colour histogram as (lightness: dark/bright, chroma: muted/vivid, hue)."""
+    return np.asarray(sig[_CHROM], dtype=np.float64).reshape(2, 2, _HUES)
+
+
+def _palette(sig: np.ndarray) -> np.ndarray:
+    """Share of pixels per (dark/bright, hue) plus the grey bins - the colour
+    histogram without the muted/vivid split, so a graded and an ungraded
+    version of the same colours still overlap."""
+    return np.concatenate([_chroma_bins(sig).sum(axis=1).ravel(), sig[_GREY]])
+
+
 def similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """0..1: how alike two signatures look - palette (histogram overlap),
-    layout (per-cell colour difference), overall tone and texture."""
+    """0..1: how alike two pictures look. Brightness dominates (as it does for
+    the eye): the overall lightness gates the score, then the lightness
+    *structure* (distribution, 3x3 layout, texture) and the *colour* (palette
+    overlap ignoring how saturated, per-cell hue/chroma) are combined
+    geometrically, so a pair must agree on both to score high. Calibrated so
+    frames of one scene score ~0.9, unrelated scenes below ~0.3."""
     a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
     if a.shape != (SIGNATURE_SIZE,) or b.shape != (SIGNATURE_SIZE,):
         raise ValueError(f"signatures must have {SIGNATURE_SIZE} values")
-    palette = float(np.sqrt(np.clip(a[_HIST], 0, None) * np.clip(b[_HIST], 0, None)).sum())
-    layout = math.exp(-float(np.linalg.norm((a[_GRID] - b[_GRID]).reshape(9, 3), axis=1).mean()) / 25.0)
-    sa, sb = a[_STATS], b[_STATS]
-    tone = math.exp(-(float(np.linalg.norm(sa[:3] - sb[:3]))
-                      + 0.5 * float(np.linalg.norm(sa[3:] - sb[3:]))) / 20.0)
-    texture = math.exp(-float(np.abs(a[_EDGES] - b[_EDGES]).mean()) / 0.15)
-    return min(1.0, max(0.0, 0.35 * palette + 0.3 * layout + 0.2 * tone + 0.15 * texture))
+    ga, gb = a[_GRID].reshape(9, 3), b[_GRID].reshape(9, 3)
+    brightness = math.exp(-((a[_STATS][0] - b[_STATS][0]) / 25.0) ** 2)
+    structure = (0.3 * float(np.minimum(a[_LIGHT], b[_LIGHT]).sum())
+                 + 0.6 * math.exp(-float(np.abs(ga[:, 0] - gb[:, 0]).mean()) / 12.0)
+                 + 0.1 * math.exp(-float(np.abs(a[_EDGES] - b[_EDGES]).mean()) / 0.1))
+    colour = (0.6 * float(np.minimum(_palette(a), _palette(b)).sum())
+              + 0.4 * math.exp(-float(np.linalg.norm(ga[:, 1:] - gb[:, 1:], axis=1).mean()) / 15.0))
+    return min(1.0, max(0.0, brightness * structure ** 0.7 * colour ** 0.3))
 
 
 def reference_score(thumb: Image.Image | None, refs: list[np.ndarray]) -> float:
@@ -546,3 +573,95 @@ def reference_score(thumb: Image.Image | None, refs: list[np.ndarray]) -> float:
         return 0.0
     sig = signature(thumb)
     return max(similarity(sig, r) for r in refs)
+
+
+# --------------------------------------------------------------------------- palette -> search words
+
+# (primary, secondary) stock searches per look. All are short queries that
+# return plenty of clips on Mixkit / Pexels / Pixabay.
+PALETTE_QUERIES: dict[str, tuple[str, str]] = {
+    "golden": ("golden hour", "sunset"),
+    "pink": ("sunset sky", "flowers"),
+    "autumn": ("autumn forest", "autumn"),
+    "green": ("forest", "meadow"),
+    "water": ("lake", "ocean"),
+    "landscape": ("mountains", "hiking"),
+    "sky": ("sky clouds", "clouds"),
+    "snow": ("snow mountains", "winter"),
+    "fog": ("foggy forest", "fog"),
+    "night": ("night city", "night sky"),
+    "fire": ("campfire", "candle light"),
+}
+MIN_TERM_SCORE = 0.25
+
+
+def palette_terms(refs: list[np.ndarray], limit: int = 4) -> list[str]:
+    """Stock search hints that fit the reference pictures' colours, brightness
+    and layout ("golden hour", "lake", "snow mountains", "night city" ...),
+    strongest first. The main term of every matching look comes before any
+    second term, so a few hints still cover several looks."""
+    if not refs:
+        return []
+    totals: dict[str, float] = {}
+    for sig in refs:
+        for look, value in _look_scores(np.asarray(sig, dtype=np.float64)).items():
+            totals[look] = totals.get(look, 0.0) + value / len(refs)
+    looks = [k for k, v in sorted(totals.items(), key=lambda kv: -kv[1]) if v >= MIN_TERM_SCORE]
+    if "fire" in looks and "night" in looks:  # a dark warm scene: fire light, not city lights
+        looks.remove("night")
+    terms = [PALETTE_QUERIES[k][0] for k in looks] + [PALETTE_QUERIES[k][1] for k in looks]
+    return list(dict.fromkeys(terms))[:max(0, limit)]
+
+
+def _look_scores(sig: np.ndarray) -> dict[str, float]:
+    """0..1 evidence for each ``PALETTE_QUERIES`` look in one signature."""
+    chroma = _chroma_bins(sig)                     # (dark/bright, muted/vivid, hue)
+    hues = chroma.sum(axis=(0, 1))                 # share of pixels per hue sector
+    grey = sig[_GREY]
+    lightness = float(sig[_STATS][0])
+    edges = sig[_EDGES]
+    grid = sig[_GRID].reshape(3, 3, 3)             # rows, columns, L*a*b*
+    cell_l, cell_chroma = grid[..., 0], np.hypot(grid[..., 1], grid[..., 2])
+    cell_hue = np.degrees(np.arctan2(grid[..., 2], grid[..., 1])) % 360.0
+    bluish = (cell_chroma > 10.0) & (cell_hue > 170.0) & (cell_hue < 290.0)   # teal .. blue
+    blue_sky = (bluish[0] & ((cell_l[0] > 45.0) | (cell_chroma[0] > 25.0))).mean()
+    open_sky = max(blue_sky, ((cell_l[0] > 50.0) & (cell_chroma[0] < 8.0)).mean())  # or white haze
+    pinkish = ((cell_hue >= 300.0) | (cell_hue <= 40.0)) & (cell_chroma > 10.0) & (cell_l > 45.0)
+    dark = min(1.0, max(0.0, (40.0 - lightness) / 20.0))
+    lit = 1.0 - dark
+    texture = float(edges.mean())
+    scores = {
+        "golden": 3.0 * float(chroma[1, 1, 2] + 0.5 * chroma[1, 1, 3]) * lit,
+        "pink": float(pinkish[:2].mean()) * lit,                       # a pink / purple sky
+        "autumn": 3.0 * float(chroma[:, 1, 1].sum() + 0.25 * chroma[:, 1, 2].sum())
+                  * min(1.0, texture / 0.2) * lit,
+        "green": 2.5 * float(hues[4] + hues[5] + 0.5 * hues[6]) * lit,
+        "water": float(bluish[2].mean()) * min(1.0, 3.0 * float(hues[6:10].sum())) * lit,
+        "landscape": float(open_sky) * min(1.0, float(edges[1:].mean()) / 0.15),
+        "sky": float(blue_sky) * max(0.0, 1.0 - texture / 0.1),
+        # pure white is snow (or blown-out sky); light grey counts when textured (snowy rock, not fog)
+        "snow": (2.0 * float(grey[3]) + float(grey[2]) * min(1.0, texture / 0.1))
+                * (1.0 if lightness > 45.0 else 0.0),
+        "fog": 2.0 * float(grey[1:3].sum()) * max(0.0, 1.0 - texture / 0.12) * lit,
+        "night": dark,
+        "fire": dark * min(1.0, 6.0 * float(chroma[:, 1, 1:3].sum())),    # vivid red/orange light
+    }
+    return {k: min(1.0, max(0.0, v)) for k, v in scores.items()}
+
+
+_BUILTIN = Path(__file__).with_name("data") / "reference_signatures.json"
+
+
+@functools.lru_cache(maxsize=1)
+def builtin_reference_signatures() -> tuple[np.ndarray, ...]:
+    """Signatures of the reference reel's footage (shipped as numbers, not
+    imagery). Stock clips are ranked against these when the user uploaded no
+    reference media of their own, so the default look picks sunny outdoor
+    scenes over dark or indoor ones."""
+    try:
+        data = json.loads(_BUILTIN.read_text())
+    except (OSError, ValueError):
+        return ()
+    if data.get("signature_size") != SIGNATURE_SIZE:  # descriptor changed: re-measure the data file
+        return ()
+    return tuple(np.asarray(s, dtype=np.float32) for s in data["signatures"])

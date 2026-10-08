@@ -422,8 +422,21 @@ def skyline_score(image) -> float:
         relief = _ramp(float(rows.max() - rows.min()) / h, 0.02, 0.25)
         room = min(_ramp(float(rows.mean()) / h, 0.15, 0.35), _ramp(float(rows.mean()) / h, 0.85, 0.65))
         sky_mask = np.arange(h)[:, None] < rows[None, :].astype(int)
-        brightness = _ramp(float(f.lab[..., 0][sky_mask].mean()), 35.0, 75.0) if sky_mask.any() else 0.0
+        if not sky_mask.any():
+            return 0.0
+        L, a, b = (float(f.lab[..., i][sky_mask].mean()) for i in range(3))
+        brightness = _ramp(L, 35.0, 75.0)
+        # Real sky is blue (b* well below 0) or a bright, colourless overcast;
+        # a wall or tabletop behind an object is neither.
+        blue = _ramp(-b, 3.0, 15.0) * _ramp(L, 40.0, 65.0)
+        overcast = _ramp(L, 70.0, 85.0) * _ramp(-float(np.hypot(a, b)), -15.0, -6.0)
+        skyness = max(blue, overcast)
         score = sky.confidence * (0.45 + 0.3 * relief + 0.15 * room + 0.1 * brightness)
+        score *= 0.2 + 0.8 * skyness
+        # A "skyline" that runs up to the top edge is sky framed by overhanging
+        # branches or walls, not a horizon text can ride along.
+        touching_top = float(np.mean(rows < 0.04 * h))
+        score *= max(0.0, 1.0 - 2.5 * touching_top)
         return float(np.clip(score, 0.0, 1.0))
     except Exception as exc:  # a scoring helper must never break footage search
         log.debug("skyline_score failed: %s", exc)
@@ -1129,7 +1142,8 @@ class HookRenderer:
             alpha = text + shadow * (1 - text)
             x0, y0 = x0 - pad, y0 - pad
         rgba = np.concatenate([rgb, alpha * 255.0], axis=-1)
-        image = Image.fromarray(np.clip(rgba + 0.5, 0, 255).astype(np.uint8), "RGBa")
+        data = np.ascontiguousarray(np.clip(rgba + 0.5, 0, 255).astype(np.uint8))
+        image = Image.frombytes("RGBa", (data.shape[1], data.shape[0]), data.tobytes())  # premultiplied
         return _Sprite(x0, y0, rgb.astype(np.float32), alpha.astype(np.float32), image)
 
     # ------------------------------------------------------------------ per frame

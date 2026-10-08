@@ -39,6 +39,10 @@ STAGES = {
 }
 # How much a portrait source matters for each output shape.
 PORTRAIT_WEIGHT = {"9:16": 3.0, "4:5": 2.0, "1:1": 0.5, "16:9": 0.0}
+# Extra searches tried for the hook shot; the clearest skyline across all wins.
+HOOK_SEARCHES = ("mountains", "hills", "hiking", "snow mountains")
+SKYLINE_WEIGHT = 12.0     # the hook clip is chosen almost only by its skyline
+REFERENCE_WEIGHT = 5.0    # similarity to the reference look steers every other pick
 
 
 class Cancelled(RuntimeError):
@@ -121,16 +125,21 @@ def assign_sources(project: Project, script: Script, n_shots: int, hook_terrain:
 
     empty = [k for k in range(n_shots) if sources[k] is None]
     if empty and fs.stock:
+        hook_slot = hook_terrain and bool(fs.hook_query) and 0 in empty and not fs.queries
+        if hook_slot:
+            sources[0] = ShotSource("stock", query=fs.hook_query)
+            empty.remove(0)
         if fs.queries:
             queries = [fs.queries[j % len(fs.queries)] for j in range(len(empty))]
-        else:
-            pool = list(dict.fromkeys((ref_terms or []) +
-                                      footage_queries(script, len(empty) + 4, palette=fs.palette)))
+        elif empty:
+            pool = [q for q in dict.fromkeys((ref_terms or []) +
+                                             footage_queries(script, len(empty) + 5, palette=fs.palette))
+                    if not (hook_slot and q == fs.hook_query)]
             queries = [pool[j % len(pool)] for j in range(len(empty))]
+        else:
+            queries = []
         for k, q in zip(empty, queries):
             sources[k] = ShotSource("stock", query=q)
-        if hook_terrain and fs.hook_query and 0 in empty and not fs.queries:
-            sources[0] = ShotSource("stock", query=fs.hook_query)
     elif empty and user:
         for j, k in enumerate(empty):  # no stock: repeat the user's media
             sources[k] = ShotSource("user", user[j % len(user)])
@@ -324,33 +333,48 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
     ref_sigs = ([usermedia.signature(p) for p in references]
                 if references and project.footage.reference_matching else [])
     ref_terms = usermedia.palette_terms(ref_sigs) if ref_sigs else []
+    if not ref_sigs and project.footage.reference_matching and project.footage.palette == "bright":
+        ref_sigs = list(usermedia.builtin_reference_signatures())  # rank toward the reference look
     sources, w = assign_sources(project, script, len(shots), hook_terrain, ref_terms)
     warnings += w
 
     stock_slots = [k for k, s in enumerate(sources) if s.kind == "stock"]
     stock_paths: dict[int, Path] = {}
     if stock_slots:
-        hook_query = sources[0].query if hook_terrain and 0 in stock_slots else None
+        providers = _providers(project, settings)
+        common = dict(min_duration=vs.max_shot + vs.crossfade,
+                      allow_landscape=project.footage.allow_landscape,
+                      portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0),
+                      palette=project.footage.palette)
 
-        def extra(c, img) -> float:
-            score = 3.0 * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
-            if hook_query is not None and c.query == hook_query and img is not None:
-                score += 4.0 * hookmod.skyline_score(img)
-            return score
+        def likeness(c, img) -> float:
+            return REFERENCE_WEIGHT * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
 
-        queries = [sources[k].query for k in stock_slots]
-        spare = [q for q in footage_queries(script, len(queries) + 6, palette=project.footage.palette)
-                 if q not in queries]
-        picks = footage.fetch_footage(
-            queries + spare, _providers(project, settings), settings.cache_dir,
-            min_duration=vs.max_shot + vs.crossfade, allow_landscape=project.footage.allow_landscape,
-            count=len(stock_slots), extra_score=extra,
-            portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0))
-        if len(picks) < len(stock_slots):
-            warnings.append(f"Found {len(picks)} stock clips for {len(stock_slots)} shots; "
-                            "some clips repeat.")
-        for j, k in enumerate(stock_slots):
-            stock_paths[k] = picks[j % len(picks)][1]
+        picks: list = []
+        rest = list(stock_slots)
+        if hook_terrain and 0 in stock_slots and project.footage.hook_query and not project.footage.queries:
+            report("footage", 0.05, "choosing a first shot with a clear skyline")
+            hook_pick = footage.best_of(
+                [project.footage.hook_query, *HOOK_SEARCHES], providers, settings.cache_dir,
+                rank=lambda c, img: (SKYLINE_WEIGHT * hookmod.skyline_score(img) if img is not None
+                                     else 0.0) + likeness(c, img), **common)
+            if hook_pick is not None:
+                picks.append(hook_pick)
+                stock_paths[0] = hook_pick[1]
+                rest.remove(0)
+        if rest:
+            queries = [sources[k].query for k in rest]
+            spare = [q for q in footage_queries(script, len(queries) + 6, palette=project.footage.palette)
+                     if q not in queries]
+            found = footage.fetch_footage(
+                queries + spare, providers, settings.cache_dir, count=len(rest),
+                extra_score=likeness, exclude={c.key for c, _ in picks}, **common)
+            if len(found) < len(rest):
+                warnings.append(f"Found {len(found)} stock clips for {len(rest)} shots; "
+                                "some clips repeat.")
+            for j, k in enumerate(rest):
+                stock_paths[k] = found[j % len(found)][1]
+            picks += found
         footage.write_credits(picks, out_dir / "credits.txt")
     report("footage", 1.0, "footage ready")
 

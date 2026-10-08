@@ -22,7 +22,6 @@ from PIL import Image, ImageStat
 from .media import USER_AGENT, download
 
 log = logging.getLogger(__name__)
-VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 SEARCH_TTL = 24 * 3600  # Pixabay asks API users to cache results for 24 h
 
 # Mean thumbnail brightness (0..1) each footage palette aims for. The
@@ -322,9 +321,8 @@ class Mixkit(_Provider):
         Without a thumbnail, clips from the vertical search are portrait and
         others are assumed landscape (search caches written before thumbnails
         were recorded only hold vertical results)."""
-        size = v.get("thumb_size")
-        if size and size[0] > 0 and size[1] > 0:
-            w, h = size
+        if v.get("thumb_size"):
+            w, h = v["thumb_size"]
             return (round(1080 * w / h), 1080) if w >= h else (1080, round(1080 * h / w))
         return (1080, 1920) if v.get("vertical", True) else (1920, 1080)
 
@@ -374,7 +372,8 @@ def _download(c: Candidate, provider: _Provider, dst: Path) -> Path:
 def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Path,
                   min_duration: float, allow_landscape: bool = True, shortlist: int = 6,
                   count: int | None = None, extra_score: ExtraScore | None = None,
-                  portrait_weight: float = 3.0, palette: str = "bright") -> list[tuple[Candidate, Path]]:
+                  portrait_weight: float = 3.0, palette: str = "bright",
+                  exclude: set[str] | None = None) -> list[tuple[Candidate, Path]]:
     """One clip per query (in order) until ``count`` clips, never the same clip twice.
 
     Each query's candidates are ranked by ``score``; the best ``shortlist``
@@ -388,7 +387,7 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
                            "and/or PIXABAY_API_KEY, or pass --footage-dir with your own clips")
     by_name = {p.name: p for p in providers}
     luma_target = LUMA_TARGETS.get(palette, LUMA_TARGETS["bright"])
-    used: set[str] = set()  # picked, or failed to download
+    used: set[str] = set(exclude or ())  # picked elsewhere, picked here, or failed to download
     picks: list[tuple[Candidate, Path]] = []
     for query in queries:
         if count is not None and len(picks) >= count:
@@ -401,7 +400,7 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
         cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target), reverse=True)
         ranked = []
         for c in cands[:shortlist]:
-            provider = by_name.get(c.provider, providers[0])
+            provider = by_name[c.provider]
             img = thumbnail_image(c.thumbnail, provider.session, provider.thumb_dir)
             if img is not None:
                 c.luma, c.thumb_size = image_luma(img), c.thumb_size or img.size
@@ -411,8 +410,7 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
         for total, c in ranked:
             used.add(c.key)
             try:
-                path = _download(c, by_name.get(c.provider, providers[0]),
-                                 Path(cache_dir) / "footage" / f"{c.key}.mp4")
+                path = _download(c, by_name[c.provider], Path(cache_dir) / "footage" / f"{c.key}.mp4")
             except (requests.RequestException, FootageError) as exc:
                 log.warning("download failed for %s: %s", c.key, exc)
                 continue
@@ -425,11 +423,39 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
     return picks
 
 
-def local_footage(directory: Path) -> list[Path]:
-    clips = sorted(p for p in Path(directory).iterdir() if p.suffix.lower() in VIDEO_EXTS)
-    if not clips:
-        raise FootageError(f"no video files in {directory}")
-    return clips
+def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min_duration: float,
+            rank: ExtraScore, allow_landscape: bool = True, shortlist: int = 8,
+            portrait_weight: float = 3.0, palette: str = "bright") -> tuple[Candidate, Path] | None:
+    """The single best clip across several searches, judged mostly by
+    ``rank(candidate, thumbnail)`` (e.g. how clear a skyline is for the hook
+    shot). Unlike ``fetch_footage`` it compares candidates of every query
+    before choosing. None when nothing could be found or downloaded."""
+    by_name = {p.name: p for p in providers}
+    luma_target = LUMA_TARGETS.get(palette, LUMA_TARGETS["bright"])
+    seen: set[str] = set()
+    ranked: list[tuple[float, Candidate]] = []
+    for query in dict.fromkeys(queries):
+        cands = [c for c in _search(query, providers, allow_landscape)
+                 if c.key not in seen and (c.portrait or allow_landscape)]
+        cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target), reverse=True)
+        for c in cands[:shortlist]:
+            seen.add(c.key)
+            provider = by_name[c.provider]
+            img = thumbnail_image(c.thumbnail, provider.session, provider.thumb_dir)
+            if img is not None:
+                c.luma, c.thumb_size = image_luma(img), c.thumb_size or img.size
+            ranked.append((score(c, min_duration, portrait_weight, luma_target) + float(rank(c, img)), c))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    for total, c in ranked:
+        try:
+            path = _download(c, by_name[c.provider], Path(cache_dir) / "footage" / f"{c.key}.mp4")
+        except (requests.RequestException, FootageError) as exc:
+            log.warning("download failed for %s: %s", c.key, exc)
+            continue
+        log.info("best of %s <- %s (%dx%d, %.0fs, score %.2f)", "/".join(dict.fromkeys(queries)),
+                 c.key, c.width, c.height, c.duration, total)
+        return c, path
+    return None
 
 
 def write_credits(picks: list[tuple[Candidate, Path]], path: Path) -> Path:

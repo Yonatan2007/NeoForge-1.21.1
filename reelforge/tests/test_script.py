@@ -54,14 +54,15 @@ def test_multiword_markup_and_free_dash():
     assert marked == ["far", "too", "long"]
 
 
-# Vertical results on Mixkit's first results page (24 max) when the bright
-# palette was written (2026-10-08). Every bright search must be one of these:
-# longer or rarer phrases return nothing there, or loosely matching clips.
-MIXKIT_VERTICAL_RESULTS = {
-    "mountains": 24, "forest": 24, "lake": 23, "clouds": 24, "sky clouds": 24, "trees": 24,
-    "snow": 24, "flowers": 24, "sunset": 24, "woman nature": 21, "beach": 20, "woman walking": 18,
-    "sea": 17, "sunlight": 16, "river": 14, "field": 12, "hills": 11, "man nature": 11,
-    "road trip": 10, "couple nature": 6, "hiking": 5, "camping": 4, "waterfall": 4, "sunrise": 3,
+# Searches whose vertical Mixkit results were read (count on the first page,
+# 24 max, and what the clips show) when the bright palette was written,
+# 2026-10-08. Mixkit matches loosely, so a new bright search must be checked
+# the same way and added here: e.g. "lake" (23 clips) shows city reflections,
+# "field" (12) soccer, "sunset mountains" (3) a DJ in a desert.
+MIXKIT_ON_LOOK = {
+    "mountains": 24, "forest": 24, "hills": 11, "sky clouds": 24, "clouds": 24, "trees": 24,
+    "beach": 20, "sea": 17, "sunlight": 16, "sunset": 24, "woman nature": 21, "road trip": 10,
+    "hiking": 5, "waterfall": 4, "camping": 4,
 }
 
 
@@ -79,10 +80,10 @@ def test_bright_footage_queries_are_the_default_and_follow_story():
     q = footage_queries(s, 8)
     assert q == footage_queries(s, 8, palette="bright")
     assert len(q) == 8 and len(set(q)) == 8
-    assert q[:4] == ["sunset", "mountains", "woman nature", "lake"]  # last, (fill), conversation, (fill)
+    assert q[:4] == ["clouds", "mountains", "beach", "forest"]  # last, (fill), conversation, (fill)
     hook = parse_script("If you lost your memory, who would you trust? Not who would show up.")
-    assert footage_queries(hook, 3) == ["sky clouds", "mountains", "field"]  # lost, (fill), memory
-    assert footage_queries(parse_script("Hello."), 3) == ["mountains", "lake", "forest"]
+    assert footage_queries(hook, 3) == ["sky clouds", "mountains", "beach"]  # lost, (fill), memory
+    assert footage_queries(parse_script("Hello."), 3) == lexicon.BRIGHT_ATMOSPHERE[:3]
     everything = footage_queries(s, 100)
     assert len(everything) == len(set(everything)) and set(lexicon.BRIGHT_ATMOSPHERE) <= set(everything)
 
@@ -92,12 +93,12 @@ def test_unknown_palette_is_explained():
         footage_queries(parse_script("Hello."), 3, palette="neon")
 
 
-def test_bright_lexicon_only_uses_searches_that_find_clips():
+def test_bright_lexicon_only_uses_short_checked_searches():
     queries = set(lexicon.BRIGHT_ATMOSPHERE)
     for triggers, searches in lexicon.BRIGHT_CONCEPTS:
         queries.update(searches)
         assert triggers == {normalize(t) for t in triggers}  # matched against normalised words
-    assert queries <= set(MIXKIT_VERTICAL_RESULTS)
+    assert queries <= set(MIXKIT_ON_LOOK)
     assert all(len(q.split()) <= 2 for q in queries)
     words = [w for triggers, _ in lexicon.BRIGHT_CONCEPTS for w in triggers]
     assert len(words) == len(set(words))  # each word picks one concept
