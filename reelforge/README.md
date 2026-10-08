@@ -19,10 +19,13 @@ be changed — in the web UI, per project, or once as your own saved defaults.
 
 ## Quick start
 
+You need Python 3.10+ and FFmpeg (macOS: `brew install ffmpeg`; Windows:
+`winget install ffmpeg`; Ubuntu: `sudo apt install ffmpeg`).
+
 ```bash
 cd reelforge
-pip install -r requirements.txt        # needs FFmpeg on PATH
-python -m reelforge ui                 # opens http://127.0.0.1:8765
+pip install -r requirements.txt
+python -m reelforge ui                 # opens http://127.0.0.1:8765 in your browser
 ```
 
 1. **New project** → paste or upload your script.
@@ -176,5 +179,5 @@ grade in one pass.
 ## Tests
 
 ```bash
-pip install pytest httpx && python -m pytest -q
+pip install pytest httpx && python -m pytest -q      # about 270 tests, ~30 s
 ```
