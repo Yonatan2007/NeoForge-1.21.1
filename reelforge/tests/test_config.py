@@ -47,6 +47,13 @@ def test_saved_defaults_survive_and_drop_per_reel_content(tmp_path):
     assert config.load_defaults(settings).style.caption.font_size == CaptionStyle().font_size
 
 
+def test_letterbox_pads_wide_shapes_to_9_16():
+    assert VideoStyle(aspect="4:5", letterbox=True).frame_size == (1080, 1920)
+    assert VideoStyle(aspect="4:5").frame_size == (1080, 1350)
+    assert VideoStyle(aspect="9:16", letterbox=True).frame_size == (1080, 1920)
+    assert VideoStyle(aspect="1:1", letterbox=True, draft=True).frame_size == (540, 960)
+
+
 def test_aspect_and_draft_sizes():
     assert (VideoStyle().width, VideoStyle().height) == (1080, 1920)
     assert (VideoStyle(aspect="1:1", draft=True).width, VideoStyle(aspect="1:1", draft=True).height) == (540, 540)

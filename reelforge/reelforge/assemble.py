@@ -146,11 +146,15 @@ def assemble(clips: list[Path], shots: list[tuple[float, float]], audio: Path | 
         video = video.with_audio(AudioFileClip(str(audio)).with_duration(total))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    pad = []
+    fw, fh = vs.frame_size
+    if (fw, fh) != (vs.width, vs.height):  # letterbox: centre the picture on black
+        pad = ["-vf", f"pad={fw}:{fh}:(ow-iw)/2:(oh-ih)/2:color=black"]
     try:
         video.write_videofile(
             str(out_path), fps=vs.fps, codec="libx264", audio=audio is not None, audio_codec="aac",
             audio_bitrate=vs.audio_bitrate, preset=vs.preset, pixel_format="yuv420p",
-            ffmpeg_params=["-crf", str(vs.crf), "-maxrate", vs.maxrate, "-bufsize", vs.bufsize,
+            ffmpeg_params=[*pad, "-crf", str(vs.crf), "-maxrate", vs.maxrate, "-bufsize", vs.bufsize,
                            "-movflags", "+faststart", "-profile:v", "high"],
             threads=os.cpu_count(),
             logger=_FrameProgress(on_progress) if on_progress else logger)

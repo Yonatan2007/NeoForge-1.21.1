@@ -75,6 +75,7 @@ def test_render_project_end_to_end(tmp_path):
     p.footage.items = [FootageItem(path="uploads/mountain.png"), FootageItem(path="uploads/clip.mp4")]
     p.footage.stock = False
     p.style.video.aspect, p.style.video.draft, p.style.video.fps = "1:1", True, 12
+    p.style.video.letterbox = True
     p.style.video.preset = "ultrafast"
     (tmp_path / "proj" / "output").mkdir()
     (tmp_path / "proj" / "output" / "credits.txt").write_text("a stock clip from an older render")
@@ -85,7 +86,7 @@ def test_render_project_end_to_end(tmp_path):
     out = tmp_path / "proj" / result["video"]
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height",
                             "-of", "csv=p=0", str(out)], capture_output=True, text=True, check=True)
-    assert "video,540,540" in probe.stdout and "audio" in probe.stdout
+    assert "video,540,960" in probe.stdout and "audio" in probe.stdout  # square picture on black
     assert (tmp_path / "proj" / result["cover"]).stat().st_size > 0
     assert (tmp_path / "proj" / result["srt"]).read_text().count("-->") >= 2
     assert result["credits"] is None  # no stock in this render: the old credits are gone

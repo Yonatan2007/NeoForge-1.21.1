@@ -162,6 +162,7 @@ class LookStyle:
 @dataclass
 class VideoStyle:
     aspect: str = "9:16"                   # 9:16 | 4:5 | 1:1 | 16:9
+    letterbox: bool = False                # keep the picture's shape, pad the file to 9:16 with black
     draft: bool = False                    # half resolution for quick previews
     fps: int = 30
     min_shot: float = 3.0
@@ -192,6 +193,15 @@ class VideoStyle:
         w, h = ASPECTS.get(self.aspect, ASPECTS["9:16"])
         if self.draft:  # half size, kept even for H.264
             w, h = w // 4 * 2, h // 4 * 2
+        return w, h
+
+    @property
+    def frame_size(self) -> tuple[int, int]:
+        """Size of the written file: the picture, or with ``letterbox`` the
+        picture centred in a 9:16 frame with black above and below."""
+        w, h = self._size()
+        if self.letterbox and h * 9 < w * 16:  # wider than 9:16
+            h = int(round(w * 16 / 9 / 2)) * 2
         return w, h
 
     @property
