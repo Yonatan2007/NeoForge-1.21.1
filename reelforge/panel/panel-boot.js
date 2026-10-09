@@ -56,9 +56,10 @@ function saver(downloads) {
   }
   let data;
   try {
-    const [meta, schema, presets, factory, footageItem, voice, config] = await Promise.all(
-      ["meta.json", "schema.json", "presets.json", "factory.json", "footage-item.json", "voice.json", "config.json"].map(readJson));
-    data = { meta, schema, presets, factory, footageItem, voice, config };
+    const [meta, schema, presets, factory, footageItem, voice, config, voicePreviews] = await Promise.all(
+      ["meta.json", "schema.json", "presets.json", "factory.json", "footage-item.json", "voice.json", "config.json",
+       "voice-previews.json"].map(readJson));
+    data = { meta, schema, presets, factory, footageItem, voice, config, voicePreviews };
   } catch (err) {
     showMessage(`reelforge could not load its settings (${String(err.message || err)}). Reload the page.`);
     return;

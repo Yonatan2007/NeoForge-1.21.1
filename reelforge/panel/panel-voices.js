@@ -1,7 +1,8 @@
 /**
  * Voice picker for the control panel: every voice in the user's Higgsfield
  * account (built-in and their own), read through the Higgsfield connector,
- * with search, a gender filter and a link to each voice's sample.
+ * with search, a gender filter and the voice's sample played in the page
+ * (samples are stored in the panel; voices without one link to Higgsfield's).
  * The list is kept in settings/voices so it shows at once next time.
  */
 
@@ -13,6 +14,8 @@ import { on, setValue, state } from "./store.js";
 
 const PAGE = 24;
 let cache = null; // {voices, fetched}
+const player = new Audio();
+let playing = null; // voice id
 
 async function fetchVoices(mcp) {
   const voices = [];
@@ -50,16 +53,18 @@ async function loadVoices({ refresh = false } = {}) {
 
 /** The picker element shown on the Voice tab when Claude makes the voice. */
 export function voicePicker() {
-  const defaultId = api._panel.data.voice.default_voice_id;
+  const { data, blobUrl } = api._panel;
+  const defaultId = data.voice.default_voice_id;
+  const samples = data.voicePreviews || {};
   let gender = "all";
   let query = "";
   let limit = PAGE;
   let voices = [];
 
-  const search = h("input", { class: "input", type: "search", placeholder: "Search voices", "aria-label": "Search voices", autocomplete: "off" });
+  const search = h("input", { class: "input", type: "search", placeholder: "Search 100+ voices", "aria-label": "Search voices", autocomplete: "off" });
   const list = h("ul", { class: "voice-grid", "aria-label": "Voices" });
   const status = h("p", { class: "muted small", role: "status" }, "Loading your Higgsfield voices…");
-  const more = button("Show more", { variant: "ghost", size: "sm" });
+  const more = button("Show more voices", { variant: "secondary", size: "sm" });
   const refresh = button("Refresh", { icon: "refresh", variant: "ghost", size: "sm" });
   const filter = segmented({ options: [{ value: "all", label: "All" }, { value: "female", label: "Female" }, { value: "male", label: "Male" }],
                              value: gender, label: "Gender", size: "sm", onChange: (v) => { gender = v; limit = PAGE; paint(); } });
@@ -72,30 +77,63 @@ export function voicePicker() {
     paint();
   }
 
+  function play(v) {
+    if (playing === v.id) {
+      player.pause();
+      return;
+    }
+    player.src = blobUrl(samples[v.id]);
+    player.dataset.voice = v.id;
+    playing = v.id; // shown at once; the media events below keep it true
+    player.play().catch(() => {
+      playing = null;
+      if (el.isConnected) paint();
+    });
+    paint();
+  }
+
   function paint() {
+    // the list is redrawn; keep keyboard focus on the same voice's play button
+    const focused = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".voice-play") : null;
+    const focusVoice = focused && list.contains(focused) ? focused.dataset.voice : null;
     const q = query.trim().toLowerCase();
     const shown = voices.filter((v) => (gender === "all" || v.gender === gender) && (!q || v.name.toLowerCase().includes(q)));
     const selected = voices.find((v) => v.id === current());
-    // the chosen voice is always visible, first
+    // the chosen voice is always first, so it is never hidden behind "Show more"
     const ordered = selected && shown.includes(selected) ? [selected, ...shown.filter((v) => v !== selected)] : shown;
     list.replaceChildren(...ordered.slice(0, limit).map((v) => {
-      const on = v.id === current();
+      const isOn = v.id === current();
       const id = `voice-${v.id}`;
-      const input = h("input", { type: "radio", name: "voice-pick", id, class: "visually-hidden", checked: on });
+      const input = h("input", { type: "radio", name: "voice-pick", id, class: "visually-hidden", checked: isOn });
       input.addEventListener("change", () => input.checked && choose(v));
-      return h("li", { class: ["voice-card", on && "is-on"] }, input,
+      let listen = null;
+      if (samples[v.id]) {
+        const isPlaying = playing === v.id;
+        listen = h("button", { type: "button", class: ["voice-play", isPlaying && "is-playing"], "aria-pressed": String(isPlaying), dataset: { voice: v.id },
+                               "aria-label": `${isPlaying ? "Stop" : "Play"} ${v.name}'s sample`,
+                               html: icon(isPlaying ? "stop" : "play", { size: 16 }) });
+        listen.addEventListener("click", () => play(v));
+      } else if (v.preview) {
+        listen = h("a", { class: "voice-play", href: v.preview, target: "_blank", rel: "noopener",
+                          "aria-label": `Listen to ${v.name} (opens a new tab)`, html: icon("play", { size: 16 }) });
+      }
+      return h("li", { class: ["voice-card", isOn && "is-on"] }, input,
+        listen,
         h("label", { for: id, class: "voice-main" },
-          h("span", { class: "voice-avatar", "aria-hidden": "true" }, v.name.slice(0, 1)),
           h("span", { class: "voice-text" },
-            h("span", { class: "voice-name" }, v.name, v.id === defaultId ? h("span", { class: "chip-note" }, " default") : null),
-            h("span", { class: "voice-sub" }, [v.gender, v.type === "element" ? "your voice" : null].filter(Boolean).join(" · ") || "voice"))),
-        v.preview ? h("a", { class: "btn btn-ghost btn-sm voice-listen", href: v.preview, target: "_blank", rel: "noopener",
-                            "aria-label": `Listen to ${v.name}`, html: `${icon("play", { size: 14 })}<span class="btn-label">Listen</span>` }) : null);
+            h("span", { class: "voice-name" }, v.name),
+            h("span", { class: "voice-sub" }, [v.gender, v.type === "element" ? "your voice" : null, v.id === defaultId ? "default" : null]
+              .filter(Boolean).join(" · ") || "voice")),
+          h("span", { class: "voice-check", html: icon("check", { size: 14 }) })));
     }));
+    if (focusVoice) {
+      const again = [...list.querySelectorAll(".voice-play")].find((b) => b.dataset.voice === focusVoice);
+      if (again) again.focus();
+    }
     more.hidden = ordered.length <= limit;
-    status.textContent = voices.length
-      ? `${selected ? `Using ${selected.name}. ` : ""}${shown.length} of ${voices.length} voices. Listen opens the sample in a new tab.`
-      : status.textContent;
+    if (voices.length) {
+      status.textContent = `${selected ? `Reading voice: ${selected.name}. ` : ""}${shown.length} of ${voices.length} voices.`;
+    }
   }
 
   async function load(refreshing = false) {
@@ -104,19 +142,31 @@ export function voicePicker() {
       voices = res.voices || [];
       paint();
     } catch (err) {
-      status.textContent = "";
       toastError("Could not load your Higgsfield voices", err);
       status.textContent = "Your voices could not be loaded. Allow the panel to use Higgsfield, then press Refresh.";
     }
   }
 
+  // a stale "pause" from the previous sample can arrive after a new one starts
+  player.onplaying = () => {
+    playing = player.dataset.voice || null;
+    if (el.isConnected) paint();
+  };
+  player.onended = player.onpause = () => {
+    if (!player.paused && !player.ended) return;
+    playing = null;
+    if (el.isConnected) paint();
+  };
   search.addEventListener("input", () => { query = search.value; limit = PAGE; paint(); });
   more.addEventListener("click", () => { limit += PAGE * 2; paint(); });
   refresh.addEventListener("click", () => load(true));
   const el = h("div", { class: "voice-picker stack" },
-    h("div", { class: "voice-toolbar" }, search, filter, refresh), status, list, more);
+    h("div", { class: "voice-toolbar" }, search, filter, refresh), status, list, h("div", { class: "row" }, more));
   const off = on("change", ({ paths } = {}) => {
-    if (!el.isConnected) return off(); // the Voice tab was redrawn or left
+    if (!el.isConnected) {
+      player.pause();
+      return off(); // the Voice tab was redrawn or left
+    }
     if ((paths || []).includes("voice.voice_id")) paint();
   });
   load();

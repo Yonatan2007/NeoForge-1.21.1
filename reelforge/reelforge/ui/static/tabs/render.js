@@ -82,6 +82,12 @@ function resultCard(job) {
     globalThis.reelforgeSaveFile(a.href, a.getAttribute("download"));
   });
   const warnings = (result && result.warnings) || [];
+  // the control panel has a Publish page: go straight to this reel's post
+  const ex = globalThis.reelforgeExtras;
+  const post = ex && (ex.nav || []).some((n) => n.id === "publish")
+    ? h("a", { class: "btn btn-secondary", href: `#/x/publish/${encodeURIComponent(`reel:${state.projectId}`)}`,
+               html: `${icon("upload", { size: 18 })}<span class="btn-label">Post it to TikTok, Instagram and YouTube</span>` })
+    : null;
   return h("section", { class: "card result-card", "aria-labelledby": "result-title" },
     h("div", { class: "result-grid" },
       frame,
@@ -90,6 +96,7 @@ function resultCard(job) {
           h("h2", { class: "card-title", id: "result-title" }, "Your video"),
           h("p", { class: "card-sub" }, result && result.duration ? `${formatSeconds(result.duration)} · ready to post` : "Latest render")),
         links,
+        post,
         warnings.length ? h("div", { class: "stack" }, warnings.map((w) => callout("warn", w))) : null)));
 }
 

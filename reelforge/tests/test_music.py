@@ -117,9 +117,15 @@ def test_waveform_peaks_of_five_minute_mp3_are_fast(tmp_path):
     import time
     track = synth(tmp_path / "long.mp3", "sine=f=220:d=300:r=44100", "-ac", "2", "-q:a", "9",
                   "-compression_level", "9")
+    # Decoding is the floor and its speed depends on the machine, so time it
+    # here: computing the peaks may add only a little on top.
+    t0 = time.perf_counter()
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(track), "-ac", "2",
+                    "-ar", str(music.PEAK_RATE), "-f", "s16le", "-y", "/dev/null"], check=True)
+    floor = time.perf_counter() - t0
     t0 = time.perf_counter()
     w = music.waveform_peaks(track)
-    assert time.perf_counter() - t0 < 2.0
+    assert time.perf_counter() - t0 < floor * 1.5 + 0.5
     assert len(w["peaks"]) == 1000 and w["duration"] == pytest.approx(300, abs=0.1)
 
 

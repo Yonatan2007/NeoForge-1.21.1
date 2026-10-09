@@ -506,17 +506,39 @@ export function createPanelBackend({ db, assets, mcp }, data) {
 
   // ---- tasks (plans and renders, done by Claude) --------------------------------------
 
+  /**
+   * Which Claude sessions get the panel's requests: settings/claude (written
+   * by the session that runs the panel; a new session with more connectors
+   * can take over) or the session the panel was built for. Profile changes
+   * go to a session on the user's computer when one is registered there.
+   */
+  async function routing() {
+    const cfg = data.config || {};
+    let doc = {};
+    try {
+      const snap = await retrying(() => db.doc("settings/claude").get());
+      if (snap.exists) doc = snap.data() || {};
+    } catch {
+      /* fall back to the built-in session */
+    }
+    return { ...doc, session_id: doc.session_id || cfg.session_id || null };
+  }
+
   async function notify(kind, id, projectId) {
     const cfg = data.config || {};
+    const route = await routing();
+    // profile changes happen in the user's own browser: only a session on their computer can do them
+    if (kind === "profile" && !route.computer_session_id) return "No Claude session on your computer is connected to the panel yet.";
+    const target = kind === "profile" ? route.computer_session_id : route.session_id;
     const subject = projectId ? ` for reel "${projectId}"` : "";
     const docs = projectId ? `tasks/${id} and projects/${projectId}` : `tasks/${id}`;
+    const code = cfg.repo ? ` Code: github.com/${cfg.repo}, branch ${cfg.branch || "main"}.` : "";
     const message = `reelforge panel request: ${kind} task "${id}"${subject}. `
-      + `Panel: ${cfg.artifact || "(the reelforge panel artifact)"}. Read ${docs} `
-      + `from the panel's database and carry it out (see .claude/skills/jackk-reel/SKILL.md, "Control panel requests").`;
-    if (!mcp || !cfg.session_id) return "Claude can't be messaged from this view.";
+      + `Panel: ${cfg.artifact || "(the reelforge panel artifact)"}. Read ${docs} from the panel's database `
+      + `and carry it out (.claude/skills/jackk-reel/SKILL.md, "Control panel requests").${code}`;
+    if (!mcp || !target) return "Claude can't be messaged from this view.";
     try {
-      await mcp.callTool(cfg.connector || "Claude Code Remote", cfg.tool || "send_message",
-                         { session_id: cfg.session_id, message });
+      await mcp.callTool(cfg.connector || "Claude Code Remote", cfg.tool || "send_message", { session_id: target, message });
       return null;
     } catch (err) {
       const why = {
@@ -542,9 +564,11 @@ export function createPanelBackend({ db, assets, mcp }, data) {
       throw storeError(err);
     }
     const problem = await notify(kind, id, projectId);
-    const ask = { plan: "plan my reel", render: "render my reel", publish: "publish my video" }[kind] || `run my ${kind}`;
+    const ask = { plan: "plan my reel", render: "render my reel", publish: "publish my video",
+                  profile: "apply my reelforge profile changes" }[kind] || `run my ${kind}`;
+    const where = kind === "profile" ? "to Claude on your computer" : "in your Claude chat";
     const patch = problem
-      ? { notify_error: problem, message: `${problem} Send “${ask}” in your Claude chat and it starts.` }
+      ? { notify_error: problem, message: `${problem} Send “${ask}” ${where} and it starts.` }
       : { notified: true };
     await retrying(() => T(id).update(patch)).catch(() => {});
     return { id, problem };
@@ -587,7 +611,7 @@ export function createPanelBackend({ db, assets, mcp }, data) {
 
     // for the control panel's own pages (publishing, accounts)
     _panel: { db, assets, mcp, data, retrying, storeError, uploadAsset, storeFile, resolveB64, probe,
-              blobUrl, newTask, nowIso, hex, mimeOf, kindOf, safeName, clone, urlOf },
+              blobUrl, newTask, nowIso, hex, mimeOf, kindOf, safeName, clone, urlOf, routing },
 
     meta: async () => clone(data.meta),
     schema: async () => clone(data.schema),

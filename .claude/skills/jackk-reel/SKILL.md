@@ -109,9 +109,11 @@ A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
 The panel's Publish page stores per-video settings in `posts/<post_id>`
 (`common` caption/hashtags, then `tiktok`, `instagram`, `youtube`, each with
 `enabled`, `accounts`, caption/hashtags overrides (null = use `common`),
-privacy and switches, `sound` and `sound_volume` / `original_volume` in %)
-and accounts in `accounts/<id>` (`platform`, `handle`, TikTok `connector_id`).
-The task names `post_id`, `platforms` and `video` (`{kind: "reel" | "video", id}`).
+privacy and switches, `sound` and `sound_volume` / `original_volume` in %;
+Instagram and YouTube also `when` = "now" | "best" | "at", with `at` a local
+time in time zone `tz`; YouTube `title`) and accounts in `accounts/<id>`
+(`platform`, `handle`, TikTok `connector_id`). The task names `post_id`,
+`platforms` and `video` (`{kind: "reel" | "video", id}`).
 
 1. Read the task, the post and the accounts. Get the video file: a reel's
    `projects/<id>.outputs.video` asset, or `videos/<id>.store` (raw or base64
@@ -126,12 +128,63 @@ The task names `post_id`, `platforms` and `video` (`{kind: "reel" | "video", id}
    volumes there (music only works for "Post now"). Write
    `result.tiktok = {status: "waiting", message: "Confirm the post in your Claude chat"}`;
    after they submit, check `tiktok_publish_status` and set `done` (with `url`).
-3. **Instagram / YouTube**: only through a social-media connector the user
-   added (e.g. Metricool: read its tool schemas first, never guess). Without
-   one: `{status: "error", message: "Add a social-media connector (e.g. Metricool) in Claude to post here"}`.
-   In-app sounds can't be added through any API: remind the user to add the
-   saved sound in the app.
+3. **Instagram / YouTube** go through the Metricool connector. Read its tool
+   schemas first, never guess: `getBrandSettings` shows which networks the
+   user linked, `createScheduledPost` posts. The video must be a public URL:
+   reuse the Higgsfield-hosted URL from step 2 (or `media_upload` it there).
+   Time: `when` "now" = a few minutes from now; "best" =
+   `getBestTimeToPostByNetwork`; "at" = `at` in time zone `tz`.
+   Instagram: a Reel (`share_to_feed`), caption + hashtags. YouTube: a Short
+   with `title`, description (caption + tags), `privacy`, `made_for_kids`.
+   Result per platform: `{status: "scheduled", message: "Posting at <time>"}`.
+   Without Metricool in this session: `{status: "error", message: "Add the
+   Metricool connector in Claude, then say “take over my reelforge panel” in
+   a new session"}`. In-app sounds can't be added through any API: tell the
+   user to add the saved sound in the app at the saved volumes.
 4. Finish the task: `{status: "done", message, result: {<platform>: {status, message, url?}}}`.
 
-Profile pictures and bios can't be changed through any of these APIs; the
-Accounts page keeps them for the user to paste in.
+### Profile requests (`kind: "profile"`)
+
+These go only to a session on the user's computer (see below): no
+TikTok, Instagram or YouTube API changes profiles, so it's done in the
+user's own browser, where they're signed in (Claude in Chrome). The task
+has `accounts` (`[{id, platform, handle}]`) and `changes` (any of `name`,
+`bio`, `link`, `picture` = a panel asset id; missing = keep).
+
+1. Set the task `running`. If `picture` is set, `Artifact read` it (`path` =
+   the asset id) to a local file for the upload dialogs.
+2. Per account, open its profile editor and change only the given fields:
+   TikTok: tiktok.com/@<handle> → Edit profile (bio up to 80 characters);
+   Instagram: instagram.com/accounts/edit/ (bio up to 150; the name is in
+   Accounts Center); YouTube: studio.youtube.com → Customization (picture,
+   name, description, links). Save each page and check that it took.
+3. If a site asks to sign in, for a code, or for any confirmation, stop that
+   account and say so in its result; never type passwords for the user.
+4. Write `result.<account id> = {status: "done" | "error", account: "@handle",
+   message}` as you go, then `{status: "done", message}`.
+
+### Who handles panel requests (`settings/claude`)
+
+The panel messages the session in its database doc `settings/claude`:
+`session_id` for plans, renders and publishing (the session the panel was
+built with when the doc is missing), `computer_session_id` for profile
+changes. `connectors` lists what the handling session can reach; the
+Accounts page shows Instagram and YouTube as ready when it includes
+Metricool. Connectors only load in a new session, hence:
+
+- **"Take over my reelforge panel"** (a new session, e.g. after adding
+  Metricool): find the panel (`Artifact list`, the artifact titled
+  "reelforge", or ask for its link) and read it once. Get this session's id
+  (`get_session` from claude-code-remote with no id; without that tool, ask
+  for this session's link and take the `session_…` part). `ArtifactData get
+  settings/claude`, then `update` it (pinned; `set` if missing) with
+  `{session_id, connectors: [the connector names you have], updated}`,
+  keeping `computer_session_id`. Get the code (repo and branch are in the
+  panel's messages), set up as in step 1 above and do any `queued` tasks.
+- **"Connect my reelforge panel for profile changes"** (Claude on the user's
+  computer: the desktop app, or `claude remote-control`, with Claude in
+  Chrome): the same, but write only `{computer_session_id, updated}`.
+
+If the user asks in chat instead ("publish my video", "apply my reelforge
+profile changes"), `ArtifactData query tasks` for `status == "queued"` of
+that kind and do those.

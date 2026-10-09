@@ -329,19 +329,37 @@ function projectCard(p) {
   return card;
 }
 
+/** The home hero's mountain ridge: a far range, a near range and the golden
+ * line the opening sentence of a reel sits on. */
+const HERO_RIDGE = `<svg class="hero-ridge" viewBox="0 0 1200 300" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+  <path d="M0 300V176l84-34 76 42 92-74 72 46 96-82 98 84 80-40 92 52 78-66 92 50 82-80 92 70 74-34 92 42V300Z" fill="#2a2f4a" fill-opacity=".55"/>
+  <path d="M0 300V232l118-46 92 46 112-62 108 56 112-50 108 62 112-48 118 52 112-46 108 42 100-28V300Z" fill="#141826"/>
+  <path d="M0 232l118-46 92 46 112-62 108 56 112-50 108 62 112-48 118 52 112-46 108 42 100-28" fill="none" stroke="#ffd27a" stroke-opacity=".8" stroke-width="2.2" stroke-linejoin="round"/>
+</svg>`;
+
 async function renderHome() {
   cleanupShell.forEach((fn) => fn());
   cleanupShell = [];
   document.title = "reelforge";
+  const ex = extras();
   const grid = h("ul", { class: "project-grid", "aria-busy": "true" });
-  const newBtn = button("New reel", { icon: "plus", variant: "primary", onClick: newProject });
+  const stats = h("p", { class: "hero-stats" }, "Loading your reels…");
+  const hero = h("section", { class: "hero", "aria-labelledby": "hero-title" },
+    h("div", { html: HERO_RIDGE }).firstElementChild,
+    h("div", { class: "stack" },
+      h("p", { class: "hero-eyebrow" }, "Script in · reel out"),
+      h("h1", { class: "hero-title", id: "hero-title", html: "What are we making <mark>today</mark>?" })),
+    h("div", { class: "stack" },
+      h("div", { class: "hero-actions" },
+        button("New reel", { icon: "plus", variant: "primary", size: "lg", onClick: newProject }),
+        ...((ex && ex.homeActions) || []).map((a) => h("a", { class: "btn btn-secondary btn-lg", href: a.href,
+          html: `${icon(a.icon, { size: 18 })}<span class="btn-label">${a.label}</span>` }))),
+      stats));
   const main = h("main", { id: "main", class: "main home", tabindex: "-1" },
     h("div", { class: "main-inner" },
+      hero,
       h("header", { class: "home-head" },
-        h("div", {},
-          h("h1", { class: "page-title" }, "Your reels"),
-          h("p", { class: "page-lead" }, "Script in, ready-to-post vertical video out.")),
-        newBtn),
+        h("div", {}, h("h2", { class: "page-title" }, "Your reels"))),
       grid));
   clear(root).append(h("header", { class: "topbar" }, h("div", { class: "topbar-left" }, brand(), topNav("reels"))), main);
 
@@ -352,6 +370,11 @@ async function renderHome() {
     toastError("Could not load your reels", err);
   }
   grid.removeAttribute("aria-busy");
+  const rendered = projects.filter((p) => p.has_video).length;
+  stats.replaceChildren(
+    h("span", {}, h("strong", {}, String(projects.length)), projects.length === 1 ? " reel" : " reels"),
+    h("span", {}, h("strong", {}, String(rendered)), " rendered"),
+    ...((ex && ex.homeStats && ex.homeStats()) || []));
   if (!projects.length) {
     grid.replaceWith(h("section", { class: "empty-state" },
       h("div", { class: "empty-art", html: icon("film", { size: 36 }) }),

@@ -1,16 +1,21 @@
 /**
  * Control panel pages for posting: Publish (your videos, and one post per
- * video with a section for each platform) and Accounts (connected accounts,
- * and profile details edited for one account or many at once).
+ * video with a tab per platform and a phone preview of how it will look) and
+ * Accounts (how each platform is connected, the accounts, and their profiles
+ * edited one at a time or many at once).
  *
- *   videos/<id>     your own uploaded videos {title, store, thumb, info, size, created}
- *   posts/<key>     post settings per video (key "reel:<project id>" or "video:<id>")
- *   accounts/<id>   {platform, handle, connector_id?, status, profile: {name, bio, link, picture}}
- *   tasks/<id>      kind "publish": Claude posts the video and writes results back
+ *   videos/<id>       your own uploaded videos {title, store, thumb, info, size, created}
+ *   posts/<key>       post settings per video (key "reel:<project id>" or "video:<id>")
+ *   accounts/<id>     {platform, handle, connector_id?, status, profile: {name, bio, link, picture}}
+ *   settings/claude   which Claude sessions handle requests, and what they can reach
+ *   settings/profile  {last_task}: the latest profile change request
+ *   tasks/<id>        kind "publish" or "profile": Claude does it and writes results back
  *
  * TikTok accounts are connected and read through the Higgsfield connector
- * (which also lists TikTok's trending licensed sounds). Instagram and
- * YouTube posting goes through a social-media connector added in Claude.
+ * (which also lists TikTok's trending licensed sounds). Instagram and YouTube
+ * posting goes through a social-media connector added in Claude (Metricool).
+ * Profile pictures and bios have no API on any of the three: a Claude session
+ * on the user's computer changes them in the user's own browser.
  */
 
 import { api } from "./api.js";
@@ -21,11 +26,14 @@ import {
 import { paintRange, switchControl } from "./fields.js";
 import { icon } from "./icons.js";
 
+const strip = (handle) => String(handle || "").replace(/^@/, "");
 const PLATFORMS = {
-  tiktok: { label: "TikTok", captionMax: 2200, bioMax: 80,
-            settings: (a) => (a && a.handle ? `https://www.tiktok.com/@${a.handle.replace(/^@/, "")}` : "https://www.tiktok.com/") },
-  instagram: { label: "Instagram", captionMax: 2200, bioMax: 150, settings: () => "https://www.instagram.com/accounts/edit/" },
-  youtube: { label: "YouTube Shorts", captionMax: 5000, bioMax: 1000, settings: () => "https://studio.youtube.com/" },
+  tiktok: { label: "TikTok", surface: "TikTok", captionMax: 2200, bioMax: 80,
+            settings: (a) => (a && a.handle ? `https://www.tiktok.com/@${strip(a.handle)}` : "https://www.tiktok.com/") },
+  instagram: { label: "Instagram", surface: "Reels", captionMax: 2200, hashtagMax: 30, bioMax: 150,
+               settings: () => "https://www.instagram.com/accounts/edit/" },
+  youtube: { label: "YouTube", surface: "Shorts", titleMax: 100, captionMax: 5000, bioMax: 1000,
+             settings: () => "https://studio.youtube.com/" },
 };
 const ORDER = ["tiktok", "instagram", "youtube"];
 const TIKTOK_PRIVACY = [
@@ -34,25 +42,44 @@ const TIKTOK_PRIVACY = [
 ];
 const YT_PRIVACY = [{ value: "public", label: "Public" }, { value: "unlisted", label: "Unlisted" }, { value: "private", label: "Private" }];
 const GENRES = ["ALL", "POP", "HIP_HOP/RAP", "LO-FI", "EDM", "COUNTRY", "K-POP", "CHILL_BEATS", "EPIC"];
+const CONNECTORS_URL = "https://claude.ai/customize/connectors";
 
 const P = () => api._panel;
 const higgsfield = (tool, input) => P().mcp.callTool("higgsfield", tool, input || {});
 
+// Line icons for the phone preview (drawn for this page; the platforms' own marks are not used).
+const UI = {
+  heart: '<path d="M12 20.5s-7.5-4.6-7.5-10.4A4.3 4.3 0 0 1 12 7.4a4.3 4.3 0 0 1 7.5 2.7c0 5.8-7.5 10.4-7.5 10.4Z"/>',
+  comment: '<path d="M20.5 11.5a8.5 8.5 0 0 1-12.4 7.6L3.5 20.5l1.4-4.4A8.5 8.5 0 1 1 20.5 11.5Z"/>',
+  share: '<path d="M13.5 4.5 21 12l-7.5 7.5v-4.3C8.3 15.2 5 16.8 3 20.5c.6-6 4-10.2 10.5-10.8Z"/>',
+  bookmark: '<path d="M6.5 3.5h11v17l-5.5-4-5.5 4Z"/>',
+  send: '<path d="M21.5 3 3 10.2l7.3 3 3 7.3Z"/><path d="m10.3 13.2 4.5-4.5"/>',
+  like: '<path d="M7.5 10.5v10h-3v-10Z"/><path d="M7.5 10.5 11 3.6a1.8 1.8 0 0 1 3.3 1.3l-.9 4.6h5.3a2 2 0 0 1 2 2.4l-1.4 6.5a2 2 0 0 1-2 1.6H7.5"/>',
+  note: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
+  dots: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+  mute: '<path d="M11 5 6 9H3v6h3l5 4Z"/><path d="m22 9-6 6M16 9l6 6"/>',
+  remix: '<path d="M4 7h11a4 4 0 0 1 0 8H9"/><path d="m7 4-3 3 3 3"/><path d="M20 17H9"/>',
+};
+const ui = (name, size = 26, style = "") => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"${style ? ` style="${style}"` : ""}>${UI[name]}</svg>`;
+
 function newPost(video) {
   const sound = { sound: null, sound_volume: 0, original_volume: 100 };
+  const when = { when: "now", at: null, tz: null }; // Metricool can post later; TikTok posts right away
   return {
     video,
     common: { caption: "", hashtags: [] },
     tiktok: { enabled: true, accounts: [], caption: null, hashtags: null, privacy: "PUBLIC_TO_EVERYONE",
               allow_comment: true, allow_duet: true, allow_stitch: true, is_aigc: true, mode: "DIRECT_POST", ...sound },
-    instagram: { enabled: true, accounts: [], caption: null, hashtags: null, share_to_feed: true, ...sound },
+    instagram: { enabled: true, accounts: [], caption: null, hashtags: null, share_to_feed: true, ...when, ...sound },
     youtube: { enabled: true, accounts: [], title: "", caption: null, hashtags: null, privacy: "public",
-               made_for_kids: false, ...sound },
+               made_for_kids: false, ...when, ...sound },
   };
 }
 
 const tagsOf = (text) => [...new Set(String(text || "").split(/[\s,]+/).map((t) => t.replace(/^#+/, "").trim()).filter(Boolean))];
 const tagText = (tags) => (tags || []).map((t) => `#${t}`).join(" ");
+const accountName = (a) => (a ? (a.handle ? `@${strip(a.handle)}` : a.label || PLATFORMS[a.platform].label) : "");
+const platformDot = (p) => h("span", { class: `pdot pdot-${p}`, "aria-hidden": "true" });
 
 // --------------------------------------------------------------------------- data
 
@@ -89,8 +116,7 @@ async function videoUrl(v) {
 
 async function uploadVideo(file, onProgress) {
   const panel = P();
-  const kind = panel.kindOf(file);
-  if (kind !== "video") throw new Error(`“${file.name}” isn't a video.`);
+  if (panel.kindOf(file) !== "video") throw new Error(`“${file.name}” isn't a video.`);
   const { info, thumb } = await panel.probe(file, "video");
   const store = await panel.storeFile(file, panel.mimeOf(file), onProgress, () => {});
   const thumbRes = thumb ? await panel.uploadAsset(thumb, "image/jpeg").catch(() => null) : null;
@@ -99,6 +125,18 @@ async function uploadVideo(file, onProgress) {
     title: panel.safeName(file.name).replace(/\.[^.]+$/, ""), store, thumb: thumbRes ? thumbRes.id : null,
     info, size: file.size, created: panel.nowIso() }));
   return id;
+}
+
+/** {label, tone} for a post's latest publish task. */
+function publishState(task) {
+  if (!task) return { label: "Not posted", tone: "idle" };
+  if (["queued", "running"].includes(task.status)) return { label: "Publishing", tone: "busy" };
+  if (task.status === "error") return { label: "Failed", tone: "bad" };
+  const results = Object.values(task.result || {});
+  if (results.length && results.every((r) => r.status === "done")) return { label: "Posted", tone: "ok" };
+  if (results.length && results.every((r) => ["done", "scheduled"].includes(r.status))) return { label: "Scheduled", tone: "ok" };
+  if (results.some((r) => r.status === "waiting")) return { label: "Needs you", tone: "warn" };
+  return { label: "Check results", tone: "warn" };
 }
 
 // --------------------------------------------------------------------------- small UI pieces
@@ -115,8 +153,9 @@ function card(title, sub, ...children) {
     ...children);
 }
 
+let fieldSeq = 0;
 function textField({ label, value, placeholder, onInput, multiline = false, max, rows = 3, help }) {
-  const id = `f-${Math.random().toString(36).slice(2, 8)}`;
+  const id = `pf-field-${++fieldSeq}`;
   const input = multiline
     ? h("textarea", { id, class: "input textarea", rows, placeholder: placeholder || "", value: value || "" })
     : h("input", { id, class: "input", type: "text", placeholder: placeholder || "", value: value || "", autocomplete: "off" });
@@ -133,11 +172,11 @@ function textField({ label, value, placeholder, onInput, multiline = false, max,
   paint();
   return h("div", { class: "field" },
     h("div", { class: "field-head" }, h("label", { class: "field-label", for: id }, label), count),
-    input, help ? h("p", { class: "field-help" }, help) : null);
+    input, help ? (help instanceof Node ? help : h("p", { class: "field-help" }, help)) : null);
 }
 
 function slider({ label, value, onChange, help }) {
-  const id = `s-${Math.random().toString(36).slice(2, 8)}`;
+  const id = `pf-range-${++fieldSeq}`;
   const out = h("span", { class: "field-value" }, `${value} %`);
   const range = h("input", { id, type: "range", class: "range", min: 0, max: 100, step: 1, value });
   range.addEventListener("input", () => {
@@ -152,21 +191,41 @@ function slider({ label, value, onChange, help }) {
 }
 
 function toggle(label, checked, onChange) {
-  return h("div", { class: "field field-bool" },
-    switchControl({ id: `t-${Math.random().toString(36).slice(2, 8)}`, checked, label, onChange }));
+  return h("div", { class: "field field-bool" }, switchControl({ id: `pf-sw-${++fieldSeq}`, checked, label, onChange }));
 }
 
 function selectField(label, options, value, onChange) {
-  const id = `sel-${Math.random().toString(36).slice(2, 8)}`;
+  const id = `pf-sel-${++fieldSeq}`;
   const sel = h("select", { id, class: "input select" },
     options.map((o) => h("option", { value: o.value, selected: o.value === value }, o.label)));
   sel.addEventListener("change", () => onChange(sel.value));
   return h("div", { class: "field" }, h("label", { class: "field-label", for: id }, label), sel);
 }
 
-function accountName(a) {
-  return a.handle ? `@${String(a.handle).replace(/^@/, "")}` : a.label || PLATFORMS[a.platform].label;
+const WHEN = [{ value: "now", label: "As soon as possible" }, { value: "best", label: "At the best time (Metricool picks)" },
+              { value: "at", label: "At a time I choose" }];
+const localNow = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+const whenText = (s) => (s.when === "best" ? "best time" : s.when === "at" && s.at
+  ? new Date(s.at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : null);
+
+function whenField(s, save) {
+  const at = h("input", { class: "input", type: "datetime-local", value: s.at || "", min: localNow(), "aria-label": "Date and time to post" });
+  const field = selectField("When", WHEN, s.when, (v) => {
+    s.when = v;
+    at.hidden = v !== "at";
+    save();
+  });
+  at.hidden = s.when !== "at";
+  at.addEventListener("change", () => {
+    s.at = at.value || null;
+    s.tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    save();
+  });
+  field.append(at);
+  return field;
 }
+
+const pill = ({ label, tone }) => h("span", { class: ["state-pill", `is-${tone}`] }, label);
 
 // --------------------------------------------------------------------------- Publish: video library
 
@@ -174,8 +233,8 @@ function renderLibrary(container) {
   const grid = h("ul", { class: "project-grid", "aria-busy": "true" });
   const progress = h("div", { class: "stack" });
   const drop = dropzone({
-    accept: "video/*", multiple: true, iconName: "upload", compact: true,
-    title: "Upload your own videos", hint: "MP4, MOV or WebM. They appear here next to the reels you made.",
+    accept: "video/*", multiple: true, iconName: "upload",
+    title: "Upload your own videos", hint: "MP4, MOV or WebM from your phone or computer. They sit next to the reels you made, ready to post.",
     onFiles: async (files) => {
       for (const file of files) {
         const fill = h("div", { class: "progress-fill", style: { width: "0%" } });
@@ -194,14 +253,18 @@ function renderLibrary(container) {
     },
   });
   container.append(
-    head("Publish", "Post your reels and your own videos to TikTok, Instagram and YouTube, all at once.",
+    head("Publish", "Pick a video, write the post once, adjust it per platform, and send it to TikTok, Instagram and YouTube together.",
       h("a", { class: "btn btn-secondary", href: "#/x/accounts", html: `${icon("link", { size: 18 })}<span class="btn-label">Accounts</span>` })),
-    h("div", { class: "stack-lg" }, drop, progress, grid));
+    h("div", { class: "stack-lg" }, drop, progress,
+      h("h2", { class: "section-title" }, "Your videos"), grid));
 
   async function paint() {
     let videos = [];
+    let posts = new Map();
     try {
-      videos = await listVideos();
+      const [v, snap] = await Promise.all([listVideos(), P().retrying(() => P().db.collection("posts").get())]);
+      videos = v;
+      posts = new Map(snap.docs.map((d) => [d.id, d.data()]));
     } catch (err) {
       toastError("Could not load your videos", err);
     }
@@ -210,25 +273,111 @@ function renderLibrary(container) {
       grid.replaceChildren(h("li", { class: "empty-inline muted" }, "No videos yet. Render a reel, or upload a video above."));
       return;
     }
-    grid.replaceChildren(...videos.map((v) => h("li", { class: "project-card" },
-      h("a", { class: "project-link", href: `#/x/publish/${encodeURIComponent(v.key)}` },
-        h("div", { class: "project-thumb" },
-          v.thumb ? h("img", { src: v.thumb, alt: "", loading: "lazy" }) : h("div", { class: "thumb-empty", html: icon("film", { size: 28 }) }),
-          h("span", { class: ["badge", v.kind === "reel" && "badge-accent"] }, v.kind === "reel" ? "Made with reelforge" : "Uploaded")),
-        h("div", { class: "project-meta" },
-          h("h2", { class: "project-title" }, v.title),
-          h("p", { class: "project-sub" }, [v.updated ? relativeTime(v.updated) : null,
-            v.info && v.info.duration ? formatSeconds(v.info.duration) : null].filter(Boolean).join(" · ")))),
-      v.kind === "upload" ? h("div", { class: "project-actions" },
-        button("Delete video", { icon: "trash", variant: "ghost", size: "sm", iconOnly: true, class: "danger-hover",
-          onClick: async () => {
-            if (!(await confirmDialog({ title: "Delete this video?", message: `“${v.title}” is removed from the panel. Posts already published stay online.`, confirmLabel: "Delete", danger: true }))) return;
-            await P().retrying(() => P().db.doc(`videos/${v.id}`).delete());
-            for (const id of [...((v.store && v.store.ids) || [])]) await P().assets.delete(id).catch(() => {});
-            paint();
-          } })) : null)));
+    const tasks = new Map();
+    await Promise.all([...posts.values()].filter((p) => p.last_task).map(async (p) => {
+      const s = await P().retrying(() => P().db.doc(`tasks/${p.last_task}`).get()).catch(() => null);
+      if (s && s.exists) tasks.set(p.last_task, s.data());
+    }));
+    grid.replaceChildren(...videos.map((v) => {
+      const post = posts.get(v.key);
+      const state = publishState(post && post.last_task ? tasks.get(post.last_task) : null);
+      return h("li", { class: "project-card" },
+        h("a", { class: "project-link", href: `#/x/publish/${encodeURIComponent(v.key)}` },
+          h("div", { class: "project-thumb" },
+            v.thumb ? h("img", { src: v.thumb, alt: "", loading: "lazy" }) : h("div", { class: "thumb-empty", html: icon("film", { size: 28 }) }),
+            h("span", { class: ["badge", "badge-dark"] }, v.kind === "reel" ? "Made here" : "Uploaded"),
+            h("span", { class: "card-state" }, pill(state))),
+          h("div", { class: "project-meta" },
+            h("h2", { class: "project-title" }, v.title),
+            h("p", { class: "project-sub" }, [v.updated ? relativeTime(v.updated) : null,
+              v.info && v.info.duration ? formatSeconds(v.info.duration) : null].filter(Boolean).join(" · ")))),
+        v.kind === "upload" ? h("div", { class: "project-actions" },
+          button("Delete video", { icon: "trash", variant: "ghost", size: "sm", iconOnly: true, class: "danger-hover",
+            onClick: async () => {
+              if (!(await confirmDialog({ title: "Delete this video?", message: `“${v.title}” is removed from the panel. Posts already published stay online.`, confirmLabel: "Delete", danger: true }))) return;
+              await P().retrying(() => P().db.doc(`videos/${v.id}`).delete());
+              for (const id of [...((v.store && v.store.ids) || [])]) await P().assets.delete(id).catch(() => {});
+              paint();
+            } })) : null);
+    }));
   }
   paint();
+}
+
+// --------------------------------------------------------------------------- Publish: phone preview
+
+const fmtTags = (tags) => (tags && tags.length ? tags.map((t) => `#${t}`).join(" ") : "");
+
+function soundLine(platform, s, handle) {
+  const named = s.sound && (s.sound.title || s.sound.name);
+  const text = named ? `${s.sound.title || s.sound.name}${s.sound.artist ? ` · ${s.sound.artist}` : ""}` : `${handle || "you"} · original sound`;
+  const muted = named && s.sound_volume === 0;
+  return h("div", { class: "pui-sound" },
+    h("span", { html: ui("note", 14) }),
+    h("span", { class: "pui-marquee" }, h("span", { class: "pui-track" }, h("span", {}, text), h("span", { "aria-hidden": "true" }, text))),
+    muted ? h("span", { class: "pui-muted", html: `${ui("mute", 12)}<span>muted</span>` }) : null);
+}
+
+function overlayFor(platform, post, accounts) {
+  const s = post[platform];
+  const caption = (s.caption ?? post.common.caption) || "";
+  const tags = fmtTags(s.hashtags ?? post.common.hashtags);
+  const account = accounts.find((a) => s.accounts.includes(a.id));
+  const handle = account ? accountName(account) : "@yourname";
+  const initial = strip(handle).slice(0, 1).toUpperCase() || "Y";
+  const act = (name, label, style) => h("span", { class: "pui-act" }, h("span", { html: ui(name, 26, style) }), label ? h("span", {}, label) : null);
+  const off = !s.enabled ? h("div", { class: "pui-off" }, `${PLATFORMS[platform].label} is off for this post`) : null;
+  if (platform === "tiktok") {
+    return [
+      h("div", { class: "pui-top" }, h("span", { class: "muted-on-video" }, "Following"), h("strong", {}, "For You")),
+      h("div", { class: "pui-rail" },
+        h("span", { class: "pui-avatar" }, initial, h("span", { class: "pui-plus" }, "+")),
+        act("heart", "24.1K"), act("comment", "318"), act("bookmark", "2.4K"), act("share", "190"),
+        h("span", { class: "pui-disc", "aria-hidden": "true" })),
+      h("div", { class: "pui-bottom" },
+        h("strong", { class: "pui-handle" }, handle),
+        h("p", { class: "pui-caption" }, caption || h("span", { class: "pui-placeholder" }, "Your caption"), tags ? h("b", {}, ` ${tags}`) : null),
+        soundLine(platform, s, handle)),
+      off];
+  }
+  if (platform === "instagram") {
+    return [
+      h("div", { class: "pui-top" }, h("strong", {}, "Reels")),
+      h("div", { class: "pui-rail" }, act("heart", "24.1K"), act("comment", "318"), act("send", "190"), act("dots"),
+        h("span", { class: "pui-square", "aria-hidden": "true" })),
+      h("div", { class: "pui-bottom" },
+        h("div", { class: "pui-who" }, h("span", { class: "pui-avatar sm" }, initial), h("strong", {}, strip(handle)), h("span", { class: "pui-follow" }, "Follow")),
+        h("p", { class: "pui-caption one" }, caption || h("span", { class: "pui-placeholder" }, "Your caption"), tags ? h("b", {}, ` ${tags}`) : null),
+        soundLine(platform, s, strip(handle))),
+      off];
+  }
+  return [
+    h("div", { class: "pui-top" }, h("strong", {}, "Shorts")),
+    h("div", { class: "pui-rail" }, act("like", "24K"), act("like", "Dislike", "transform:rotate(180deg)"), act("comment", "318"),
+      act("share", "Share"), act("remix", "Remix")),
+    h("div", { class: "pui-bottom" },
+      h("div", { class: "pui-who" }, h("span", { class: "pui-avatar sm" }, initial), h("strong", {}, handle), h("span", { class: "pui-follow is-light" }, "Subscribe")),
+      h("p", { class: "pui-caption one" }, s.title || caption || h("span", { class: "pui-placeholder" }, "Your title")),
+      soundLine(platform, s, strip(handle))),
+    off];
+}
+
+function phonePreview(video) {
+  const player = h("video", { class: "phone-video", muted: true, loop: true, playsinline: true, preload: "metadata", poster: video.thumb || null });
+  videoUrl(video).then((url) => url && (player.src = url));
+  const overlay = h("div", { class: "phone-ui" });
+  const playBtn = h("button", { type: "button", class: "phone-play", "aria-label": "Play the preview", html: icon("play", { size: 22 }) });
+  const screen = h("div", { class: "phone-screen" }, player, overlay, playBtn);
+  playBtn.addEventListener("click", () => (player.paused ? player.play().catch(() => {}) : player.pause()));
+  player.addEventListener("play", () => playBtn.classList.add("is-playing"));
+  player.addEventListener("pause", () => playBtn.classList.remove("is-playing"));
+  return {
+    el: h("div", { class: "phone" }, screen),
+    render(platform, post, accounts) {
+      overlay.dataset.platform = platform;
+      overlay.replaceChildren(...overlayFor(platform, post, accounts).filter(Boolean));
+    },
+  };
 }
 
 // --------------------------------------------------------------------------- Publish: one post
@@ -248,16 +397,16 @@ async function trendingSounds(account, filters) {
 
 function soundSection(platform, settings, accounts, save) {
   const box = h("div", { class: "stack" });
+  const chosen = h("div", {});
   const paintChosen = () => {
     const s = settings.sound;
     chosen.replaceChildren(s && (s.title || s.name)
-      ? h("div", { class: "sound-chosen" }, h("span", { html: icon("music", { size: 16 }) }),
+      ? h("div", { class: "sound-chosen" }, h("span", { class: "sound-icon", html: icon("music", { size: 16 }) }),
           h("span", { class: "sound-text" }, h("strong", {}, s.title || s.name), s.artist ? ` · ${s.artist}` : ""),
           s.link ? h("a", { class: "btn btn-ghost btn-sm", href: s.link, target: "_blank", rel: "noopener" }, "Listen") : null,
           button("Remove", { variant: "ghost", size: "sm", onClick: () => { settings.sound = null; save(); paintChosen(); } }))
-      : h("p", { class: "muted small" }, "No sound chosen."));
+      : h("p", { class: "muted small" }, "No sound chosen: the video keeps only its own audio."));
   };
-  const chosen = h("div", {});
   paintChosen();
   const sliders = h("div", { class: "form-grid" },
     slider({ label: "Sound volume", value: settings.sound_volume, help: "0 % = the sound is on the post but can't be heard.",
@@ -271,8 +420,8 @@ function soundSection(platform, settings, accounts, save) {
     const genre = h("select", { class: "input select", "aria-label": "Genre" }, GENRES.map((g) => h("option", { value: g }, g.replace(/_/g, " "))));
     const range = h("select", { class: "input select", "aria-label": "Trending over" },
       [["1DAY", "Today"], ["7DAY", "This week"], ["30DAY", "This month"], ["90DAY", "3 months"]].map(([v, l]) => h("option", { value: v, selected: v === "7DAY" }, l)));
-    const country = h("input", { class: "input", value: "US", maxlength: 2, "aria-label": "Country code", style: { width: "64px" } });
-    const find = button("Find trending sounds", { icon: "search", size: "sm" });
+    const country = h("input", { class: "input", value: "US", maxlength: 2, "aria-label": "Country code", style: { width: "70px" } });
+    const find = button("Find trending sounds", { icon: "search", size: "sm", variant: "secondary" });
     find.addEventListener("click", async () => {
       const account = tiktokAccounts[0];
       if (!account) return toast("Connect a TikTok account first (Accounts page).", { kind: "error" });
@@ -281,10 +430,11 @@ function soundSection(platform, settings, accounts, save) {
         const filters = { genre: genre.value, date_range: range.value, country_code: country.value.toUpperCase() || "US" };
         const tracks = await trendingSounds(account, filters);
         results.replaceChildren(...(tracks.length ? tracks.map((t) => h("li", { class: "sound-row" },
+          h("span", { class: "sound-icon", html: icon("music", { size: 16 }) }),
           h("span", { class: "sound-text" }, h("strong", {}, t.title), t.artist ? ` · ${t.artist}` : "",
-            t.duration ? h("span", { class: "muted small" }, ` · ${formatSeconds(t.duration)}`) : null),
+            t.duration ? h("span", { class: "muted small timecode" }, ` ${formatSeconds(t.duration)}`) : null),
           t.link ? h("a", { class: "btn btn-ghost btn-sm", href: t.link, target: "_blank", rel: "noopener" }, "Listen") : null,
-          button("Use", { size: "sm", onClick: () => {
+          button("Use", { size: "sm", variant: "secondary", onClick: () => {
             settings.sound = { ...t, ...filters };
             save();
             paintChosen();
@@ -301,27 +451,27 @@ function soundSection(platform, settings, accounts, save) {
         ? h("div", { class: "row row-wrap sound-filters" }, genre, range, country, find)
         : callout("info", "Connect a TikTok account on the Accounts page to browse TikTok's trending sounds."),
       results, sliders,
-      callout("info", "TikTok only lets music be added in its own publish form, which opens in your Claude chat when you publish. Claude shows you this sound and these volumes there so you can set them in one tap."));
+      callout("info", "TikTok only takes music in its own publish form, which opens in your Claude chat when you publish. Claude shows you this sound and these volumes there, so setting them is one tap."));
   } else {
-    const name = textField({ label: "Sound to add", value: settings.sound && settings.sound.name, placeholder: "e.g. the trending audio's name or link",
+    const name = textField({ label: "Sound to add", value: settings.sound && settings.sound.name, placeholder: "The trending sound's name or link",
       onInput: (v) => { settings.sound = v.trim() ? { name: v.trim() } : null; save(); } });
     box.append(name, sliders,
-      callout("info", `${PLATFORMS[platform].label} doesn't let apps add its in-app sounds. Add this sound in the app when you post, at the volume set here.`));
+      callout("warn", `${PLATFORMS[platform].label} doesn't let any app add its in-app sounds: add this sound in the ${PLATFORMS[platform].label} app, at these volumes, when you post (or right after, while editing the post).`));
   }
   return box;
 }
 
-function platformCard(platform, post, accounts, save, repaintBar) {
+function platformPanel(platform, post, accounts, save, changed) {
   const s = post[platform];
   const meta = PLATFORMS[platform];
   const mine = accounts.filter((a) => a.platform === platform);
   const body = h("div", { class: "stack-lg" });
-  const sw = switchControl({ id: `on-${platform}`, checked: s.enabled, label: s.enabled ? "On" : "Off", onChange: (v) => {
+  const sw = switchControl({ id: `on-${platform}`, checked: s.enabled, label: `Post to ${meta.label}`, onChange: (v) => {
     s.enabled = v;
-    sw.querySelector(".switch-label").textContent = v ? "On" : "Off";
-    body.hidden = !v;
+    body.classList.toggle("is-off", !v);
+    body.inert = !v;
     save();
-    repaintBar();
+    changed();
   } });
   const acc = mine.length
     ? h("div", { class: "chips", role: "group", "aria-label": `${meta.label} accounts` }, mine.map((a) => {
@@ -330,23 +480,25 @@ function platformCard(platform, post, accounts, save, repaintBar) {
         input.addEventListener("change", () => {
           s.accounts = input.checked ? [...new Set([...s.accounts, a.id])] : s.accounts.filter((x) => x !== a.id);
           save();
-          repaintBar();
+          changed();
         });
         return [input, h("label", { class: "chip", for: id }, h("span", { class: "chip-check", html: icon("check", { size: 14 }) }), accountName(a),
           a.status && a.status !== "active" && a.status !== "manual" ? h("span", { class: "chip-note" }, a.status) : null)];
       }))
-    : callout("warn", h("span", {}, `No ${meta.label} account yet. `, h("a", { href: "#/x/accounts" }, "Connect one on the Accounts page.")));
+    : callout("warn", h("span", {}, `No ${meta.label} account yet. `, h("a", { href: "#/x/accounts" }, "Add one on the Accounts page.")));
 
   const fields = [];
   if (platform === "youtube") {
-    fields.push(textField({ label: "Title", value: s.title, max: 100, placeholder: "Shown under the Short", onInput: (v) => { s.title = v; save(); } }));
+    fields.push(textField({ label: "Title", value: s.title, max: meta.titleMax, placeholder: "Shown under the Short",
+      onInput: (v) => { s.title = v; save(); changed(); } }));
   }
   fields.push(textField({ label: platform === "youtube" ? "Description" : "Caption", value: s.caption, multiline: true, max: meta.captionMax,
-    placeholder: post.common.caption ? `Same as above: ${post.common.caption.slice(0, 80)}` : "Leave empty to use the shared caption",
-    onInput: (v) => { s.caption = v.trim() ? v : null; save(); } }));
+    placeholder: post.common.caption ? `Same as above: ${post.common.caption.slice(0, 80)}` : "Leave empty to use the post text above",
+    onInput: (v) => { s.caption = v.trim() ? v : null; save(); changed(); } }));
   fields.push(textField({ label: platform === "youtube" ? "Tags" : "Hashtags", value: s.hashtags ? tagText(s.hashtags) : "",
     placeholder: post.common.hashtags.length ? `Same as above: ${tagText(post.common.hashtags)}` : "#motivation #quotes",
-    onInput: (v) => { s.hashtags = v.trim() ? tagsOf(v) : null; save(); } }));
+    help: meta.hashtagMax ? `Up to ${meta.hashtagMax} hashtags on ${meta.label}.` : null,
+    onInput: (v) => { s.hashtags = v.trim() ? tagsOf(v) : null; save(); changed(); } }));
 
   const options = h("div", { class: "form-grid" });
   if (platform === "tiktok") {
@@ -357,45 +509,50 @@ function platformCard(platform, post, accounts, save, repaintBar) {
       toggle("Allow stitches", s.allow_stitch, (v) => { s.allow_stitch = v; save(); }),
       toggle("Label as AI-generated", s.is_aigc, (v) => { s.is_aigc = v; save(); }));
   } else if (platform === "instagram") {
-    options.append(toggle("Also show in the feed", s.share_to_feed, (v) => { s.share_to_feed = v; save(); }));
+    options.append(whenField(s, () => { save(); changed(); }),
+      toggle("Also show in the feed", s.share_to_feed, (v) => { s.share_to_feed = v; save(); }));
   } else {
-    options.append(selectField("Visibility", YT_PRIVACY, s.privacy, (v) => { s.privacy = v; save(); }),
+    options.append(whenField(s, () => { save(); changed(); }),
+      selectField("Visibility", YT_PRIVACY, s.privacy, (v) => { s.privacy = v; save(); }),
       toggle("Made for kids", s.made_for_kids, (v) => { s.made_for_kids = v; save(); }));
   }
 
   body.append(
-    h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Accounts"), acc),
+    h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Post to"), acc),
     h("div", { class: "stack" }, ...fields),
     options,
-    h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Sound"), soundSection(platform, s, accounts, save)));
-  body.hidden = !s.enabled;
-  return h("section", { class: ["card", "platform-card", `platform-${platform}`] },
-    h("div", { class: "card-head card-head-row" },
-      h("div", {}, h("h2", { class: "card-title" }, meta.label),
-        h("p", { class: "card-sub" }, mine.length ? `${mine.length} account${mine.length === 1 ? "" : "s"} connected` : "Not connected")),
-      sw),
+    h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Sound"), soundSection(platform, s, accounts, () => { save(); changed(); })));
+  body.classList.toggle("is-off", !s.enabled);
+  body.inert = !s.enabled;
+  return h("div", { class: "ppanel-inner" },
+    h("div", { class: "ppanel-head" }, sw,
+      h("span", { class: "muted small" }, platform === "tiktok" ? "Through Higgsfield" : "Through Metricool")),
     body);
 }
 
 function resultsCard(task) {
   if (!task) return null;
-  const rows = Object.entries(task.result || {}).map(([platform, r]) => h("li", { class: ["check", r.status === "done" ? "is-ok" : r.status === "error" ? "is-missing" : "is-optional"] },
-    h("span", { class: "check-icon", html: icon(r.status === "done" ? "check" : r.status === "error" ? "alert" : "info", { size: 14 }) }),
+  const rows = Object.entries(task.result || {}).map(([platform, r]) => {
+    const ok = ["done", "scheduled"].includes(r.status);
+    return h("li", { class: ["check", ok ? "is-ok" : r.status === "error" ? "is-missing" : "is-optional"] },
+    h("span", { class: "check-icon", html: icon(ok ? "check" : r.status === "error" ? "alert" : "info", { size: 14 }) }),
     h("span", {}, h("strong", {}, (PLATFORMS[platform] || { label: platform }).label), ` · ${r.message || r.status}`,
-      r.url ? [" · ", h("a", { href: r.url, target: "_blank", rel: "noopener" }, "Open post")] : null)));
-  const running = ["queued", "running"].includes(task.status);
+      r.url ? [" · ", h("a", { href: r.url, target: "_blank", rel: "noopener" }, "Open post")] : null));
+  });
+  const st = publishState(task);
   return h("section", { class: ["card", "job-card", `job-${task.status}`] },
-    h("div", { class: "card-head" }, h("h2", { class: "card-title" },
-      running ? "Publishing…" : task.status === "error" ? "Publishing stopped"
-        : Object.values(task.result || {}).every((r) => r.status === "done") ? "Published" : "Check each platform"),
-      h("p", { class: "card-sub", role: "status", "aria-live": "polite" }, task.message || "")),
+    h("div", { class: "card-head card-head-row" },
+      h("div", {}, h("h2", { class: "card-title" }, task.status === "queued" && task.notify_error ? "Waiting for Claude"
+        : ["queued", "running"].includes(task.status) ? "Publishing…" : "Publish results"),
+        h("p", { class: "card-sub", role: "status", "aria-live": "polite" }, task.message || "")),
+      pill(st)),
     rows.length ? h("ul", { class: "checklist" }, rows) : null,
     task.error ? callout("error", task.error) : null);
 }
 
 async function renderComposer(container, key) {
   const { db, retrying, newTask, nowIso } = P();
-  container.append(h("p", {}, h("a", { class: "btn btn-ghost btn-sm", href: "#/x/publish", html: `${icon("chevronLeft", { size: 16 })}<span class="btn-label">All videos</span>` })));
+  container.append(h("p", { class: "back-row" }, h("a", { class: "btn btn-ghost btn-sm", href: "#/x/publish", html: `${icon("chevronLeft", { size: 16 })}<span class="btn-label">All videos</span>` })));
   const [videos, accounts, snap] = await Promise.all([listVideos(), listAccounts(), retrying(() => db.doc(`posts/${key}`).get())]);
   const video = videos.find((v) => v.key === key);
   if (!video) {
@@ -403,37 +560,102 @@ async function renderComposer(container, key) {
     return null;
   }
   const [kind, id] = key.split(":");
-  const post = snap.exists ? { ...newPost({ kind, id }), ...snap.data() } : newPost({ kind, id });
-  for (const p of ORDER) post[p] = { ...newPost({ kind, id })[p], ...(post[p] || {}) };
+  const base = newPost({ kind, id });
+  const post = snap.exists ? { ...base, ...snap.data() } : base;
+  for (const p of ORDER) post[p] = { ...base[p], ...(post[p] || {}) };
   if (!snap.exists) {
-    // start with every connected account ticked
+    // start with every account ticked
     for (const p of ORDER) post[p].accounts = accounts.filter((a) => a.platform === p).map((a) => a.id);
     post.youtube.title = video.title;
   }
   const save = debounce(() => retrying(() => db.doc(`posts/${key}`).set({ ...post, updated: nowIso() }))
     .catch((err) => toastError("Could not save the post settings", err)), 600);
 
-  const player = h("video", { class: "result-video", controls: true, playsinline: true, preload: "metadata", poster: video.thumb || null });
-  videoUrl(video).then((url) => url && (player.src = url));
-  const common = card("For every platform", "Each platform below uses this unless you write something else there.",
+  let active = ORDER.find((p) => post[p].enabled) || "tiktok";
+  const phone = phonePreview(video);
+  const repaintPreview = () => phone.render(active, post, accounts);
+  const schedulePreview = (() => {
+    let pending = false;
+    return () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        repaintPreview();
+        repaintTabs();
+        repaintBar();
+      });
+    };
+  })();
+
+  const common = card("Post text", "Written once, used on every platform unless a platform tab says otherwise.",
     h("div", { class: "stack" },
       textField({ label: "Caption", value: post.common.caption, multiline: true, rows: 4, max: 2200, placeholder: "What the post says",
-        onInput: (v) => { post.common.caption = v; save(); } }),
+        onInput: (v) => { post.common.caption = v; save(); schedulePreview(); } }),
       textField({ label: "Hashtags", value: tagText(post.common.hashtags), placeholder: "#motivation #mindset #quotes",
-        help: "Separate with spaces or commas; the # is optional.", onInput: (v) => { post.common.hashtags = tagsOf(v); save(); } })));
+        help: "Separate with spaces or commas; the # is optional.", onInput: (v) => { post.common.hashtags = tagsOf(v); save(); schedulePreview(); } })));
+
+  // platform tabs: one panel each, the preview follows the open tab
+  const tablist = h("div", { class: "ptabs", role: "tablist", "aria-label": "Platforms" });
+  const panels = {};
+  const tabs = {};
+  for (const p of ORDER) {
+    tabs[p] = h("button", { type: "button", role: "tab", id: `ptab-${p}`, class: "ptab", "aria-controls": `ppanel-${p}` });
+    tabs[p].addEventListener("click", () => select(p));
+    tabs[p].addEventListener("keydown", (e) => {
+      const i = ORDER.indexOf(p);
+      const next = e.key === "ArrowRight" ? ORDER[(i + 1) % ORDER.length] : e.key === "ArrowLeft" ? ORDER[(i + ORDER.length - 1) % ORDER.length] : null;
+      if (next) {
+        e.preventDefault();
+        select(next);
+        tabs[next].focus();
+      }
+    });
+    tablist.append(tabs[p]);
+    panels[p] = h("section", { role: "tabpanel", id: `ppanel-${p}`, class: "ppanel", "aria-labelledby": `ptab-${p}` },
+      platformPanel(p, post, accounts, save, schedulePreview));
+  }
+  const repaintTabs = () => {
+    for (const p of ORDER) {
+      const s = post[p];
+      const n = s.accounts.length;
+      tabs[p].setAttribute("aria-selected", String(p === active));
+      tabs[p].tabIndex = p === active ? 0 : -1;
+      tabs[p].replaceChildren(platformDot(p), h("span", { class: "ptab-label" }, PLATFORMS[p].label),
+        h("span", { class: ["ptab-state", s.enabled && n ? "is-on" : "is-off"] }, s.enabled ? (n ? `${n}` : "no account") : "off"));
+      panels[p].hidden = p !== active;
+    }
+  };
+  const select = (p) => {
+    active = p;
+    repaintTabs();
+    repaintPreview();
+    repaintBar();
+  };
+  const platformSwitch = h("div", { class: "preview-tabs", role: "group", "aria-label": "Preview as" });
+  const previewTabs = ORDER.map((p) => {
+    const b = h("button", { type: "button", class: "preview-tab" }, platformDot(p), PLATFORMS[p].surface);
+    b.addEventListener("click", () => select(p));
+    platformSwitch.append(b);
+    return [p, b];
+  });
 
   const bar = h("div", { class: "publish-bar" });
   const results = h("div", {});
   const publishBtn = button("Publish", { icon: "upload", variant: "primary", size: "lg" });
+  const summary = h("div", { class: "publish-summary" });
   const targets = () => ORDER.filter((p) => post[p].enabled && post[p].accounts.length);
   const repaintBar = () => {
     const t = targets();
     const n = t.reduce((sum, p) => sum + post[p].accounts.length, 0);
-    publishBtn.querySelector(".btn-label").textContent = t.length ? `Publish to ${t.map((p) => PLATFORMS[p].label).join(", ")}` : "Publish";
+    publishBtn.querySelector(".btn-label").textContent = t.length ? `Publish to ${n} account${n === 1 ? "" : "s"}` : "Publish";
     publishBtn.disabled = !t.length;
-    summary.textContent = t.length ? `${n} account${n === 1 ? "" : "s"} in one go.` : "Turn on a platform and pick an account.";
+    summary.replaceChildren(...(t.length
+      ? t.map((p) => h("span", { class: "publish-chip" }, platformDot(p), PLATFORMS[p].label, h("span", { class: "timecode" }, `×${post[p].accounts.length}`),
+          whenText(post[p]) ? h("span", { class: "publish-when" }, whenText(post[p])) : null))
+      : [h("span", { class: "muted small" }, "Turn on a platform and pick an account.")]));
+    for (const [p, b] of previewTabs) b.setAttribute("aria-pressed", String(p === active));
   };
-  const summary = h("span", { class: "muted small" });
   bar.append(summary, publishBtn);
 
   let unsub = null;
@@ -452,7 +674,11 @@ async function renderComposer(container, key) {
 
   publishBtn.addEventListener("click", async () => {
     const t = targets();
-    if (t.includes("youtube") && !post.youtube.title.trim()) return toast("YouTube needs a title.", { kind: "error" });
+    if (t.includes("youtube") && !post.youtube.title.trim()) return toast("YouTube needs a title (YouTube tab).", { kind: "error" });
+    const badTime = t.find((p) => post[p].when === "at" && (!post[p].at || new Date(post[p].at) < new Date()));
+    if (badTime) return toast(`Pick a time in the future for ${PLATFORMS[badTime].label}.`, { kind: "error" });
+    const tooLong = t.find((p) => ((post[p].caption ?? post.common.caption) || "").length > PLATFORMS[p].captionMax);
+    if (tooLong) return toast(`The ${PLATFORMS[tooLong].label} caption is too long.`, { kind: "error" });
     const missingCaption = !post.common.caption.trim() && t.some((p) => !post[p].caption);
     if (missingCaption && !(await confirmDialog({ title: "Publish without a caption?", message: "Some platforms have no caption. Publish anyway?", confirmLabel: "Publish" }))) return;
     publishBtn.classList.add("is-loading");
@@ -472,13 +698,17 @@ async function renderComposer(container, key) {
 
   container.append(
     head(video.title, video.kind === "reel" ? "Made with reelforge" : "Uploaded video"),
-    h("div", { class: "stack-lg" },
-      h("div", { class: "result-grid" }, h("div", { class: "result-frame", style: { aspectRatio: "9 / 16" } }, player),
-        h("div", { class: "stack-lg" }, common,
-          callout("info", "Publishing is done by Claude in your chat: TikTok asks you to confirm each post there. Instagram and YouTube need a social-media connector in Claude (for example Metricool).")) ),
-      ...ORDER.map((p) => platformCard(p, post, accounts, save, repaintBar)),
-      results,
-      bar));
+    h("div", { class: "composer" },
+      h("aside", { class: "composer-preview", "aria-label": "Preview" },
+        h("div", { class: "preview-switch" }, platformSwitch), phone.el,
+        h("p", { class: "muted small preview-note" }, "A mock-up of the post: counts and buttons are examples.")),
+      h("div", { class: "stack-lg composer-main" },
+        common,
+        h("section", { class: "card card-flush platform-card" }, tablist, ...ORDER.map((p) => panels[p])),
+        results)),
+    bar);
+  repaintTabs();
+  repaintPreview();
   repaintBar();
   return () => unsub && unsub();
 }
@@ -499,31 +729,6 @@ async function syncTiktok() {
       label: a.name || a.label || "", updated: nowIso() }));
   }
   return list.length;
-}
-
-function accountCard(a, refresh) {
-  const pr = a.profile || {};
-  const meta = PLATFORMS[a.platform];
-  const pic = pr.picture ? h("img", { src: P().blobUrl(pr.picture), alt: "" }) : h("span", {}, accountName(a).replace("@", "").slice(0, 1).toUpperCase());
-  const actions = h("div", { class: "row row-wrap account-actions" },
-    pr.bio ? button("Copy bio", { icon: "copy", size: "sm", onClick: async () => toast((await copyText(pr.bio)) ? "Bio copied." : "Copy failed.", { kind: "success", timeout: 1500 }) }) : null,
-    pr.picture ? button("Save picture", { icon: "download", size: "sm", onClick: () => globalThis.reelforgeSaveFile(P().blobUrl(pr.picture), `${(a.handle || "profile").replace(/\W+/g, "")}-picture.jpg`) }) : null,
-    h("a", { class: "btn btn-ghost btn-sm", href: meta.settings(a), target: "_blank", rel: "noopener", html: `${icon("link", { size: 16 })}<span class="btn-label">Open profile settings</span>` }),
-    a.platform === "tiktok" && a.status === "error" ? button("Reconnect", { icon: "refresh", size: "sm", onClick: () => connectTiktok(a.connector_id, refresh) }) : null,
-    button("Remove", { icon: "trash", variant: "ghost", size: "sm", class: "danger-hover", onClick: async () => {
-      if (!(await confirmDialog({ title: `Remove ${accountName(a)}?`, message: "It's removed from the panel only. Nothing changes on the platform.", confirmLabel: "Remove", danger: true }))) return;
-      await P().retrying(() => P().db.doc(`accounts/${a.id}`).delete());
-      refresh();
-    } }));
-  return h("li", { class: "account-card" },
-    h("div", { class: "account-pic", "aria-hidden": "true" }, pic),
-    h("div", { class: "account-main" },
-      h("div", { class: "account-name" }, h("strong", {}, pr.name || accountName(a)), " ",
-        h("span", { class: "muted small" }, `${meta.label} · ${accountName(a)}`),
-        a.status && a.status !== "manual" ? h("span", { class: ["badge", a.status === "active" && "badge-accent"] }, a.status) : null),
-      pr.bio ? h("p", { class: "account-bio" }, pr.bio) : h("p", { class: "muted small" }, "No bio saved yet."),
-      pr.link ? h("p", { class: "small" }, pr.link) : null,
-      actions));
 }
 
 async function connectTiktok(connectorId, refresh) {
@@ -553,7 +758,7 @@ async function addManualAccount(platform, refresh) {
   const handle = await dialog({
     title: `Add a ${PLATFORMS[platform].label} account`,
     body: h("div", { class: "stack" }, h("label", { class: "field-label" }, "Username", input),
-      h("p", { class: "muted small" }, "Posting needs a social-media connector in Claude (for example Metricool) linked to this account.")),
+      h("p", { class: "muted small" }, "Posting to it needs Metricool in Claude, linked to this account (see “How posting works”).")),
     actions: [{ label: "Cancel", value: null, variant: "ghost" }, { label: "Add", value: () => input.value.trim().replace(/^@/, ""), variant: "primary", submit: true }],
     initialFocus: "input",
   });
@@ -563,107 +768,248 @@ async function addManualAccount(platform, refresh) {
   refresh();
 }
 
-function profileEditor(accounts, refresh) {
-  const chosen = new Set(accounts.map((a) => a.id));
+function connectionsCard(accounts, route, refresh) {
+  const tiktok = accounts.filter((a) => a.platform === "tiktok" && a.status === "active").length;
+  const metricool = (route.connectors || []).some((c) => /metricool/i.test(c));
+  const computer = Boolean(route.computer_session_id);
+  const row = (title, how, ready, readyText, notText, ...actions) => h("li", { class: "conn-row" },
+    h("span", { class: ["conn-state", ready ? "is-ok" : "is-idle"], html: icon(ready ? "check" : "info", { size: 16 }) }),
+    h("div", { class: "conn-main" },
+      h("div", { class: "conn-title" }, h("strong", {}, title), h("span", { class: ["state-pill", ready ? "is-ok" : "is-idle"] }, ready ? readyText : notText)),
+      h("p", { class: "muted small" }, how)),
+    h("div", { class: "conn-actions" }, actions));
+  return h("section", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", { class: "card-title" }, "How posting works"),
+      h("p", { class: "card-sub" }, "Each part runs through a different connection. Set up the ones you need.")),
+    h("ul", { class: "conn-list" },
+      row("TikTok posts", "Through your Higgsfield connection. TikTok asks you to confirm each post in your Claude chat.",
+        tiktok > 0, `${tiktok} account${tiktok === 1 ? "" : "s"}`, "Not connected",
+        button("Connect TikTok", { icon: "plus", size: "sm", variant: tiktok ? "secondary" : "primary", onClick: () => connectTiktok(null, refresh) })),
+      row("Instagram and YouTube posts", "Through Metricool: add the Metricool connector in Claude, link your Instagram (Business or Creator) and YouTube accounts inside Metricool, then start a new Claude session for this project and say “take over my reelforge panel”.",
+        metricool, "Ready", "Needs Metricool",
+        h("a", { class: "btn btn-secondary btn-sm", href: CONNECTORS_URL, target: "_blank", rel: "noopener", html: `${icon("link", { size: 16 })}<span class="btn-label">Claude connectors</span>` })),
+      row("Profile pictures and bios", "No app can change these through TikTok, Instagram or YouTube, so Claude does it in your own browser: open Claude on your computer (desktop app, with Claude in Chrome) in this project and say “connect my reelforge panel for profile changes”.",
+        computer, "Ready", "Needs Claude on your computer")));
+}
+
+function profileResults(task) {
+  if (!task) return null;
+  const rows = Object.entries(task.result || {}).map(([accountId, r]) => h("li", { class: ["check", r.status === "done" ? "is-ok" : r.status === "error" ? "is-missing" : "is-optional"] },
+    h("span", { class: "check-icon", html: icon(r.status === "done" ? "check" : r.status === "error" ? "alert" : "info", { size: 14 }) }),
+    h("span", {}, h("strong", {}, r.account || accountId), ` · ${r.message || r.status}`)));
+  return h("section", { class: ["card", "job-card"] },
+    h("div", { class: "card-head" }, h("h2", { class: "card-title" }, task.status === "queued" && task.notify_error ? "Waiting for Claude on your computer"
+      : ["queued", "running"].includes(task.status) ? "Changing your profiles…" : "Profile changes"),
+      h("p", { class: "card-sub", role: "status", "aria-live": "polite" }, task.message || "")),
+    rows.length ? h("ul", { class: "checklist" }, rows) : null,
+    task.error ? callout("error", task.error) : null);
+}
+
+function profileEditor(accounts, chosen, refresh, onTask) {
   const values = { name: null, bio: null, link: null, picture: null };
-  const strictest = () => Math.min(...accounts.filter((a) => chosen.has(a.id)).map((a) => PLATFORMS[a.platform].bioMax), 1000);
+  const picked = () => accounts.filter((a) => chosen.has(a.id));
+  const strictest = () => Math.min(...picked().map((a) => PLATFORMS[a.platform].bioMax), 1000);
   const bioHelp = h("p", { class: "field-help" });
-  const paintHelp = () => (bioHelp.textContent = `Up to ${strictest()} characters for the accounts selected (TikTok 80, Instagram 150, YouTube 1000). Empty fields are left as they are.`);
-  const picks = h("div", { class: "chips", role: "group", "aria-label": "Accounts to change" }, accounts.map((a) => {
-    const id = `pf-${a.id}`;
-    const input = h("input", { type: "checkbox", id, class: "visually-hidden", checked: true });
-    input.addEventListener("change", () => {
-      if (input.checked) chosen.add(a.id);
-      else chosen.delete(a.id);
-      paintHelp();
-    });
-    return [input, h("label", { class: "chip", for: id }, h("span", { class: "chip-check", html: icon("check", { size: 14 }) }),
-      `${PLATFORMS[a.platform].label} ${accountName(a)}`)];
-  }));
-  const picName = h("span", { class: "muted small" }, "No new picture");
-  const pic = dropzone({ accept: "image/*", compact: true, iconName: "image", title: "New profile picture", hint: "Square JPG or PNG works everywhere",
+  const count = h("p", { class: "muted small" });
+  const paint = () => {
+    bioHelp.textContent = `Up to ${strictest()} characters for the accounts selected (TikTok 80, Instagram 150, YouTube 1000). Empty fields stay as they are.`;
+    count.textContent = chosen.size ? `${chosen.size} account${chosen.size === 1 ? "" : "s"} selected. Tick or untick accounts below.` : "Select accounts below to change them.";
+  };
+  const preview = h("div", { class: "pic-preview", "aria-hidden": "true", html: icon("image", { size: 22 }) });
+  const picName = h("span", { class: "muted small" }, "No new picture: the current ones stay.");
+  const clearPic = button("Remove", { variant: "ghost", size: "sm", hidden: true, onClick: () => {
+    values.picture = null;
+    preview.innerHTML = icon("image", { size: 22 });
+    picName.textContent = "No new picture: the current ones stay.";
+    clearPic.hidden = true;
+  } });
+  const pic = dropzone({ accept: "image/*", compact: true, iconName: "image", title: "Choose a new profile picture", hint: "Square JPG or PNG, at least 400 × 400",
     onFiles: async ([file]) => {
       try {
         const type = ["image/png", "image/jpeg", "image/webp"].includes(file.type) ? file.type : "image/jpeg";
         const res = await P().uploadAsset(file, type);
         values.picture = res.id;
-        picName.textContent = `${file.name} ready`;
+        preview.replaceChildren(h("img", { src: P().blobUrl(res.id), alt: "" }));
+        picName.textContent = `${file.name} will be used.`;
+        clearPic.hidden = false;
       } catch (err) {
         toastError("Could not add the picture", err);
       }
     } });
-  const applyBtn = button("Save to selected accounts", { icon: "check", variant: "primary" });
-  applyBtn.addEventListener("click", async () => {
-    const patch = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== null && v !== ""));
-    if (!chosen.size || !Object.keys(patch).length) return toast("Pick accounts and fill in at least one field.", { kind: "error" });
-    const tooLong = patch.bio && accounts.filter((a) => chosen.has(a.id) && patch.bio.length > PLATFORMS[a.platform].bioMax);
-    if (tooLong && tooLong.length && !(await confirmDialog({ title: "Bio too long for some accounts", message: `${tooLong.map((a) => `${PLATFORMS[a.platform].label} ${accountName(a)}`).join(", ")} allow fewer characters. Save anyway?`, confirmLabel: "Save" }))) return;
-    applyBtn.classList.add("is-loading");
+  const patchOf = () => Object.fromEntries(Object.entries(values).filter(([, v]) => v !== null && v !== ""));
+  async function saveProfiles() {
+    const patch = patchOf();
+    if (!chosen.size || !Object.keys(patch).length) {
+      toast("Select accounts and fill in at least one field.", { kind: "error" });
+      return null;
+    }
+    const tooLong = patch.bio && picked().filter((a) => patch.bio.length > PLATFORMS[a.platform].bioMax);
+    if (tooLong && tooLong.length && !(await confirmDialog({ title: "Bio too long for some accounts", message: `${tooLong.map((a) => `${PLATFORMS[a.platform].label} ${accountName(a)}`).join(", ")} allow fewer characters. Save anyway?`, confirmLabel: "Save" }))) return null;
+    for (const a of picked()) {
+      await P().retrying(() => P().db.doc(`accounts/${a.id}`).update({ profile: { ...(a.profile || {}), ...patch }, updated: P().nowIso() }));
+    }
+    return patch;
+  }
+  const saveBtn = button("Save", { icon: "save", variant: "secondary" });
+  const applyBtn = button("Change on my accounts", { icon: "wand", variant: "primary" });
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.classList.add("is-loading");
     try {
-      for (const a of accounts.filter((x) => chosen.has(x.id))) {
-        await P().retrying(() => P().db.doc(`accounts/${a.id}`).update({ profile: { ...(a.profile || {}), ...patch }, updated: P().nowIso() }));
+      if (await saveProfiles()) {
+        toast(`Saved to ${chosen.size} account${chosen.size === 1 ? "" : "s"}.`, { kind: "success" });
+        refresh();
       }
-      toast(`Saved to ${chosen.size} account${chosen.size === 1 ? "" : "s"}. Copy or save it into each app below.`, { kind: "success" });
-      refresh();
     } catch (err) {
       toastError("Could not save the profiles", err);
+    } finally {
+      saveBtn.classList.remove("is-loading");
+    }
+  });
+  applyBtn.addEventListener("click", async () => {
+    applyBtn.classList.add("is-loading");
+    try {
+      const patch = await saveProfiles();
+      if (!patch) return;
+      const targets = picked().map((a) => ({ id: a.id, platform: a.platform, handle: a.handle || "" }));
+      const { id, problem } = await P().newTask("profile", null, { accounts: targets, changes: patch });
+      await P().retrying(() => P().db.doc("settings/profile").set({ last_task: id, updated: P().nowIso() }));
+      onTask(id);
+      toast(problem ? `Saved. ${problem} Open Claude on your computer and say “apply my reelforge profile changes”.`
+        : "Sent to Claude: it changes them in your browser.", { kind: problem ? "info" : "success", timeout: problem ? 10000 : undefined });
+      refresh();
+    } catch (err) {
+      toastError("Could not send the profile changes", err);
     } finally {
       applyBtn.classList.remove("is-loading");
     }
   });
-  paintHelp();
-  return card("Edit profiles", "Change one account or all of them at once: tick the accounts, fill in what should change.",
-    h("div", { class: "stack-lg" },
-      picks,
-      h("div", { class: "form-grid" },
-        textField({ label: "Display name", placeholder: "Leave empty to keep", onInput: (v) => (values.name = v.trim() || null) }),
-        textField({ label: "Link in bio", placeholder: "https://…", onInput: (v) => (values.link = v.trim() || null) })),
-      h("div", { class: "field" }, textField({ label: "Bio", multiline: true, rows: 3, placeholder: "Leave empty to keep", onInput: (v) => (values.bio = v.trim() || null) }), bioHelp),
-      h("div", { class: "stack" }, pic, picName),
-      h("div", { class: "row" }, applyBtn),
-      callout("info", "TikTok, Instagram and YouTube don't let apps change your profile picture or bio, so the panel keeps them here. After saving, use “Copy bio” and “Save picture” on each account, then “Open profile settings” to paste them in.")));
+  paint();
+  return {
+    paint,
+    el: h("section", { class: "card profile-editor" },
+      h("div", { class: "card-head" }, h("h2", { class: "card-title" }, "Edit profiles"),
+        h("p", { class: "card-sub" }, "Change one account, or many at once.")),
+      h("div", { class: "stack-lg" },
+        count,
+        h("div", { class: "form-grid" },
+          textField({ label: "Display name", placeholder: "Leave empty to keep", onInput: (v) => (values.name = v.trim() || null) }),
+          textField({ label: "Link in bio", placeholder: "https://…", onInput: (v) => (values.link = v.trim() || null) })),
+        textField({ label: "Bio", multiline: true, rows: 3, placeholder: "Leave empty to keep", help: bioHelp, onInput: (v) => (values.bio = v.trim() || null) }),
+        h("div", { class: "pic-row" }, preview, h("div", { class: "stack pic-main" }, pic, h("div", { class: "row" }, picName, clearPic))),
+        h("div", { class: "row row-wrap" }, applyBtn, saveBtn),
+        h("p", { class: "muted small" }, "“Change on my accounts” sends the changes to Claude on your computer, which makes them in your browser where you're signed in. “Save” only keeps them here, for copying."))),
+  };
+}
+
+function accountCard(a, chosen, onToggle, refresh) {
+  const pr = a.profile || {};
+  const meta = PLATFORMS[a.platform];
+  const pic = pr.picture ? h("img", { src: P().blobUrl(pr.picture), alt: "" }) : h("span", {}, strip(accountName(a)).slice(0, 1).toUpperCase() || "?");
+  const id = `pick-${a.id}`;
+  const tick = h("input", { type: "checkbox", id, class: "account-tick", checked: chosen.has(a.id), "aria-label": `Select ${accountName(a)}` });
+  tick.addEventListener("change", () => onToggle(a.id, tick.checked));
+  return h("li", { class: ["account-card", chosen.has(a.id) && "is-picked"] },
+    h("div", { class: "account-top" },
+      h("div", { class: `account-pic ring-${a.platform}`, "aria-hidden": "true" }, pic),
+      h("div", { class: "account-who" },
+        h("strong", { class: "account-name" }, pr.name || accountName(a)),
+        h("span", { class: "account-handle" }, platformDot(a.platform), `${meta.label} · ${accountName(a)}`)),
+      tick),
+    pr.bio ? h("p", { class: "account-bio" }, pr.bio) : h("p", { class: "account-bio muted" }, "No bio saved yet."),
+    pr.link ? h("p", { class: "account-link small" }, pr.link) : null,
+    h("div", { class: "account-actions" },
+      a.status && a.status !== "manual" ? h("span", { class: ["state-pill", a.status === "active" ? "is-ok" : "is-warn"] }, a.status) : null,
+      h("span", { class: "spacer" }),
+      pr.bio ? button("Copy bio", { icon: "copy", size: "sm", variant: "ghost", iconOnly: true, onClick: async () => toast((await copyText(pr.bio)) ? "Bio copied." : "Copy failed.", { kind: "success", timeout: 1500 }) }) : null,
+      pr.picture ? button("Save picture", { icon: "download", size: "sm", variant: "ghost", iconOnly: true, onClick: () => globalThis.reelforgeSaveFile(P().blobUrl(pr.picture), `${strip(a.handle || "profile").replace(/\W+/g, "")}-picture.jpg`) }) : null,
+      h("a", { class: "btn btn-ghost btn-sm btn-icon", href: meta.settings(a), target: "_blank", rel: "noopener", title: "Open profile settings", "aria-label": "Open profile settings", html: icon("link", { size: 16 }) }),
+      a.platform === "tiktok" && a.status === "error" ? button("Reconnect", { icon: "refresh", size: "sm", onClick: () => connectTiktok(a.connector_id, refresh) }) : null,
+      button("Remove", { icon: "trash", variant: "ghost", size: "sm", iconOnly: true, class: "danger-hover", onClick: async () => {
+        if (!(await confirmDialog({ title: `Remove ${accountName(a)}?`, message: "It's removed from the panel only. Nothing changes on the platform.", confirmLabel: "Remove", danger: true }))) return;
+        await P().retrying(() => P().db.doc(`accounts/${a.id}`).delete());
+        refresh();
+      } })));
 }
 
 function renderAccounts(container) {
   const body = h("div", { class: "stack-lg" });
-  container.append(head("Accounts", "Your TikTok, Instagram and YouTube accounts, and their profiles."), body);
+  const results = h("div", {});
+  const chosen = new Set();
+  const seen = new Set(); // accounts start selected; unticking one sticks
+  let unsub = null;
+  const watchProfile = (taskId) => {
+    if (unsub) unsub();
+    unsub = P().db.doc(`tasks/${taskId}`).onSnapshot((s) => results.replaceChildren(profileResults(s.exists ? s.data() : null) || ""), () => {});
+  };
+  container.append(head("Accounts", "Your TikTok, Instagram and YouTube accounts, how posting reaches them, and their profiles."), body);
+  let first = true;
   async function paint() {
     let accounts = [];
+    let route = {};
     try {
-      accounts = await listAccounts();
+      [accounts, route] = await Promise.all([listAccounts(), P().routing()]);
+      for (const a of accounts) {
+        if (!seen.has(a.id)) chosen.add(a.id);
+        seen.add(a.id);
+      }
+      if (first) {
+        first = false;
+        const snap = await P().retrying(() => P().db.doc("settings/profile").get()).catch(() => null);
+        if (snap && snap.exists && snap.data().last_task) watchProfile(snap.data().last_task);
+      }
     } catch (err) {
       toastError("Could not load your accounts", err);
     }
+    for (const id of [...chosen]) if (!accounts.some((a) => a.id === id)) chosen.delete(id);
+    const editor = accounts.length ? profileEditor(accounts, chosen, paint, watchProfile) : null;
     const lists = ORDER.map((platform) => {
       const mine = accounts.filter((a) => a.platform === platform);
-      const actions = platform === "tiktok"
-        ? [button("Connect TikTok", { icon: "plus", variant: "primary", size: "sm", onClick: () => connectTiktok(null, paint) }),
-           button("Check accounts", { icon: "refresh", variant: "ghost", size: "sm", onClick: async () => {
-             try {
-               const n = await syncTiktok();
-               toast(`${n} TikTok account${n === 1 ? "" : "s"} connected.`, { kind: "success", timeout: 2000 });
-               paint();
-             } catch (err) {
-               toastError("Could not check TikTok accounts", err);
-             }
-           } })]
-        : [button(`Add ${PLATFORMS[platform].label} account`, { icon: "plus", size: "sm", onClick: () => addManualAccount(platform, paint) })];
-      return h("section", { class: "card" },
-        h("div", { class: "card-head card-head-row" },
-          h("div", {}, h("h2", { class: "card-title" }, PLATFORMS[platform].label),
-            h("p", { class: "card-sub" }, platform === "tiktok" ? "Connected through your Higgsfield account." : "Posting needs a social-media connector in Claude, such as Metricool.")),
-          h("div", { class: "row" }, actions)),
-        mine.length ? h("ul", { class: "account-list" }, mine.map((a) => accountCard(a, paint))) : h("p", { class: "muted" }, "No accounts yet."));
+      const add = platform === "tiktok"
+        ? h("div", { class: "row" },
+            button("Connect TikTok", { icon: "plus", size: "sm", variant: "secondary", onClick: () => connectTiktok(null, paint) }),
+            button("Check accounts", { icon: "refresh", variant: "ghost", size: "sm", onClick: async () => {
+              try {
+                const n = await syncTiktok();
+                toast(`${n} TikTok account${n === 1 ? "" : "s"} connected.`, { kind: "success", timeout: 2000 });
+                paint();
+              } catch (err) {
+                toastError("Could not check TikTok accounts", err);
+              }
+            } }))
+        : button(`Add ${PLATFORMS[platform].label} account`, { icon: "plus", size: "sm", variant: "secondary", onClick: () => addManualAccount(platform, paint) });
+      return h("section", { class: "account-group" },
+        h("div", { class: "account-group-head" }, h("h2", { class: "section-title" }, platformDot(platform), PLATFORMS[platform].label,
+          h("span", { class: "count-pill" }, String(mine.length))), add),
+        mine.length
+          ? h("ul", { class: "account-grid" }, mine.map((a) => accountCard(a, chosen, (id, on) => {
+              if (on) chosen.add(id);
+              else chosen.delete(id);
+              if (editor) editor.paint();
+              const li = body.querySelector(`#pick-${CSS.escape(id)}`);
+              if (li) li.closest(".account-card").classList.toggle("is-picked", on);
+            }, paint)))
+          : h("p", { class: "muted small account-empty" }, "No accounts yet."));
     });
-    body.replaceChildren(accounts.length ? profileEditor(accounts, paint) : callout("info", "Connect or add an account to manage its profile here."), ...lists);
+    body.replaceChildren(connectionsCard(accounts, route, paint),
+      editor ? editor.el : callout("info", "Connect or add an account to manage its profile here."), results, ...lists);
   }
   paint();
+  return () => unsub && unsub();
 }
 
 // --------------------------------------------------------------------------- registration
 
 export const extras = {
   nav: [{ id: "publish", label: "Publish", icon: "upload" }, { id: "accounts", label: "Accounts", icon: "link" }],
+  homeActions: [{ label: "Post a video", icon: "upload", href: "#/x/publish" }, { label: "Accounts", icon: "link", href: "#/x/accounts" }],
+  homeStats() {
+    const span = h("span", {});
+    listAccounts().then((list) => {
+      const n = list.length;
+      span.replaceChildren(h("strong", {}, String(n)), n === 1 ? " account" : " accounts");
+    }).catch(() => {});
+    return [span];
+  },
   render(id, sub, container) {
     if (id === "accounts") return renderAccounts(container);
     if (id === "publish" && sub) {

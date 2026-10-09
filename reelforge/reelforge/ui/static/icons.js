@@ -54,8 +54,14 @@ export function icon(name, { size = 18, label = null, cls = "" } = {}) {
   return `<svg class="icon ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" ${a11y}>${body}</svg>`;
 }
 
-/** The reelforge mark: a film frame with a ridge line. */
-export const LOGO = `<svg class="logo" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-  <rect x="2" y="2" width="28" height="28" rx="8" fill="var(--accent)"/>
-  <path d="M6 22.5 12 14l3.6 4.6L19.5 10 26 22.5" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+/** The reelforge mark: the sun going down behind a ridge (the line the hook text follows). */
+export const LOGO = `<svg class="logo" width="30" height="30" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+  <defs><clipPath id="rf-logo-clip"><rect x="1" y="1" width="30" height="30" rx="9"/></clipPath></defs>
+  <g clip-path="url(#rf-logo-clip)">
+    <rect width="32" height="32" fill="#2b3352"/>
+    <rect y="15" width="32" height="17" fill="#cf7f55"/>
+    <circle cx="20" cy="16.5" r="6" fill="#f7b544"/>
+    <path d="M0 32V22.5l7.5-7.2 5 5.4 6.6-8.4L32 25v7Z" fill="#151a28"/>
+    <path d="M0 22.5l7.5-7.2 5 5.4 6.6-8.4L32 25" fill="none" stroke="#ffd27a" stroke-width="1.6" stroke-linejoin="round"/>
+  </g>
 </svg>`;

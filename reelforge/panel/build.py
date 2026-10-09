@@ -26,18 +26,16 @@ STATIC = ROOT / "reelforge" / "ui" / "static"
 PANEL_FILES = ("panel-backend.js", "panel-boot.js", "panel-voices.js", "panel-publish.js", "panel.css")
 
 INDEX = """<title>reelforge</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='8' fill='%233ec6c1'/%3E%3Cpath d='M6 22.5 12 14l3.6 4.6L19.5 10 26 22.5' fill='none' stroke='%2304201f' stroke-width='2.4' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='1' y='1' width='30' height='30' rx='9' fill='%232b3352'/%3E%3Ccircle cx='20' cy='16.5' r='6' fill='%23f7b544'/%3E%3Cpath d='M1 22.5l6.5-7.2 5 5.4 6.6-8.4L31 25v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1Z' fill='%23151a28'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Instrument+Sans:wght@400..700&family=JetBrains+Mono:wght@400;600;700&display=swap">
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="panel.css">
 <style>
-  :root { --panel-bg: #0d0f12; --panel-fg: #e7e9ee; --panel-muted: #9aa1ad; color-scheme: dark; }
-  html, body { background: var(--panel-bg); color: var(--panel-fg); }
   .panel-boot { min-height: 60vh; display: grid; place-items: center; padding-inline: 16px; text-align: center; }
-  .panel-boot p { max-width: 34rem; color: var(--panel-muted); font: 400 15px/1.6 Inter, system-ui, sans-serif; }
-  .panel-boot strong { color: var(--panel-fg); }
+  .panel-boot p { max-width: 34rem; color: var(--muted); font-size: 15px; }
+  .panel-boot strong { color: var(--text); }
 </style>
 <a class="skip-link" href="#main">Skip to content</a>
 <div id="app" class="app">
@@ -78,7 +76,7 @@ def _weights():
     return fonts.WEIGHTS
 
 
-def build(out: Path, session: str, artifact: str) -> Path:
+def build(out: Path, session: str, artifact: str, repo: str = "", branch: str = "") -> Path:
     if out.exists():
         shutil.rmtree(out)
     shutil.copytree(STATIC, out, ignore=shutil.ignore_patterns("index.html", "__pycache__"))
@@ -97,7 +95,10 @@ def build(out: Path, session: str, artifact: str) -> Path:
         "factory.json": factory,
         "voice.json": {"presets": voiceover.VOICE_PRESETS, "default_voice_id": voiceover.DEFAULT_VOICE_ID},
         "config.json": {"session_id": session, "artifact": artifact,
-                        "connector": "Claude Code Remote", "tool": "send_message"},
+                        "connector": "Claude Code Remote", "tool": "send_message",
+                        "repo": repo, "branch": branch},
+        "voice-previews.json": json.loads((HERE / "voice-previews.json").read_text(encoding="utf-8"))
+                               if (HERE / "voice-previews.json").is_file() else {},
     }
     for name, value in files.items():
         (data / name).write_text(json.dumps(value, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -109,8 +110,10 @@ def main() -> None:
     ap.add_argument("--out", default=str(HERE / "dist"))
     ap.add_argument("--session", default="", help="Claude Code session that plans and renders")
     ap.add_argument("--artifact", default="", help="the panel's claude.ai artifact URL")
+    ap.add_argument("--repo", default="Yonatan2007/NeoForge-1.21.1", help="GitHub owner/repo with this code")
+    ap.add_argument("--branch", default="claude/eager-hypatia-yaqaw0", help="branch with this code")
     args = ap.parse_args()
-    out = build(Path(args.out), args.session, args.artifact)
+    out = build(Path(args.out), args.session, args.artifact, args.repo, args.branch)
     files = sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())
     print(json.dumps({"out": str(out), "files": files}, indent=1))
 
