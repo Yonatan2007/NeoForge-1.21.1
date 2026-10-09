@@ -112,6 +112,35 @@ class ShotSource:
         return f"user:{self.item.path}" if self.item else f"stock:{self.query}"
 
 
+_SEARCH_FILLER = {"only", "just", "some", "all", "use", "with", "of", "the", "a", "an", "and", "please",
+                  "footage", "clips", "clip", "videos", "video", "shots", "shot", "stock", "broll", "b-roll"}
+_TIME_OF_DAY = {"night", "nighttime", "dark", "evening", "dusk", "day", "daytime", "daylight", "morning",
+                "sunrise", "sunset", "dawn", "noon", "sunny", "golden"}
+
+
+def search_terms(query: str) -> str:
+    """A search the user typed, without words that only describe the request:
+    "only night footage" -> "night". Unchanged if nothing would be left."""
+    words = [w for w in query.split() if w.lower().strip(",.") not in _SEARCH_FILLER]
+    return " ".join(words) or query
+
+
+def themed(queries: list[str], custom: list[str]) -> list[str]:
+    """The script's own searches with the user's search words added, so a
+    fallback search for "couple silhouette sunset" under "only night footage"
+    becomes "couple silhouette night" (a time of day in the user's words
+    replaces the one in the search)."""
+    theme = list(dict.fromkeys(w for q in custom for w in search_terms(q).lower().split()))
+    if not theme:
+        return list(queries)
+    timed = any(w in _TIME_OF_DAY for w in theme)
+    out = []
+    for q in queries:
+        words = [w for w in q.split() if not (timed and w.lower() in _TIME_OF_DAY)]
+        out.append(" ".join(dict.fromkeys(words + [w for w in theme if w not in words])))
+    return out
+
+
 def assign_sources(project: Project, script: Script, n_shots: int, hook_terrain: bool,
                    ref_terms: list[str] | None = None) -> tuple[list[ShotSource], list[str]]:
     """One source per shot: pinned user media, then user media in upload order,
@@ -141,7 +170,8 @@ def assign_sources(project: Project, script: Script, n_shots: int, hook_terrain:
             sources[0] = ShotSource("stock", query=fs.hook_query)
             empty.remove(0)
         if fs.queries:
-            queries = [fs.queries[j % len(fs.queries)] for j in range(len(empty))]
+            custom = [search_terms(q) for q in fs.queries]
+            queries = [custom[j % len(custom)] for j in range(len(empty))]
         elif empty:
             pool = [q for q in dict.fromkeys((ref_terms or []) +
                                              footage_queries(script, len(empty) + 5, palette=fs.palette))
@@ -382,6 +412,8 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
             queries = [sources[k].query for k in rest]
             spare = [q for q in footage_queries(script, len(queries) + 6, palette=project.footage.palette)
                      if q not in queries]
+            if project.footage.queries:  # the user's searches set the theme of the fallbacks too
+                spare = [q for q in dict.fromkeys(themed(spare, project.footage.queries)) if q not in queries]
             found = footage.fetch_footage(
                 queries + spare, providers, settings.cache_dir, count=len(rest),
                 extra_score=likeness, exclude={c.key for c, _ in picks}, **common)

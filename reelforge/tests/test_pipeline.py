@@ -34,6 +34,18 @@ def test_user_footage_fills_shots_in_order_with_pins_first():
     assert not warnings
 
 
+def test_user_searches_drop_filler_and_theme_the_fallbacks():
+    from reelforge.pipeline import search_terms, themed
+    assert search_terms("only night footage") == "night" and search_terms("sea") == "sea"
+    assert search_terms("footage") == "footage"
+    assert themed(["couple silhouette sunset", "rain window night", "sea"], ["only night footage"]) == \
+        ["couple silhouette night", "rain window night", "sea night"]
+    p = project(queries=["only night footage"])
+    p.footage.items = []
+    srcs, _ = assign_sources(p, parse_script(p.script), 3, hook_terrain=True)
+    assert [s.query for s in srcs] == ["night"] * 3
+
+
 def test_hook_shot_gets_the_hook_query_when_stock():
     p = project(queries=None, hook_query="mountains")
     p.footage.items = []
