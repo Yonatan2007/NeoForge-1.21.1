@@ -47,7 +47,16 @@ let cleanupShell = [];
 
 // --------------------------------------------------------------------------- routing
 
+/**
+ * Optional extra pages (the control panel adds Publish and Accounts):
+ * globalThis.reelforgeExtras = {nav: [{id, label, icon}], render(id, sub, container) -> cleanup}.
+ * They live at #/x/<id>[/<sub>].
+ */
+const extras = () => globalThis.reelforgeExtras || null;
+
 function parseRoute() {
+  const x = location.hash.match(/^#\/x\/([a-z-]+)(?:\/(.+))?/);
+  if (x && extras()) return { extra: x[1], sub: x[2] ? decodeURIComponent(x[2]) : null };
   const m = location.hash.match(/^#\/p\/([^/]+)(?:\/([a-z]+))?/);
   if (!m) return { home: true };
   const tab = TABS.some((t) => t.id === m[2]) ? m[2] : "script";
@@ -60,12 +69,13 @@ async function route() {
   const r = parseRoute();
   if (cleanupView) cleanupView();
   cleanupView = null;
-  if (r.home) {
+  if (r.home || r.extra) {
     if (state.projectId) {
       await store.flush().catch(() => {});
       store.closeProject();
     }
-    renderHome();
+    if (r.extra) renderExtra(r.extra, r.sub);
+    else renderHome();
     return;
   }
   if (r.projectId !== state.projectId) {
@@ -86,6 +96,33 @@ async function route() {
 
 function brand() {
   return h("a", { class: "brand", href: "#/", "aria-label": "reelforge – all reels", html: `${LOGO}<span class="brand-name">reelforge</span>` });
+}
+
+/** Links between the reels gallery and the extra pages (none without extras). */
+function topNav(active) {
+  const ex = extras();
+  if (!ex || !ex.nav || !ex.nav.length) return null;
+  const items = [{ id: "reels", label: "Reels", icon: "film", href: "#/" },
+    ...ex.nav.map((n) => ({ ...n, href: `#/x/${n.id}` }))];
+  return h("nav", { class: "topnav", "aria-label": "Sections" }, items.map((n) =>
+    h("a", { class: "topnav-link", href: n.href, "aria-current": n.id === active ? "page" : null,
+             html: `${icon(n.icon, { size: 16 })}<span>${n.label}</span>` })));
+}
+
+function renderExtra(id, sub) {
+  cleanupShell.forEach((fn) => fn());
+  cleanupShell = [];
+  const ex = extras();
+  const item = (ex.nav || []).find((n) => n.id === id);
+  document.title = `${item ? item.label : "reelforge"} · reelforge`;
+  const inner = h("div", { class: "main-inner" });
+  clear(root).append(h("header", { class: "topbar" }, h("div", { class: "topbar-left" }, brand(), topNav(id))),
+    h("main", { id: "main", class: "main home", tabindex: "-1" }, inner));
+  const cleanup = ex.render(id, sub, inner);
+  cleanupView = () => {
+    if (typeof cleanup === "function") cleanup();
+  };
+  window.scrollTo(0, 0);
 }
 
 function renderLoading() {
@@ -306,7 +343,7 @@ async function renderHome() {
           h("p", { class: "page-lead" }, "Script in, ready-to-post vertical video out.")),
         newBtn),
       grid));
-  clear(root).append(h("header", { class: "topbar" }, h("div", { class: "topbar-left" }, brand())), main);
+  clear(root).append(h("header", { class: "topbar" }, h("div", { class: "topbar-left" }, brand(), topNav("reels"))), main);
 
   let projects = [];
   try {

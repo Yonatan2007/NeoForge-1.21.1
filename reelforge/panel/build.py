@@ -23,7 +23,7 @@ from reelforge import __version__, config, schema, voiceover  # noqa: E402
 from reelforge.config import FootageItem, Project  # noqa: E402
 
 STATIC = ROOT / "reelforge" / "ui" / "static"
-PANEL_FILES = ("panel-backend.js", "panel-boot.js")
+PANEL_FILES = ("panel-backend.js", "panel-boot.js", "panel-voices.js", "panel-publish.js", "panel.css")
 
 INDEX = """<title>reelforge</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='8' fill='%233ec6c1'/%3E%3Cpath d='M6 22.5 12 14l3.6 4.6L19.5 10 26 22.5' fill='none' stroke='%2304201f' stroke-width='2.4' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
@@ -31,6 +31,7 @@ INDEX = """<title>reelforge</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="panel.css">
 <style>
   :root { --panel-bg: #0d0f12; --panel-fg: #e7e9ee; --panel-muted: #9aa1ad; color-scheme: dark; }
   html, body { background: var(--panel-bg); color: var(--panel-fg); }

@@ -103,3 +103,35 @@ A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
      `{status: "done", stage: "finish", progress: 1, message: "Finished", result}`.
    - On failure: task `{status: "error", error: <first line>, log}`.
 6. Tell the user in chat in one or two lines what was made (or what failed).
+
+### Publish requests (`kind: "publish"`)
+
+The panel's Publish page stores per-video settings in `posts/<post_id>`
+(`common` caption/hashtags, then `tiktok`, `instagram`, `youtube`, each with
+`enabled`, `accounts`, caption/hashtags overrides (null = use `common`),
+privacy and switches, `sound` and `sound_volume` / `original_volume` in %)
+and accounts in `accounts/<id>` (`platform`, `handle`, TikTok `connector_id`).
+The task names `post_id`, `platforms` and `video` (`{kind: "reel" | "video", id}`).
+
+1. Read the task, the post and the accounts. Get the video file: a reel's
+   `projects/<id>.outputs.video` asset, or `videos/<id>.store` (raw or base64
+   parts, decode like `panelrun stage` does). `Artifact read` it into a folder.
+2. **TikTok** (Higgsfield connector): upload the MP4 to Higgsfield
+   (`media_upload` / `media_confirm`; TikTok needs a Higgsfield-hosted URL),
+   then per account `tiktok_prepare_publish` with `connector_id`, `mode`,
+   `media_type: "VIDEO"`, `video_url`, `title` (first 150 characters of the
+   caption), `description` (caption + hashtags), `privacy_level`,
+   `allow_comment/duet/stitch`, `is_aigc`. That opens TikTok's publish form in
+   the chat: tell the user to pick the saved sound (title, artist) at the saved
+   volumes there (music only works for "Post now"). Write
+   `result.tiktok = {status: "waiting", message: "Confirm the post in your Claude chat"}`;
+   after they submit, check `tiktok_publish_status` and set `done` (with `url`).
+3. **Instagram / YouTube**: only through a social-media connector the user
+   added (e.g. Metricool: read its tool schemas first, never guess). Without
+   one: `{status: "error", message: "Add a social-media connector (e.g. Metricool) in Claude to post here"}`.
+   In-app sounds can't be added through any API: remind the user to add the
+   saved sound in the app.
+4. Finish the task: `{status: "done", message, result: {<platform>: {status, message, url?}}}`.
+
+Profile pictures and bios can't be changed through any of these APIs; the
+Accounts page keeps them for the user to paste in.

@@ -66,5 +66,8 @@ function saver(downloads) {
   if (!assets) data.meta.capabilities.uploads = false;
   useBackend(createPanelBackend({ db, assets, mcp }, data));
   globalThis.reelforgeSaveFile = saver(downloads);
+  const [{ voicePicker }, { extras }] = await Promise.all([import("./panel-voices.js"), import("./panel-publish.js")]);
+  globalThis.reelforgeVoicePicker = voicePicker;
+  globalThis.reelforgeExtras = extras;
   await import("./app.js");
 })();

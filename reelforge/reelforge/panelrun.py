@@ -80,7 +80,8 @@ def stage(doc_path: Path, assets: Path, work: Path) -> dict:
         if script.words:
             out["higgsfield_request"] = voiceover.higgsfield_request(
                 script, project.voice.higgsfield_preset,
-                project.voice.voice_id or Settings.from_env().higgsfield_voice_id)
+                project.voice.voice_id or Settings.from_env().higgsfield_voice_id,
+                voice_type=project.voice.voice_type if project.voice.voice_id else "preset")
     return out
 
 

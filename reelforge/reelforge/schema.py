@@ -349,6 +349,8 @@ VOICE = Section("voice", "Voice", "Where the voiceover comes from and how words 
          "script.", VOICE_PRESETS),
     _text("voice.voice_id", "Higgsfield voice ID", "A voice from your Higgsfield account; empty = the "
           "default narrator.", nullable=True),
+    _sel("voice.voice_type", "Higgsfield voice type", "Built-in voice, or one you made in Higgsfield.",
+         (("preset", "Built-in voice"), ("element", "My own voice")), advanced=True),
     _text("voice.piper_model", "Piper voice model", "Path to a Piper .onnx voice file "
           "(huggingface.co/rhasspy/piper-voices).", advanced=True, nullable=True),
     _num("voice.words_per_second", "Reading pace", "Without a voice, captions follow this reading speed.",

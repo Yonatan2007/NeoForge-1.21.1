@@ -217,6 +217,7 @@ class VoiceSettings:
     file: str | None = None                # path or URL of a finished voiceover
     higgsfield_preset: str = "elevenlabs"
     voice_id: str | None = None
+    voice_type: str = "preset"             # Higgsfield: preset (built in) | element (your own voice)
     piper_model: str | None = None
     words_per_second: float = 2.6          # reading pace for source=none
     align: str = "auto"                    # word timing: auto (Whisper if installed) | whisper | estimate

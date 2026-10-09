@@ -508,8 +508,10 @@ export function createPanelBackend({ db, assets, mcp }, data) {
 
   async function notify(kind, id, projectId) {
     const cfg = data.config || {};
-    const message = `reelforge panel request: ${kind} task "${id}" for reel "${projectId}". `
-      + `Panel: ${cfg.artifact || "(the reelforge panel artifact)"}. Read tasks/${id} and projects/${projectId} `
+    const subject = projectId ? ` for reel "${projectId}"` : "";
+    const docs = projectId ? `tasks/${id} and projects/${projectId}` : `tasks/${id}`;
+    const message = `reelforge panel request: ${kind} task "${id}"${subject}. `
+      + `Panel: ${cfg.artifact || "(the reelforge panel artifact)"}. Read ${docs} `
       + `from the panel's database and carry it out (see .claude/skills/jackk-reel/SKILL.md, "Control panel requests").`;
     if (!mcp || !cfg.session_id) return "Claude can't be messaged from this view.";
     try {
@@ -526,13 +528,13 @@ export function createPanelBackend({ db, assets, mcp }, data) {
     }
   }
 
-  async function newTask(kind, projectId) {
-    await load(projectId); // 404 for a deleted reel
+  async function newTask(kind, projectId, extra = {}) {
+    if (projectId) await load(projectId); // 404 for a deleted reel
     const id = `${kind}-${Date.now().toString(36)}-${hex(3)}`;
     const task = {
-      kind, project_id: projectId, status: "queued", stage: null, progress: 0,
+      kind, project_id: projectId || null, status: "queued", stage: null, progress: 0,
       message: "Waiting for Claude to start…", log: [], result: null, error: null,
-      cancel_requested: false, created: nowIso(), notified: false,
+      cancel_requested: false, created: nowIso(), notified: false, ...extra,
     };
     try {
       await retrying(() => T(id).set(task));
@@ -540,8 +542,9 @@ export function createPanelBackend({ db, assets, mcp }, data) {
       throw storeError(err);
     }
     const problem = await notify(kind, id, projectId);
+    const ask = { plan: "plan my reel", render: "render my reel", publish: "publish my video" }[kind] || `run my ${kind}`;
     const patch = problem
-      ? { notify_error: problem, message: `${problem} Send “${kind === "plan" ? "plan" : "render"} my reel” in your Claude chat and it starts.` }
+      ? { notify_error: problem, message: `${problem} Send “${ask}” in your Claude chat and it starts.` }
       : { notified: true };
     await retrying(() => T(id).update(patch)).catch(() => {});
     return { id, problem };
@@ -581,6 +584,10 @@ export function createPanelBackend({ db, assets, mcp }, data) {
 
   return {
     name: "panel",
+
+    // for the control panel's own pages (publishing, accounts)
+    _panel: { db, assets, mcp, data, retrying, storeError, uploadAsset, storeFile, resolveB64, probe,
+              blobUrl, newTask, nowIso, hex, mimeOf, kindOf, safeName, clone, urlOf },
 
     meta: async () => clone(data.meta),
     schema: async () => clone(data.schema),
@@ -822,7 +829,7 @@ export function createPanelBackend({ db, assets, mcp }, data) {
       if (!parsed.words.length) throw unprocessable("Write or upload a script first.");
       const preset = project.voice.higgsfield_preset || "elevenlabs";
       const params = { ...(data.voice.presets[preset] || data.voice.presets.elevenlabs),
-                       prompt: parsed.text, voice_type: "preset",
+                       prompt: parsed.text, voice_type: project.voice.voice_id ? project.voice.voice_type || "preset" : "preset",
                        voice_id: project.voice.voice_id || data.voice.default_voice_id };
       return { tool: "mcp__higgsfield__generate_audio", params,
                next: "Claude makes this voice with your Higgsfield account when you render." };

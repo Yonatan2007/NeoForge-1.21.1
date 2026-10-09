@@ -213,7 +213,8 @@ def plan_project(project: Project, project_dir: Path, settings: Settings) -> dic
         warnings.append("Voice: upload a voiceover file, or pick another voice source.")
     captions = build_captions(body, cs)
     request = voiceover.higgsfield_request(script, project.voice.higgsfield_preset,
-                                           project.voice.voice_id or settings.higgsfield_voice_id)
+                                           project.voice.voice_id or settings.higgsfield_voice_id,
+                                           voice_type=project.voice.voice_type if project.voice.voice_id else "preset")
     return {
         "captions": [fonts.apply_case(c.text, cs.case) for c in captions],
         "hook": [fonts.apply_case(w.text, cs.case) for w in hook_words] if hook_terrain else [],
@@ -248,7 +249,8 @@ def _voice_file(project: Project, project_dir: Path, work: Path, settings: Setti
                                           work / "voice_piper.wav")
     if v.source == "higgsfield-api":
         request = voiceover.higgsfield_request(script, v.higgsfield_preset,
-                                               v.voice_id or settings.higgsfield_voice_id)
+                                               v.voice_id or settings.higgsfield_voice_id,
+                                               voice_type=v.voice_type if v.voice_id else "preset")
         api = voiceover.HiggsfieldAPI(settings.higgsfield_key, settings.higgsfield_tts_endpoint)
         return api.synthesize(request["params"], work / "voice_higgsfield")
     raise ValueError(f"unknown voice source {v.source!r}")

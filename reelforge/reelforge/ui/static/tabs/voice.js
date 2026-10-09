@@ -190,11 +190,14 @@ export function render(panel) {
     if (v.source === "higgsfield" && claudeVoice) {
       // Claude renders this reel (control panel): it makes the voice itself.
       hf = null;
+      const picker = typeof globalThis.reelforgeVoicePicker === "function" ? globalThis.reelforgeVoicePicker() : null;
+      const fields = picker ? [fieldFor("voice.higgsfield_preset")].filter(Boolean) : extraFields;
       body.append(h("section", { class: "card", "aria-labelledby": "hfc" },
         h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "hfc" }, "Claude makes the voice"),
           h("p", { class: "card-sub" }, "With your connected Higgsfield account, when you render.")),
         h("div", { class: "stack" },
-          extraFields.length ? h("div", { class: "form-grid" }, extraFields) : null,
+          fields.length ? h("div", { class: "form-grid" }, fields) : null,
+          picker,
           h("p", { class: "muted" }, "About 1 credit for every 50 words. To use your own recording instead, choose “Upload a voiceover” above."))));
     } else if (v.source === "higgsfield") {
       hf = higgsfieldBlock();
