@@ -46,6 +46,22 @@ def test_user_searches_drop_filler_and_theme_the_fallbacks():
     assert [s.query for s in srcs] == ["night"] * 3
 
 
+def test_no_in_a_search_becomes_words_to_avoid():
+    from reelforge.footage import Candidate, describes
+    from reelforge.pipeline import split_search, themed
+    q, avoid = split_search("moody rain dark nature no pepole no sun rize")
+    assert q == "moody rain dark nature"
+    assert {"people", "man", "woman", "couple", "sunrise", "sunset", "sun"} <= avoid
+    assert themed(["lonely man walking", "ocean waves"], ["moody rain no pepole"]) == ["ocean waves moody rain"]
+
+    def clip(slug):
+        return Candidate("mixkit", "1", f"https://mixkit.co/free-stock-video/{slug}-1/", "", 1080, 1920, 10, "", None, "")
+    assert describes(clip("woman-walking-in-the-rain"), avoid)
+    assert describes(clip("sunset-over-the-sea"), avoid)
+    assert not describes(clip("foggy-sky-during-a-starry-night-in-the-forest"), avoid)
+    assert not describes(clip("rain-on-leaves"), set())
+
+
 def test_hook_shot_gets_the_hook_query_when_stock():
     p = project(queries=None, hook_query="mountains")
     p.footage.items = []

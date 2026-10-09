@@ -118,11 +118,47 @@ _TIME_OF_DAY = {"night", "nighttime", "dark", "evening", "dusk", "day", "daytime
                 "sunrise", "sunset", "dawn", "noon", "sunny", "golden"}
 
 
+_NEGATION = re.compile(r"\b(?:no|not|without|avoid|except|minus)\b", re.I)
+# what a "no ..." in a search rules out, typos included: stock clips are named in words like these
+_AVOID_GROUPS = {
+    "people": {"people", "person", "man", "men", "woman", "women", "girl", "boy", "couple", "crowd",
+               "kid", "child", "children", "family", "friends", "lady", "guy", "human", "silhouette",
+               "hand", "face", "portrait", "dancing", "model"},
+    "sun": {"sun", "sunrise", "sunset", "sunny", "sunlight", "dawn", "golden"},
+    "cars": {"car", "traffic", "road", "highway", "driving"},
+    "city": {"city", "street", "building", "urban", "downtown", "skyscraper"},
+}
+_AVOID_ALIASES = {"pepole": "people", "peple": "people", "poeple": "people", "ppl": "people",
+                  "persons": "people", "humans": "people", "person": "people", "rize": "sun",
+                  "sunrize": "sun", "sunrise": "sun", "sunset": "sun", "sunny": "sun", "car": "cars",
+                  "traffic": "cars", "cities": "city", "urban": "city", "buildings": "city"}
+
+
+def split_search(query: str) -> tuple[str, set[str]]:
+    """(what to search for, words a clip must not show). "moody rain no pepole
+    no sun rize" -> ("moody rain", {people, man, woman, ..., sun, sunrise, ...}):
+    stock search can't do "no", so the words after it filter the results."""
+    parts = _NEGATION.split(query)
+    words = [w for w in parts[0].split() if w.lower().strip(",.") not in _SEARCH_FILLER]
+    avoid: set[str] = set()
+    for part in parts[1:]:
+        for w in re.findall(r"[a-z]+", part.lower()):
+            if w in _SEARCH_FILLER:
+                continue
+            group = _AVOID_ALIASES.get(w, w)
+            avoid |= _AVOID_GROUPS.get(group, {group})
+    return " ".join(words) or (parts[0].strip() if parts[0].strip() else query), avoid
+
+
 def search_terms(query: str) -> str:
-    """A search the user typed, without words that only describe the request:
-    "only night footage" -> "night". Unchanged if nothing would be left."""
-    words = [w for w in query.split() if w.lower().strip(",.") not in _SEARCH_FILLER]
-    return " ".join(words) or query
+    """A search the user typed, without words that only describe the request
+    or what it rules out: "only night footage" -> "night"."""
+    return split_search(query)[0]
+
+
+def avoided(queries: list[str] | None) -> set[str]:
+    """Every word the user's searches rule out with "no ..."."""
+    return set().union(*(split_search(q)[1] for q in queries)) if queries else set()
 
 
 def themed(queries: list[str], custom: list[str]) -> list[str]:
@@ -131,6 +167,8 @@ def themed(queries: list[str], custom: list[str]) -> list[str]:
     becomes "couple silhouette night" (a time of day in the user's words
     replaces the one in the search)."""
     theme = list(dict.fromkeys(w for q in custom for w in search_terms(q).lower().split()))
+    avoid = avoided(custom)
+    queries = [q for q in queries if not avoid & set(q.lower().split())]  # "no people": drop "lonely man walking"
     if not theme:
         return list(queries)
     timed = any(w in _TIME_OF_DAY for w in theme)
@@ -391,7 +429,8 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
         common = dict(min_duration=vs.max_shot + vs.crossfade,
                       allow_landscape=project.footage.allow_landscape or wide,
                       portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0),
-                      palette=project.footage.palette, wide=wide)
+                      palette=project.footage.palette, wide=wide,
+                      avoid=avoided(project.footage.queries) | avoided([project.footage.hook_query or ""]))
 
         def likeness(c, img) -> float:
             return REFERENCE_WEIGHT * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
@@ -401,7 +440,7 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
         if hook_terrain and 0 in stock_slots and project.footage.hook_query and not project.footage.queries:
             report("footage", 0.05, "choosing a first shot with a clear skyline")
             hook_pick = footage.best_of(
-                [project.footage.hook_query, *HOOK_SEARCHES], providers, settings.cache_dir,
+                [search_terms(project.footage.hook_query), *HOOK_SEARCHES], providers, settings.cache_dir,
                 rank=lambda c, img: (SKYLINE_WEIGHT * hookmod.skyline_score(img) if img is not None
                                      else 0.0) + likeness(c, img), **common)
             if hook_pick is not None:

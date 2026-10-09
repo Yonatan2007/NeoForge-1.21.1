@@ -63,6 +63,16 @@ class Candidate:
 ExtraScore = Callable[[Candidate, Image.Image | None], float]
 
 
+def describes(c: Candidate, words: set[str] | None) -> bool:
+    """True when the clip's page address (which names what it shows, e.g.
+    ".../foggy-sky-during-a-starry-night-in-the-forest-30910/") mentions one
+    of ``words`` (or its plural)."""
+    if not words:
+        return False
+    slug = set(re.findall(r"[a-z]+", c.page_url.lower().split("://", 1)[-1].split("/", 1)[-1]))
+    return any(w in slug or f"{w}s" in slug for w in words)
+
+
 def rendition_rank(width: int, height: int) -> tuple:
     """Lower is better. Portrait files closest to 1080 wide win (full
     resolution without a 4K download). Landscape files need ~2160 px of
@@ -384,7 +394,8 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
                   min_duration: float, allow_landscape: bool = True, shortlist: int = 6,
                   count: int | None = None, extra_score: ExtraScore | None = None,
                   portrait_weight: float = 3.0, palette: str = "bright",
-                  exclude: set[str] | None = None, wide: bool = False) -> list[tuple[Candidate, Path]]:
+                  exclude: set[str] | None = None, wide: bool = False,
+                  avoid: set[str] | None = None) -> list[tuple[Candidate, Path]]:
     """One clip per query (in order) until ``count`` clips, never the same clip twice.
 
     Each query's candidates are ranked by ``score``; the best ``shortlist``
@@ -392,7 +403,8 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
     the ``palette``'s target and for ``extra_score(candidate, thumbnail)``,
     which the caller uses for visual judgement (a skyline for the hook shot,
     similarity to reference pictures). The thumbnail is None when it can't be
-    fetched. If a clip fails to download, the next one on the shortlist is used."""
+    fetched. If a clip fails to download, the next one on the shortlist is used.
+    Clips that ``describes`` with a word in ``avoid`` are skipped."""
     if not providers:
         raise FootageError("no stock provider configured: enable Mixkit, set PEXELS_API_KEY "
                            "and/or PIXABAY_API_KEY, or pass --footage-dir with your own clips")
@@ -404,7 +416,7 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
         if count is not None and len(picks) >= count:
             break
         cands = [c for c in _search(query, providers, allow_landscape, wide)
-                 if c.key not in used and (c.portrait or allow_landscape)]
+                 if c.key not in used and (c.portrait or allow_landscape) and not describes(c, avoid)]
         if not cands:
             log.warning("no footage for %r", query)
             continue
@@ -437,7 +449,7 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
 def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min_duration: float,
             rank: ExtraScore, allow_landscape: bool = True, shortlist: int = 8,
             portrait_weight: float = 3.0, palette: str = "bright",
-            wide: bool = False) -> tuple[Candidate, Path] | None:
+            wide: bool = False, avoid: set[str] | None = None) -> tuple[Candidate, Path] | None:
     """The single best clip across several searches, judged mostly by
     ``rank(candidate, thumbnail)`` (e.g. how clear a skyline is for the hook
     shot). Unlike ``fetch_footage`` it compares candidates of every query
@@ -448,7 +460,7 @@ def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min
     ranked: list[tuple[float, Candidate]] = []
     for query in dict.fromkeys(queries):
         cands = [c for c in _search(query, providers, allow_landscape, wide)
-                 if c.key not in seen and (c.portrait or allow_landscape)]
+                 if c.key not in seen and (c.portrait or allow_landscape) and not describes(c, avoid)]
         cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target), reverse=True)
         for c in cands[:shortlist]:
             seen.add(c.key)
