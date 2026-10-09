@@ -383,16 +383,20 @@ function phonePreview(video) {
 // --------------------------------------------------------------------------- Publish: one post
 
 async function trendingSounds(account, filters) {
-  const res = await higgsfield("tiktok_music_trending", { connector_id: account.connector_id, limit: 20, ...filters });
+  const res = await higgsfield("tiktok_music_trending", { connector_id: account.connector_id, limit: 30, ...filters });
   const p = res.payload;
   const items = Array.isArray(p) ? p : (p && (p.tracks || p.music || p.items || p.sounds || p.data || p.results)) || [];
-  return items.map((t) => ({
-    id: String(t.music_sound_id || t.sound_id || t.music_id || t.id || ""),
-    title: t.title || t.name || t.song_name || t.music_name || "Untitled sound",
-    artist: t.artist || t.author || t.artist_name || t.owner || "",
-    link: t.listen_url || t.play_url || t.share_url || t.link || t.url || t.preview_url || null,
-    duration: t.duration || t.duration_seconds || null,
-  })).filter((t) => t.id);
+  // Higgsfield answers {tracks: [{song_clip_id, name, artist, duration_sec, preview_url, rank}]}
+  return items.map((t) => {
+    const title = t.title || t.name || t.song_name || t.music_name || "Untitled sound";
+    const artist = t.artist || t.author || t.artist_name || t.owner || "";
+    return {
+      id: String(t.song_clip_id || t.music_sound_id || t.sound_id || t.music_id || t.id || `${title}|${artist}`),
+      title, artist, rank: t.rank || null,
+      link: t.preview_url || t.listen_url || t.play_url || t.share_url || t.link || t.url || null,
+      duration: t.duration_sec || t.duration || t.duration_seconds || null,
+    };
+  });
 }
 
 function soundSection(platform, settings, accounts, save) {
