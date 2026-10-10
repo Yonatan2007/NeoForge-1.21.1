@@ -15,7 +15,7 @@ import {
 
 const MOTIONS = ["auto", "zoom-in", "zoom-out", "pan-left", "pan-right", "none"];
 const SOURCE_LABELS = { mixkit: "Mixkit", pexels: "Pexels", pixabay: "Pixabay" };
-const HANDLED = ["footage.items", "footage.stock", "footage.sources", "footage.queries"];
+const HANDLED = ["footage.items", "footage.stock", "footage.sources", "footage.queries", "footage.picks", "footage.banned"];
 
 const items = () => state.project.footage.items;
 
@@ -211,7 +211,10 @@ export function render(panel) {
       })
       : callout("info", "This server does not accept uploads."),
     progress, grid);
-  panel.append(h("div", { class: "stack-lg" }, yours, stockCard()));
+  // the control panel adds a review of the stock clips (chosen before rendering)
+  const ex = globalThis.reelforgeExtras;
+  const review = ex && typeof ex.footageReview === "function" ? ex.footageReview() : null;
+  panel.append(h("div", { class: "stack-lg" }, yours, stockCard(), review ? review.el : null));
 
   const ctx = {
     orderOf: (item) => items().filter((i) => i.role !== "reference").indexOf(item) + 1,
@@ -308,6 +311,9 @@ export function render(panel) {
 
   draw();
   const off = on("uploads", draw);
-  return () => off();
+  return () => {
+    off();
+    if (review) review.cleanup();
+  };
 }
 

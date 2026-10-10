@@ -68,11 +68,11 @@ keeps reels in the Artifact's database (`projects/<id>`) and files in its asset
 store. Its "Preview plan" and "Render" buttons write a task (`tasks/<id>`) and
 message this session through the user's Claude Code Remote connector:
 
-    reelforge panel request: <plan|render> task "<task id>" for reel "<reel id>". Panel: <artifact url> ...
+    reelforge panel request: <plan|render|review> task "<task id>" for reel "<reel id>". Panel: <artifact url> ...
 
 That message is the user's own button press: carry the task out. (If the user
-writes "render my reel" in chat instead, `ArtifactData query tasks` where
-`status == "queued"` and do those.) W = a work folder in the scratchpad,
+writes "render my reel" or "review my clips" in chat instead, `ArtifactData
+query tasks` where `status == "queued"` and do those.) W = a work folder in the scratchpad,
 A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
 
 1. Setup in a fresh container: `git pull origin claude/eager-hypatia-yaqaw0`,
@@ -102,7 +102,17 @@ A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
      (pinned to its version; on a conflict re-read and redo) and the task with
      `{status: "done", stage: "finish", progress: 1, message: "Finished", result}`.
    - On failure: task `{status: "error", error: <first line>, log}`.
-6. Tell the user in chat in one or two lines what was made (or what failed).
+   - Clips chosen on the Footage tab's review are in the project
+     (`footage.picks`, `footage.banned`): the render uses them by itself.
+6. **review** (the Footage tab's "Find clips": stock clips to choose from):
+   `python -m reelforge.panelrun review --work W` prints `sheet` (one JPEG of
+   every thumbnail) and `json`. Upload the sheet (`Artifact` publish, `url` =
+   panel, `asset: true`, `file_path` = sheet). Then one `ArtifactData batch`:
+   `set reviews/<reel id>` to the JSON's fields plus `{last_task: <task id>,
+   created: <now ISO>, sheet: <asset id>}` (from `file_path`, a JSON file you
+   write), and the task `{status: "done", message: "Found <n> clips"}`. On
+   `{"ok": false}`: task `{status: "error", error}`. No voiceover is needed.
+7. Tell the user in chat in one or two lines what was made (or what failed).
 
 ### Publish requests (`kind: "publish"`)
 
@@ -142,6 +152,10 @@ time in time zone `tz`; YouTube `title`) and accounts in `accounts/<id>`
    a new session"}`. In-app sounds can't be added through any API: tell the
    user to add the saved sound in the app at the saved volumes.
 4. Finish the task: `{status: "done", message, result: {<platform>: {status, message, url?}}}`.
+
+The panel's Calendar and Stats pages and the best-time picker call Metricool
+themselves (the viewer's own connector), and its caption writer asks Claude
+through the Artifact's `sample` capability: none of them sends you a task.
 
 ### Profile requests (`kind: "profile"`)
 

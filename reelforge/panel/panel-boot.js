@@ -1,7 +1,8 @@
 /**
  * Starts the reelforge web UI inside a claude.ai Artifact: connects the
- * Artifact's database, asset store, downloads and the Claude Code Remote
- * connector, swaps them in as the UI's backend, then loads the app.
+ * Artifact's database, asset store, downloads, the viewer's connectors
+ * (Claude Code Remote, Higgsfield, Metricool) and Claude itself (for the
+ * caption writer), swaps them in as the UI's backend, then loads the app.
  */
 
 import { useBackend } from "./api.js";
@@ -49,7 +50,8 @@ function saver(downloads) {
     return;
   }
   const use = (name) => claude.use(name).catch(() => null);
-  const [db, assets, downloads, mcp] = await Promise.all([use("db"), use("assets"), use("downloads"), use("mcp")]);
+  const [db, assets, downloads, mcp, sample] = await Promise.all(
+    [use("db"), use("assets"), use("downloads"), use("mcp"), use("sample")]);
   if (!db) {
     showMessage("reelforge can't reach its storage in this view. Sign in to Claude and open the panel from your own account.");
     return;
@@ -65,7 +67,7 @@ function saver(downloads) {
     return;
   }
   if (!assets) data.meta.capabilities.uploads = false;
-  useBackend(createPanelBackend({ db, assets, mcp }, data));
+  useBackend(createPanelBackend({ db, assets, mcp, sample }, data));
   globalThis.reelforgeSaveFile = saver(downloads);
   const [{ voicePicker }, { extras }] = await Promise.all([import("./panel-voices.js"), import("./panel-publish.js")]);
   globalThis.reelforgeVoicePicker = voicePicker;

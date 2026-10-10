@@ -4,7 +4,7 @@
  *
  *   projects/<id>   {name, updated, project, files: [record], outputs: {key: assetId}}
  *   settings/defaults {project}
- *   tasks/<id>      {kind: "plan" | "render", project_id, status, stage, progress,
+ *   tasks/<id>      {kind: "plan" | "render" | "review", project_id, status, stage, progress,
  *                    message, log, result, error, cancel_requested, created}
  *
  * Uploaded files live in the asset store. Types the store accepts as they
@@ -311,7 +311,7 @@ function validate(schema, project) {
  * @param {object} caps   {db, assets, mcp} namespaces from claude.use()
  * @param {object} data   {meta, schema, presets, factory, footageItem, voice, config}
  */
-export function createPanelBackend({ db, assets, mcp }, data) {
+export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
   const resolved = new Map();   // first asset id -> blob: URL of a decoded base64 file
   const resolving = new Map();  // first asset id -> promise
   const taskCache = new Map();  // task id -> {data, unsub, ready}
@@ -564,7 +564,7 @@ export function createPanelBackend({ db, assets, mcp }, data) {
       throw storeError(err);
     }
     const problem = await notify(kind, id, projectId);
-    const ask = { plan: "plan my reel", render: "render my reel", publish: "publish my video",
+    const ask = { plan: "plan my reel", render: "render my reel", review: "review my clips", publish: "publish my video",
                   profile: "apply my reelforge profile changes" }[kind] || `run my ${kind}`;
     const where = kind === "profile" ? "to Claude on your computer" : "in your Claude chat";
     const patch = problem
@@ -610,7 +610,7 @@ export function createPanelBackend({ db, assets, mcp }, data) {
     name: "panel",
 
     // for the control panel's own pages (publishing, accounts)
-    _panel: { db, assets, mcp, data, retrying, storeError, uploadAsset, storeFile, resolveB64, probe,
+    _panel: { db, assets, mcp, sample, data, retrying, storeError, uploadAsset, storeFile, resolveB64, probe,
               blobUrl, newTask, nowIso, hex, mimeOf, kindOf, safeName, clone, urlOf, routing },
 
     meta: async () => clone(data.meta),

@@ -1,8 +1,10 @@
 /**
  * Control panel pages for posting: Publish (your videos, and one post per
- * video with a tab per platform and a phone preview of how it will look) and
+ * video with a tab per platform, a phone preview of how it will look, a
+ * caption writer, the best times to post and checks before it goes out) and
  * Accounts (how each platform is connected, the accounts, and their profiles
- * edited one at a time or many at once).
+ * edited one at a time or many at once). Calendar and Stats live in
+ * panel-growth.js, the stock clip review in panel-review.js.
  *
  *   videos/<id>       your own uploaded videos {title, store, thumb, info, size, created}
  *   posts/<key>       post settings per video (key "reel:<project id>" or "video:<id>")
@@ -25,6 +27,8 @@ import {
 } from "./dom.js";
 import { paintRange, switchControl } from "./fields.js";
 import { icon } from "./icons.js";
+import { bestTimePicker, canWrite, renderCalendar, renderStats, sampleProblem, viewerTz, writePost } from "./panel-growth.js";
+import { footageReview } from "./panel-review.js";
 
 const strip = (handle) => String(handle || "").replace(/^@/, "");
 const PLATFORMS = {
@@ -147,12 +151,6 @@ function head(title, lead, ...actions) {
     actions.length ? h("div", { class: "row" }, actions) : null);
 }
 
-function card(title, sub, ...children) {
-  return h("section", { class: "card" },
-    h("div", { class: "card-head" }, h("h2", { class: "card-title" }, title), sub ? h("p", { class: "card-sub" }, sub) : null),
-    ...children);
-}
-
 let fieldSeq = 0;
 function textField({ label, value, placeholder, onInput, multiline = false, max, rows = 3, help }) {
   const id = `pf-field-${++fieldSeq}`;
@@ -218,10 +216,20 @@ function whenField(s, save) {
   at.hidden = s.when !== "at";
   at.addEventListener("change", () => {
     s.at = at.value || null;
-    s.tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    s.tz = viewerTz();
     save();
   });
   field.append(at);
+  /** Post at `value` (a datetime-local value), e.g. a best time picked from Metricool. */
+  field.setAt = (value) => {
+    s.when = "at";
+    s.at = value;
+    s.tz = viewerTz();
+    field.querySelector("select").value = "at";
+    at.hidden = false;
+    at.value = value;
+    save();
+  };
   return field;
 }
 
@@ -373,6 +381,7 @@ function phonePreview(video) {
   player.addEventListener("pause", () => playBtn.classList.remove("is-playing"));
   return {
     el: h("div", { class: "phone" }, screen),
+    player,
     render(platform, post, accounts) {
       overlay.dataset.platform = platform;
       overlay.replaceChildren(...overlayFor(platform, post, accounts).filter(Boolean));
@@ -512,19 +521,28 @@ function platformPanel(platform, post, accounts, save, changed) {
       toggle("Allow duets", s.allow_duet, (v) => { s.allow_duet = v; save(); }),
       toggle("Allow stitches", s.allow_stitch, (v) => { s.allow_stitch = v; save(); }),
       toggle("Label as AI-generated", s.is_aigc, (v) => { s.is_aigc = v; save(); }));
-  } else if (platform === "instagram") {
-    options.append(whenField(s, () => { save(); changed(); }),
-      toggle("Also show in the feed", s.share_to_feed, (v) => { s.share_to_feed = v; save(); }));
-  } else {
-    options.append(whenField(s, () => { save(); changed(); }),
-      selectField("Visibility", YT_PRIVACY, s.privacy, (v) => { s.privacy = v; save(); }),
-      toggle("Made for kids", s.made_for_kids, (v) => { s.made_for_kids = v; save(); }));
+  }
+  let best = null;
+  if (platform !== "tiktok") {
+    const when = whenField(s, () => { save(); changed(); });
+    best = h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Best time to post"),
+      bestTimePicker(platform, (value) => {
+        when.setAt(value);
+        toast(`${meta.label} posts ${new Date(value).toLocaleString(undefined, { weekday: "long", hour: "numeric", minute: "2-digit" })}.`, { kind: "success", timeout: 2500 });
+      }));
+    if (platform === "instagram") {
+      options.append(when, toggle("Also show in the feed", s.share_to_feed, (v) => { s.share_to_feed = v; save(); }));
+    } else {
+      options.append(when, selectField("Visibility", YT_PRIVACY, s.privacy, (v) => { s.privacy = v; save(); }),
+        toggle("Made for kids", s.made_for_kids, (v) => { s.made_for_kids = v; save(); }));
+    }
   }
 
   body.append(
     h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Post to"), acc),
     h("div", { class: "stack" }, ...fields),
     options,
+    best,
     h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Sound"), soundSection(platform, s, accounts, () => { save(); changed(); })));
   body.classList.toggle("is-off", !s.enabled);
   body.inert = !s.enabled;
@@ -554,6 +572,59 @@ function resultsCard(task) {
     task.error ? callout("error", task.error) : null);
 }
 
+/**
+ * What to fix or know before publishing: [{level: "error" | "warn" | "ok", text, platform?}].
+ * ctx = {project (a reel's settings), duration, dims: [w, h], posted: Set of platforms, renderWarnings}.
+ */
+function checksFor(post, ctx) {
+  const out = [];
+  const add = (level, text, platform = null) => out.push({ level, text, platform });
+  const on = ORDER.filter((p) => post[p].enabled);
+  if (!on.length) add("error", "Every platform is off. Turn one on in its tab.");
+  for (const p of on) {
+    const s = post[p];
+    const meta = PLATFORMS[p];
+    if (!s.accounts.length) add("warn", `${meta.label} is on but no account is ticked, so it's skipped.`, p);
+    const caption = (s.caption ?? post.common.caption) || "";
+    const tags = s.hashtags ?? post.common.hashtags;
+    if (p === "youtube") {
+      const title = (s.title || "").trim();
+      if (!title) add("error", "YouTube needs a title.", p);
+      else if (title.length > meta.titleMax) add("error", `The YouTube title is ${title.length} characters; YouTube allows ${meta.titleMax}.`, p);
+      if (caption.length > meta.captionMax) add("error", `The YouTube description is ${caption.length} characters; YouTube allows ${meta.captionMax}.`, p);
+      const tagChars = tags.join(",").length;
+      if (tagChars > 500) add("warn", `The YouTube tags add up to ${tagChars} characters; YouTube keeps 500.`, p);
+    } else {
+      const full = caption.length + (tags.length ? tagText(tags).length + 2 : 0);
+      if (full > meta.captionMax) add("error", `The ${meta.label} caption with its hashtags is ${full} characters; ${meta.label} allows ${meta.captionMax}.`, p);
+      const inline = (caption.match(/#[\p{L}\p{N}_]+/gu) || []).length;
+      if (meta.hashtagMax && tags.length + inline > meta.hashtagMax) add("error", `${meta.label} allows ${meta.hashtagMax} hashtags; this post has ${tags.length + inline}.`, p);
+    }
+    if (s.when === "at") {
+      if (!s.at) add("error", `Pick the time for ${meta.label}.`, p);
+      else if (new Date(s.at) < new Date()) add("error", `The ${meta.label} time has passed. Pick a time in the future.`, p);
+    }
+    if (ctx.posted && ctx.posted.has(p)) add("warn", `This video was already sent to ${meta.label} from here; publishing again posts it a second time.`, p);
+    if (ctx.duration) {
+      if (p === "youtube" && ctx.duration > 180) add("warn", `The video is ${formatSeconds(ctx.duration)}: Shorts are up to 3 minutes, so YouTube makes it a normal video.`, p);
+      if (p === "instagram" && ctx.duration > 180) add("warn", `The video is ${formatSeconds(ctx.duration)}: Instagram suggests reels of up to 3 minutes to new viewers.`, p);
+      if (p === "tiktok" && ctx.duration > 600) add("error", `The video is ${formatSeconds(ctx.duration)}: TikTok takes up to 10 minutes from apps.`, p);
+    }
+  }
+  const bare = on.filter((p) => p !== "youtube" && !((post[p].caption ?? post.common.caption) || "").trim());
+  if (bare.length) add("warn", `There's no caption for ${bare.map((p) => PLATFORMS[p].label).join(" and ")} yet. A line of text gets people commenting.`);
+  const vs = ctx.project && ctx.project.style && ctx.project.style.video;
+  if (vs && vs.draft) add("warn", "Draft quality is on for this reel (half the resolution). Turn it off on the Render tab and render again before posting.");
+  if (vs && vs.aspect && vs.aspect !== "9:16" && !vs.letterbox) {
+    add("warn", `The reel is ${vs.aspect}, so it won't fill the phone screen. Turn on “Black bars to 9:16” on the Style tab and render again to post it full-screen.`);
+  } else if (!vs && ctx.dims && ctx.dims[0] && Math.abs(ctx.dims[0] / ctx.dims[1] - 9 / 16) > 0.03) {
+    add("warn", `This video is ${ctx.dims[0]}×${ctx.dims[1]}, not 9:16, so it won't fill the phone screen.`);
+  }
+  for (const w of ctx.renderWarnings || []) add("warn", `From the render: ${w}`);
+  if (!out.length) add("ok", "Everything looks ready.");
+  return out;
+}
+
 async function renderComposer(container, key) {
   const { db, retrying, newTask, nowIso } = P();
   container.append(h("p", { class: "back-row" }, h("a", { class: "btn btn-ghost btn-sm", href: "#/x/publish", html: `${icon("chevronLeft", { size: 16 })}<span class="btn-label">All videos</span>` })));
@@ -575,8 +646,29 @@ async function renderComposer(container, key) {
   const save = debounce(() => retrying(() => db.doc(`posts/${key}`).set({ ...post, updated: nowIso() }))
     .catch((err) => toastError("Could not save the post settings", err)), 600);
 
+  // what the checks look at besides the post: the reel's settings, the file, earlier posts, the render's notes
+  const ctx = { project: null, duration: (video.info && video.info.duration) || null, dims: null, posted: new Set(), renderWarnings: [] };
+  if (kind === "reel") {
+    const ps = await retrying(() => db.doc(`projects/${id}`).get()).catch(() => null);
+    const d = ps && ps.exists ? ps.data() : null;
+    ctx.project = (d && d.project) || null;
+    if (d && d.outputs && d.outputs.timings) {
+      fetch(P().blobUrl(d.outputs.timings)).then((r) => (r.ok ? r.json() : null)).then((t) => {
+        if (t && Array.isArray(t.warnings) && t.warnings.length) {
+          ctx.renderWarnings = t.warnings;
+          repaintChecks();
+        }
+      }).catch(() => {});
+    }
+  }
+
   let active = ORDER.find((p) => post[p].enabled) || "tiktok";
   const phone = phonePreview(video);
+  phone.player.addEventListener("loadedmetadata", () => {
+    ctx.duration = ctx.duration || phone.player.duration || null;
+    ctx.dims = [phone.player.videoWidth, phone.player.videoHeight];
+    repaintChecks();
+  });
   const repaintPreview = () => phone.render(active, post, accounts);
   const schedulePreview = (() => {
     let pending = false;
@@ -588,16 +680,76 @@ async function renderComposer(container, key) {
         repaintPreview();
         repaintTabs();
         repaintBar();
+        repaintChecks();
       });
     };
   })();
 
-  const common = card("Post text", "Written once, used on every platform unless a platform tab says otherwise.",
-    h("div", { class: "stack" },
-      textField({ label: "Caption", value: post.common.caption, multiline: true, rows: 4, max: 2200, placeholder: "What the post says",
-        onInput: (v) => { post.common.caption = v; save(); schedulePreview(); } }),
-      textField({ label: "Hashtags", value: tagText(post.common.hashtags), placeholder: "#motivation #mindset #quotes",
-        help: "Separate with spaces or commas; the # is optional.", onInput: (v) => { post.common.hashtags = tagsOf(v); save(); schedulePreview(); } })));
+  const captionField = textField({ label: "Caption", value: post.common.caption, multiline: true, rows: 4, max: 2200, placeholder: "What the post says",
+    onInput: (v) => { post.common.caption = v; save(); schedulePreview(); } });
+  const tagsField = textField({ label: "Hashtags", value: tagText(post.common.hashtags), placeholder: "#motivation #mindset #quotes",
+    help: "Separate with spaces or commas; the # is optional.", onInput: (v) => { post.common.hashtags = tagsOf(v); save(); schedulePreview(); } });
+  const setField = (field, value) => {
+    const input = field.querySelector("input, textarea");
+    input.value = value;
+    input.dispatchEvent(new Event("input"));
+  };
+
+  // Claude writes the caption, hashtags and YouTube title from the script (the viewer's own Claude usage)
+  const writer = h("div", { class: "writer", "aria-live": "polite" });
+  const writeBtn = canWrite() ? button("Write it for me", { icon: "sparkle", size: "sm", variant: "secondary" }) : null;
+  let writing = null;
+  const useSuggestion = (r) => {
+    setField(captionField, r.caption);
+    setField(tagsField, tagText(r.hashtags));
+    if (r.title) {
+      post.youtube.title = r.title;
+      panels.youtube.replaceChildren(platformPanel("youtube", post, accounts, save, schedulePreview));
+      save();
+    }
+    writer.replaceChildren();
+    toast(r.title ? "Caption, hashtags and the YouTube title are filled in." : "Caption and hashtags are filled in.", { kind: "success", timeout: 2500 });
+  };
+  const write = async (fresh) => {
+    if (writing) writing.abort();
+    const ctl = (writing = new AbortController());
+    writeBtn.disabled = true;
+    writer.replaceChildren(h("div", { class: "writer-box is-busy" }, h("span", { class: "spinner spinner-sm", "aria-hidden": "true" }),
+      h("span", {}, "Claude is writing… this can take up to a minute."),
+      button("Stop", { size: "sm", variant: "ghost", onClick: () => ctl.abort() })));
+    try {
+      const r = await writePost({ title: video.title, script: ctx.project ? ctx.project.script : "",
+                                  about: ctx.project ? "" : post.common.caption, handles: accounts.map(accountName).filter(Boolean) },
+                                { signal: ctl.signal, fresh });
+      if (ctl !== writing) return;
+      writer.replaceChildren(h("div", { class: "writer-box" },
+        h("p", { class: "subsection-title" }, "Claude's suggestion"),
+        h("p", { class: "writer-caption" }, r.caption),
+        r.hashtags.length ? h("p", { class: "writer-tags" }, tagText(r.hashtags)) : null,
+        r.title ? h("p", { class: "writer-title" }, h("span", { class: "muted" }, "YouTube title: "), r.title) : null,
+        h("div", { class: "row row-wrap" },
+          button("Use it", { icon: "check", size: "sm", variant: "primary", onClick: () => useSuggestion(r) }),
+          button("Write another", { icon: "refresh", size: "sm", variant: "secondary", onClick: () => write(true) }),
+          button("Dismiss", { size: "sm", variant: "ghost", onClick: () => writer.replaceChildren() }))));
+    } catch (err) {
+      if (ctl !== writing) return;
+      writer.replaceChildren(err && err.code === "cancelled" ? "" : callout("warn", sampleProblem(err)));
+    } finally {
+      if (ctl === writing) {
+        writing = null;
+        writeBtn.disabled = false;
+      }
+    }
+  };
+  if (writeBtn) writeBtn.addEventListener("click", () => write(false));
+
+  const common = h("section", { class: "card" },
+    h("div", { class: "card-head card-head-row" },
+      h("div", {}, h("h2", { class: "card-title" }, "Post text"),
+        h("p", { class: "card-sub" }, "Written once, used on every platform unless a platform tab says otherwise.")),
+      writeBtn),
+    writer,
+    h("div", { class: "stack" }, captionField, tagsField));
 
   // platform tabs: one panel each, the preview follows the open tab
   const tablist = h("div", { class: "ptabs", role: "tablist", "aria-label": "Platforms" });
@@ -644,6 +796,21 @@ async function renderComposer(container, key) {
     return [p, b];
   });
 
+  const checksBox = h("section", { class: "card checks-card", "aria-labelledby": "checks-title" });
+  const repaintChecks = () => {
+    const list = checksFor(post, ctx);
+    const bad = list.filter((c) => c.level === "error").length;
+    const warn = list.filter((c) => c.level === "warn").length;
+    checksBox.replaceChildren(
+      h("div", { class: "card-head card-head-row" },
+        h("div", {}, h("h2", { class: "card-title", id: "checks-title" }, "Before it goes out"),
+          h("p", { class: "card-sub" }, bad ? `${bad} thing${bad === 1 ? "" : "s"} to fix before publishing.` : warn ? "Worth a look, but nothing stops it." : "All set.")),
+        pill(bad ? { label: "Fix first", tone: "bad" } : warn ? { label: "Have a look", tone: "warn" } : { label: "Ready", tone: "ok" })),
+      h("ul", { class: "checklist" }, list.map((c) => h("li", { class: ["check", `is-${c.level}`] },
+        h("span", { class: "check-icon", html: icon(c.level === "ok" ? "check" : c.level === "error" ? "alert" : "info", { size: 14 }) }),
+        h("span", {}, c.platform ? [platformDot(c.platform), " "] : null, c.text)))));
+  };
+
   const bar = h("div", { class: "publish-bar" });
   const results = h("div", {});
   const publishBtn = button("Publish", { icon: "upload", variant: "primary", size: "lg" });
@@ -667,7 +834,11 @@ async function renderComposer(container, key) {
   const watch = (taskId) => {
     if (unsub) unsub();
     unsub = db.doc(`tasks/${taskId}`).onSnapshot((s) => {
-      results.replaceChildren(resultsCard(s.exists ? s.data() : null) || "");
+      const t = s.exists ? s.data() : null;
+      ctx.posted = new Set(Object.entries((t && t.result) || {})
+        .filter(([, r]) => r && ["done", "scheduled", "waiting"].includes(r.status)).map(([p]) => p));
+      repaintChecks();
+      results.replaceChildren(resultsCard(t) || "");
       if (reveal && s.exists) {
         reveal = false;
         results.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -678,11 +849,12 @@ async function renderComposer(container, key) {
 
   publishBtn.addEventListener("click", async () => {
     const t = targets();
-    if (t.includes("youtube") && !post.youtube.title.trim()) return toast("YouTube needs a title (YouTube tab).", { kind: "error" });
-    const badTime = t.find((p) => post[p].when === "at" && (!post[p].at || new Date(post[p].at) < new Date()));
-    if (badTime) return toast(`Pick a time in the future for ${PLATFORMS[badTime].label}.`, { kind: "error" });
-    const tooLong = t.find((p) => ((post[p].caption ?? post.common.caption) || "").length > PLATFORMS[p].captionMax);
-    if (tooLong) return toast(`The ${PLATFORMS[tooLong].label} caption is too long.`, { kind: "error" });
+    const errors = checksFor(post, ctx).filter((c) => c.level === "error" && (!c.platform || t.includes(c.platform)));
+    if (errors.length) {
+      toast(errors[0].text, { kind: "error" });
+      checksBox.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
     const missingCaption = !post.common.caption.trim() && t.some((p) => !post[p].caption);
     if (missingCaption && !(await confirmDialog({ title: "Publish without a caption?", message: "Some platforms have no caption. Publish anyway?", confirmLabel: "Publish" }))) return;
     publishBtn.classList.add("is-loading");
@@ -709,11 +881,13 @@ async function renderComposer(container, key) {
       h("div", { class: "stack-lg composer-main" },
         common,
         h("section", { class: "card card-flush platform-card" }, tablist, ...ORDER.map((p) => panels[p])),
+        checksBox,
         results)),
     bar);
   repaintTabs();
   repaintPreview();
   repaintBar();
+  repaintChecks();
   return () => unsub && unsub();
 }
 
@@ -1003,9 +1177,33 @@ function renderAccounts(container) {
 
 // --------------------------------------------------------------------------- registration
 
+/** For Calendar and Stats: a function that finds the panel video a post's text or title belongs to. */
+async function videoLookup() {
+  const norm = (t) => String(t || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const [videos, snap] = await Promise.all([listVideos(), P().retrying(() => P().db.collection("posts").get())]);
+  const byKey = new Map(videos.map((v) => [v.key, v]));
+  const known = [];
+  for (const doc of snap.docs) {
+    const v = byKey.get(doc.id);
+    if (!v) continue;
+    const p = doc.data();
+    const texts = [p.common && p.common.caption, ...ORDER.map((n) => p[n] && p[n].caption), p.youtube && p.youtube.title]
+      .map(norm).filter((t) => t.length >= 12).map((t) => t.slice(0, 48));
+    known.push({ video: { ...v, key: doc.id }, texts });
+  }
+  return (text) => {
+    const t = norm(text);
+    if (t.length < 12) return null;
+    const hit = known.find((k) => k.texts.some((x) => t.startsWith(x) || x.startsWith(t.slice(0, 48))));
+    return hit ? hit.video : null;
+  };
+}
+
 export const extras = {
-  nav: [{ id: "publish", label: "Publish", icon: "upload" }, { id: "accounts", label: "Accounts", icon: "link" }],
+  nav: [{ id: "publish", label: "Publish", icon: "upload" }, { id: "calendar", label: "Calendar", icon: "calendar" },
+        { id: "stats", label: "Stats", icon: "chart" }, { id: "accounts", label: "Accounts", icon: "link" }],
   homeActions: [{ label: "Post a video", icon: "upload", href: "#/x/publish" }, { label: "Accounts", icon: "link", href: "#/x/accounts" }],
+  footageReview,
   homeStats() {
     const span = h("span", {});
     listAccounts().then((list) => {
@@ -1016,6 +1214,8 @@ export const extras = {
   },
   render(id, sub, container) {
     if (id === "accounts") return renderAccounts(container);
+    if (id === "calendar") return renderCalendar(container, { findVideo: videoLookup });
+    if (id === "stats") return renderStats(container, { findVideo: videoLookup });
     if (id === "publish" && sub) {
       let cleanup = null;
       renderComposer(container, sub).then((fn) => (cleanup = fn)).catch((err) => {
