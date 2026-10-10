@@ -524,33 +524,63 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
     return { ...doc, session_id: doc.session_id || cfg.session_id || null };
   }
 
-  async function notify(kind, id, projectId) {
+  /**
+   * Tell Claude about new tasks: through the Routine named in settings/claude
+   * (fire_trigger wakes the session that runs the panel), else a direct
+   * message to that session. `ids` is one task id or several (a batch).
+   * Resolves null, or why Claude wasn't reached.
+   */
+  async function notify(kind, ids, projectId) {
     const cfg = data.config || {};
     const route = await routing();
+    const list = [].concat(ids);
     // profile changes happen in the user's own browser: only a session on their computer can do them
     if (kind === "profile" && !route.computer_session_id) return "No Claude session on your computer is connected to the panel yet.";
     const target = kind === "profile" ? route.computer_session_id : route.session_id;
     const subject = projectId ? ` for reel "${projectId}"` : "";
-    const docs = projectId ? `tasks/${id} and projects/${projectId}` : `tasks/${id}`;
+    const docs = list.map((x) => `tasks/${x}`).join(", ") + (projectId ? ` and projects/${projectId}` : "");
     const code = cfg.repo ? ` Code: github.com/${cfg.repo}, branch ${cfg.branch || "main"}.` : "";
-    const message = `reelforge panel request: ${kind} task "${id}"${subject}. `
+    const what = list.length > 1 ? `${kind} tasks ${list.map((x) => `"${x}"`).join(", ")}` : `${kind} task "${list[0]}"`;
+    const message = `reelforge panel request: ${what}${subject}. `
       + `Panel: ${cfg.artifact || "(the reelforge panel artifact)"}. Read ${docs} from the panel's database `
       + `and carry it out (.claude/skills/jackk-reel/SKILL.md, "Control panel requests").${code}`;
-    if (!mcp || !target) return "Claude can't be messaged from this view.";
-    try {
-      await mcp.callTool(cfg.connector || "Claude Code Remote", cfg.tool || "send_message", { session_id: target, message });
-      return null;
-    } catch (err) {
-      const why = {
-        server_not_connected: "the Claude Code Remote connector isn't connected",
-        not_in_manifest: "the panel isn't allowed to message Claude",
-        needs_reauth: "the Claude Code Remote connector needs to be reconnected",
-      }[err && err.code];
-      return why ? `Claude wasn't messaged (${why}).` : `Claude wasn't messaged (${(err && (err.message || err.code)) || "unknown error"}).`;
+    if (!mcp) return "Claude can't be messaged from this view.";
+    const connector = cfg.connector || "Claude Code Remote";
+    const attempts = [];
+    if (kind !== "profile" && route.trigger_id) attempts.push(["fire_trigger", { trigger_id: route.trigger_id, text: message }]);
+    if (target) attempts.push([cfg.tool || "send_message", { session_id: target, message }]);
+    if (!attempts.length) return "Claude can't be messaged from this view.";
+    let last = null;
+    for (const [tool, input] of attempts) {
+      try {
+        await mcp.callTool(connector, tool, input);
+        return null;
+      } catch (err) {
+        last = err;
+      }
     }
+    const why = {
+      server_not_connected: "the Claude Code Remote connector isn't connected",
+      not_in_manifest: "the panel isn't allowed to message Claude",
+      needs_reauth: "the Claude Code Remote connector needs to be reconnected",
+    }[last && last.code];
+    return why ? `Claude wasn't messaged (${why}).` : `Claude wasn't messaged (${(last && (last.message || last.code)) || "unknown error"}).`;
   }
 
-  async function newTask(kind, projectId, extra = {}) {
+  const ASKS = { plan: "plan my reel", render: "render my reel", review: "review my clips", publish: "publish my video",
+                 profile: "apply my reelforge profile changes", ideas: "get my script ideas", virality: "check my video" };
+  const askFor = (kind) => ASKS[kind] || `run my ${kind}`;
+
+  /** Mark tasks that Claude wasn't told about with what to type instead. */
+  async function markUnsent(kind, ids, problem) {
+    const where = kind === "profile" ? "to Claude on your computer" : "in your Claude chat";
+    const patch = problem
+      ? { notify_error: problem, message: `${problem} Send “${askFor(kind)}” ${where} and it starts.` }
+      : { notified: true };
+    await Promise.all([].concat(ids).map((x) => retrying(() => T(x).update(patch)).catch(() => {})));
+  }
+
+  async function newTask(kind, projectId, extra = {}, { silent = false } = {}) {
     if (projectId) await load(projectId); // 404 for a deleted reel
     const id = `${kind}-${Date.now().toString(36)}-${hex(3)}`;
     const task = {
@@ -563,15 +593,19 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
     } catch (err) {
       throw storeError(err);
     }
+    if (silent) return { id, problem: null };
     const problem = await notify(kind, id, projectId);
-    const ask = { plan: "plan my reel", render: "render my reel", review: "review my clips", publish: "publish my video",
-                  profile: "apply my reelforge profile changes" }[kind] || `run my ${kind}`;
-    const where = kind === "profile" ? "to Claude on your computer" : "in your Claude chat";
-    const patch = problem
-      ? { notify_error: problem, message: `${problem} Send “${ask}” ${where} and it starts.` }
-      : { notified: true };
-    await retrying(() => T(id).update(patch)).catch(() => {});
+    await markUnsent(kind, id, problem);
     return { id, problem };
+  }
+
+  /** Several tasks of one kind, one message to Claude. extras = [{projectId, extra}]. */
+  async function newTasks(kind, items) {
+    const ids = [];
+    for (const it of items) ids.push((await newTask(kind, it.projectId || null, it.extra || {}, { silent: true })).id);
+    const problem = ids.length ? await notify(kind, ids, null) : null;
+    await markUnsent(kind, ids, problem);
+    return { ids, problem, ask: askFor(kind) };
   }
 
   function watchTask(id) {
@@ -611,7 +645,7 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
 
     // for the control panel's own pages (publishing, accounts)
     _panel: { db, assets, mcp, sample, data, retrying, storeError, uploadAsset, storeFile, resolveB64, probe,
-              blobUrl, newTask, nowIso, hex, mimeOf, kindOf, safeName, clone, urlOf, routing },
+              blobUrl, newTask, newTasks, askFor, nowIso, hex, mimeOf, kindOf, safeName, clone, urlOf, routing },
 
     meta: async () => clone(data.meta),
     schema: async () => clone(data.schema),

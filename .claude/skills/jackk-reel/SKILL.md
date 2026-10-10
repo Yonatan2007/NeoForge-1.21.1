@@ -68,11 +68,16 @@ keeps reels in the Artifact's database (`projects/<id>`) and files in its asset
 store. Its "Preview plan" and "Render" buttons write a task (`tasks/<id>`) and
 message this session through the user's Claude Code Remote connector:
 
-    reelforge panel request: <plan|render|review> task "<task id>" for reel "<reel id>". Panel: <artifact url> ...
+    reelforge panel request: <kind> task "<task id>" for reel "<reel id>". Panel: <artifact url> ...
+    reelforge panel request: render tasks "<id>", "<id>" ...      (a batch from "Render several")
 
-That message is the user's own button press: carry the task out. (If the user
-writes "render my reel" or "review my clips" in chat instead, `ArtifactData
-query tasks` where `status == "queued"` and do those.) W = a work folder in the scratchpad,
+It arrives either as a direct message or through the Routine "reelforge panel
+button" (its id is `settings/claude.trigger_id`; the panel calls `fire_trigger`
+with the message as text). That message is the user's own button press: carry
+the task out. (If the user writes "render my reel", "review my clips", "get my
+script ideas" or "check my video" in chat instead, `ArtifactData query tasks`
+where `status == "queued"` and do those.) Batches: do the renders one after
+another, each with its own work folder. W = a work folder in the scratchpad,
 A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
 
 1. Setup in a fresh container: `git pull origin claude/eager-hypatia-yaqaw0`,
@@ -112,7 +117,23 @@ A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
    created: <now ISO>, sheet: <asset id>}` (from `file_path`, a JSON file you
    write), and the task `{status: "done", message: "Found <n> clips"}`. On
    `{"ok": false}`: task `{status: "error", error}`. No voiceover is needed.
-7. Tell the user in chat in one or two lines what was made (or what failed).
+7. **ideas** (the Ideas page; scripts from Google Gemini): save the task with
+   `out_dir`, run `python -m reelforge.panelrun ideas <task file>` (it needs
+   `GEMINI_API_KEY` in the environment; `GEMINI_MODEL` picks a model). On
+   `{"ok": true, "result": {model, ideas}}`: `ArtifactData batch` with
+   `set ideas/<task id>` = `{created: <now ISO>, topic, model, ideas}` and the
+   task `{status: "done", message: "Gemini wrote <n> scripts", result}`. On
+   `{"ok": false}`: task `{status: "error", error}` (the error says how to add
+   the key). Never write ideas yourself in place of Gemini's.
+8. **virality** (the Publish page's "Will it go viral?"; `post_id`, `video`):
+   get the video like a publish does, upload it to Higgsfield
+   (`media_upload`, PUT, `media_confirm`), `mcp__higgsfield__virality_predictor`
+   `{action: "create", params: {model: "virality_predictor", medias: [{role:
+   "video", id: <media_id>}]}}`, `jobs_wait` for it, and read the analysis.
+   Finish the task with `result: {score: 0-100 or null, verdict: one sentence,
+   strengths: [..], risks: [..], tips: [..], job_id, media_id}` in plain words
+   (keep `media_id`: a publish of the same video can reuse it).
+9. Tell the user in chat in one or two lines what was made (or what failed).
 
 ### Publish requests (`kind: "publish"`)
 
@@ -136,8 +157,11 @@ time in time zone `tz`; YouTube `title`) and accounts in `accounts/<id>`
    `allow_comment/duet/stitch`, `is_aigc`. That opens TikTok's publish form in
    the chat: tell the user to pick the saved sound (title, artist) at the saved
    volumes there (music only works for "Post now"). Write
-   `result.tiktok = {status: "waiting", message: "Confirm the post in your Claude chat"}`;
-   after they submit, check `tiktok_publish_status` and set `done` (with `url`).
+   `result.tiktok = {status: "waiting", message: "Confirm the post in your Claude chat",
+   connector_id, publish_id}` (the publish id or session id the prepare call or
+   the form returns, when there is one): the panel then reads
+   `tiktok_publish_status` itself and marks it `done`; the user can also press
+   "I posted it". TikTok's cover is chosen in its own form.
 3. **Instagram / YouTube** go through the Metricool connector. Read its tool
    schemas first, never guess: `getBrandSettings` shows which networks the
    user linked, `createScheduledPost` posts. The video must be a public URL:
@@ -146,6 +170,14 @@ time in time zone `tz`; YouTube `title`) and accounts in `accounts/<id>`
    `getBestTimeToPostByNetwork`; "at" = `at` in time zone `tz`.
    Instagram: a Reel (`share_to_feed`), caption + hashtags. YouTube: a Short
    with `title`, description (caption + tags), `privacy`, `made_for_kids`.
+   Cover: when the post has `cover: {ms}`, pass `videoCoverMilliseconds: ms`.
+   Instagram sound: when `instagram.sound.name` is set, add
+   `instagramData.audioConfiguration: {audioId: <the name>, audioVolume:
+   sound_volume, videoVolume: original_volume}`. If Metricool answers with
+   several candidates, retry once with the numeric id of the one whose title
+   and artist match; if it refuses because the account isn't a Business
+   account linked to a Facebook Page, post without it and say so in the
+   result message (the user adds the sound in the app).
    Result per platform: `{status: "scheduled", message: "Posting at <time>"}`.
    Without Metricool in this session: `{status: "error", message: "Add the
    Metricool connector in Claude, then say “take over my reelforge panel” in
@@ -154,8 +186,9 @@ time in time zone `tz`; YouTube `title`) and accounts in `accounts/<id>`
 4. Finish the task: `{status: "done", message, result: {<platform>: {status, message, url?}}}`.
 
 The panel's Calendar and Stats pages and the best-time picker call Metricool
-themselves (the viewer's own connector), and its caption writer asks Claude
-through the Artifact's `sample` capability: none of them sends you a task.
+themselves (the viewer's own connector), its caption writer asks Claude
+through the Artifact's `sample` capability, and TikTok's status is read with
+the viewer's Higgsfield connector: none of them sends you a task.
 
 ### Profile requests (`kind: "profile"`)
 

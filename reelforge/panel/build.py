@@ -24,7 +24,7 @@ from reelforge.config import FootageItem, Project  # noqa: E402
 
 STATIC = ROOT / "reelforge" / "ui" / "static"
 PANEL_FILES = ("panel-backend.js", "panel-boot.js", "panel-voices.js", "panel-publish.js", "panel-growth.js",
-               "panel-review.js", "panel.css")
+               "panel-review.js", "panel-more.js", "panel.css")
 
 INDEX = """<title>reelforge</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='1' y='1' width='30' height='30' rx='9' fill='%232b3352'/%3E%3Ccircle cx='20' cy='16.5' r='6' fill='%23f7b544'/%3E%3Cpath d='M1 22.5l6.5-7.2 5 5.4 6.6-8.4L31 25v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1Z' fill='%23151a28'/%3E%3C/svg%3E">

@@ -31,7 +31,14 @@ so the whole app can be used from the Claude app on any device:
   candidates to `reviews/<reel id>` with one contact sheet of their
   thumbnails; the clips the viewer keeps or rules out are saved as
   `footage.picks` / `footage.banned`, which the render uses first.
-* "Preview plan", "Render", "Find clips", "Publish" and "Change on my accounts" become tasks
+* `panel-more.js` adds Ideas (scripts from Google Gemini, an "ideas" task run
+  with `GEMINI_API_KEY` in Claude's environment), Render several (one message
+  for a batch of renders), the cover picker, "Will it go viral?" (Higgsfield's
+  Virality Predictor, a "virality" task) and TikTok's post status.
+* The panel reaches Claude through the Routine in `settings/claude.trigger_id`
+  (`fire_trigger`) or a direct `send_message`; when neither is allowed it says
+  what to type in the chat.
+* "Preview plan", "Render", "Find clips", "Get ideas", "Will it go viral?", "Publish" and "Change on my accounts" become tasks
   that Claude carries out (`reelforge/panelrun.py`; the procedures are in
   `.claude/skills/jackk-reel/SKILL.md`, "Control panel requests"). The panel
   messages the session named in its `settings/claude` doc, so a new session
@@ -42,8 +49,8 @@ so the whole app can be used from the Claude app on any device:
 Build: `python panel/build.py --out <dir> --session <session id> --artifact <url>`,
 then publish `<dir>/index.html` with every other file in `<dir>` and the
 capabilities `{db: {}, assets: {}, downloads: true, sample: {}, mcp: {servers:
-[{server: "Claude Code Remote", tools: ["send_message"]}, {server: "higgsfield",
+[{server: "Claude Code Remote", tools: ["send_message", "fire_trigger"]}, {server: "higgsfield",
 tools: ["list_voices", "tiktok_accounts", "tiktok_connect", "tiktok_reconnect",
-"tiktok_music_trending"]}, {server: "Metricool Social Media Management", tools:
+"tiktok_music_trending", "tiktok_publish_status"]}, {server: "Metricool Social Media Management", tools:
 ["getBrandSettings", "getBestTimeToPostByNetwork", "getScheduledPosts",
 "updateScheduledPost", "getAnalyticsDataByMetrics"]}]}}`.

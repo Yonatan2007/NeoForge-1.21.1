@@ -28,6 +28,7 @@ import {
 import { paintRange, switchControl } from "./fields.js";
 import { icon } from "./icons.js";
 import { bestTimePicker, canWrite, renderCalendar, renderStats, sampleProblem, viewerTz, writePost } from "./panel-growth.js";
+import { checkTiktok, coverCard, markTiktokPosted, renderBatch, renderIdeas, viralityCard } from "./panel-more.js";
 import { footageReview } from "./panel-review.js";
 
 const strip = (handle) => String(handle || "").replace(/^@/, "");
@@ -465,6 +466,12 @@ function soundSection(platform, settings, accounts, save) {
         : callout("info", "Connect a TikTok account on the Accounts page to browse TikTok's trending sounds."),
       results, sliders,
       callout("info", "TikTok only takes music in its own publish form, which opens in your Claude chat when you publish. Claude shows you this sound and these volumes there, so setting them is one tap."));
+  } else if (platform === "instagram") {
+    const name = textField({ label: "Instagram sound", value: settings.sound && settings.sound.name, placeholder: "Song title and artist, e.g. Night Drive Lumen",
+      help: "Write it the way Instagram's music search shows it. Claude picks the exact match from Instagram's music library.",
+      onInput: (v) => { settings.sound = v.trim() ? { name: v.trim() } : null; save(); } });
+    box.append(name, sliders,
+      callout("info", "Claude adds this sound through Metricool at these volumes. Instagram allows that only for a Business account linked to a Facebook Page; for any other account the reel goes out with its own audio and you add the sound in the app."));
   } else {
     const name = textField({ label: "Sound to add", value: settings.sound && settings.sound.name, placeholder: "The trending sound's name or link",
       onInput: (v) => { settings.sound = v.trim() ? { name: v.trim() } : null; save(); } });
@@ -542,7 +549,7 @@ function platformPanel(platform, post, accounts, save, changed) {
     h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Post to"), acc),
     h("div", { class: "stack" }, ...fields),
     options,
-    best,
+    best || "",
     h("div", { class: "stack" }, h("p", { class: "subsection-title" }, "Sound"), soundSection(platform, s, accounts, () => { save(); changed(); })));
   body.classList.toggle("is-off", !s.enabled);
   body.inert = !s.enabled;
@@ -552,14 +559,33 @@ function platformPanel(platform, post, accounts, save, changed) {
     body);
 }
 
-function resultsCard(task) {
+function resultsCard(task, taskId) {
   if (!task) return null;
   const rows = Object.entries(task.result || {}).map(([platform, r]) => {
     const ok = ["done", "scheduled"].includes(r.status);
+    let actions = null;
+    if (platform === "tiktok" && r.status === "waiting" && taskId) {
+      const check = r.publish_id ? button("Check TikTok", { icon: "refresh", size: "sm", variant: "ghost" }) : null;
+      if (check) check.addEventListener("click", async () => {
+        check.classList.add("is-loading");
+        try {
+          const next = await checkTiktok(taskId, task);
+          toast(next.message, { kind: next.status === "error" ? "error" : "info", timeout: 2500 });
+        } catch (err) {
+          toastError("Could not read TikTok's status", err);
+        } finally {
+          check.classList.remove("is-loading");
+        }
+      });
+      const posted = button("I posted it", { icon: "check", size: "sm", variant: "ghost",
+        onClick: () => markTiktokPosted(taskId, task).catch((err) => toastError("Could not save", err)) });
+      actions = h("span", { class: "row result-actions" }, check, posted);
+    }
     return h("li", { class: ["check", ok ? "is-ok" : r.status === "error" ? "is-missing" : "is-optional"] },
     h("span", { class: "check-icon", html: icon(ok ? "check" : r.status === "error" ? "alert" : "info", { size: 14 }) }),
     h("span", {}, h("strong", {}, (PLATFORMS[platform] || { label: platform }).label), ` · ${r.message || r.status}`,
-      r.url ? [" · ", h("a", { href: r.url, target: "_blank", rel: "noopener" }, "Open post")] : null));
+      r.url ? [" · ", h("a", { href: r.url, target: "_blank", rel: "noopener" }, "Open post")] : null),
+    actions);
   });
   const st = publishState(task);
   return h("section", { class: ["card", "job-card", `job-${task.status}`] },
@@ -796,6 +822,12 @@ async function renderComposer(container, key) {
     return [p, b];
   });
 
+  if (post.cover && post.cover.asset) phone.player.poster = P().blobUrl(post.cover.asset);
+  const cover = coverCard(post, videoUrl(video), save, (c) => {
+    phone.player.poster = c && c.asset ? P().blobUrl(c.asset) : video.thumb || "";
+  });
+  const virality = viralityCard(post, key, video, save);
+
   const checksBox = h("section", { class: "card checks-card", "aria-labelledby": "checks-title" });
   const repaintChecks = () => {
     const list = checksFor(post, ctx);
@@ -830,6 +862,7 @@ async function renderComposer(container, key) {
   bar.append(summary, publishBtn);
 
   let unsub = null;
+  let checkedTiktok = false;
   let reveal = false; // scroll to the results once the new task shows up
   const watch = (taskId) => {
     if (unsub) unsub();
@@ -838,7 +871,11 @@ async function renderComposer(container, key) {
       ctx.posted = new Set(Object.entries((t && t.result) || {})
         .filter(([, r]) => r && ["done", "scheduled", "waiting"].includes(r.status)).map(([p]) => p));
       repaintChecks();
-      results.replaceChildren(resultsCard(t) || "");
+      results.replaceChildren(resultsCard(t, taskId) || "");
+      if (t && !checkedTiktok && t.result && t.result.tiktok && t.result.tiktok.status === "waiting" && t.result.tiktok.publish_id) {
+        checkedTiktok = true; // once per visit: TikTok may have finished processing since
+        checkTiktok(taskId, t).catch(() => {});
+      }
       if (reveal && s.exists) {
         reveal = false;
         results.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -881,6 +918,8 @@ async function renderComposer(container, key) {
       h("div", { class: "stack-lg composer-main" },
         common,
         h("section", { class: "card card-flush platform-card" }, tablist, ...ORDER.map((p) => panels[p])),
+        cover,
+        virality,
         checksBox,
         results)),
     bar);
@@ -888,7 +927,10 @@ async function renderComposer(container, key) {
   repaintPreview();
   repaintBar();
   repaintChecks();
-  return () => unsub && unsub();
+  return () => {
+    if (unsub) unsub();
+    virality.cleanup();
+  };
 }
 
 // --------------------------------------------------------------------------- Accounts
@@ -1200,9 +1242,9 @@ async function videoLookup() {
 }
 
 export const extras = {
-  nav: [{ id: "publish", label: "Publish", icon: "upload" }, { id: "calendar", label: "Calendar", icon: "calendar" },
+  nav: [{ id: "ideas", label: "Ideas", icon: "sparkle" }, { id: "publish", label: "Publish", icon: "upload" }, { id: "calendar", label: "Calendar", icon: "calendar" },
         { id: "stats", label: "Stats", icon: "chart" }, { id: "accounts", label: "Accounts", icon: "link" }],
-  homeActions: [{ label: "Post a video", icon: "upload", href: "#/x/publish" }, { label: "Accounts", icon: "link", href: "#/x/accounts" }],
+  homeActions: [{ label: "Script ideas", icon: "sparkle", href: "#/x/ideas" }, { label: "Render several", icon: "render", href: "#/x/batch" }],
   footageReview,
   homeStats() {
     const span = h("span", {});
@@ -1215,6 +1257,8 @@ export const extras = {
   render(id, sub, container) {
     if (id === "accounts") return renderAccounts(container);
     if (id === "calendar") return renderCalendar(container, { findVideo: videoLookup });
+    if (id === "ideas") return renderIdeas(container);
+    if (id === "batch") return renderBatch(container);
     if (id === "stats") return renderStats(container, { findVideo: videoLookup });
     if (id === "publish" && sub) {
       let cleanup = null;
