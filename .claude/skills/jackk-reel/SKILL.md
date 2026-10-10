@@ -71,9 +71,13 @@ message this session through the user's Claude Code Remote connector:
     reelforge panel request: <kind> task "<task id>" for reel "<reel id>". Panel: <artifact url> ...
     reelforge panel request: render tasks "<id>", "<id>" ...      (a batch from "Render several")
 
-It arrives either as a direct message or through the Routine "reelforge panel
-button" (its id is `settings/claude.trigger_id`; the panel calls `fire_trigger`
-with the message as text). That message is the user's own button press: carry
+It arrives as a direct message, or through a Routine whose id is in
+`settings/claude.trigger_id` (the panel calls `fire_trigger` with the message
+as text). Only set `trigger_id` for a Routine whose sessions have the repo and
+the Higgsfield and Metricool connectors: sessions without them can't do panel
+work and only mark tasks failed. (This organization doesn't allow connectors
+on Routines, so the "reelforge panel button" Routine is turned off and the
+panel asks the user to type the request here.) That message is the user's own button press: carry
 the task out. (If the user writes "render my reel", "review my clips", "get my
 script ideas" or "check my video" in chat instead, `ArtifactData query tasks`
 where `status == "queued"` and do those.) Batches: do the renders one after
