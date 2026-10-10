@@ -271,6 +271,9 @@ class FootageSettings:
     hook_query: str | None = "mountains"   # search for the hook shot (needs a skyline)
     reference_matching: bool = True        # rank stock clips by similarity to reference uploads
     allow_landscape: bool = True           # crop landscape clips when vertical ones run out
+    picks: list[dict] = field(default_factory=list)  # stock clips chosen in the review, in shot order
+    #   (footage.pick_of: provider, id, page_url, download_url, ...; slot "opening" = the hook shot)
+    banned: list[str] = field(default_factory=list)  # stock clips never to use ("provider_id" keys)
 
 
 @dataclass

@@ -390,6 +390,29 @@ def _download(c: Candidate, provider: _Provider, dst: Path) -> Path:
     return download(provider.resolve(last), dst, timeout=120)
 
 
+def _rank_query(query: str, providers: list[_Provider], used: set[str], min_duration: float,
+                allow_landscape: bool, shortlist: int, extra_score: ExtraScore | None,
+                portrait_weight: float, luma_target: float, wide: bool,
+                avoid: set[str] | None) -> list[tuple[float, Candidate]]:
+    """One search's best ``shortlist`` candidates, best first, each scored by
+    ``score`` plus ``extra_score(candidate, thumbnail)`` (the thumbnail is
+    fetched once and cached, and sets the clip's brightness)."""
+    by_name = {p.name: p for p in providers}
+    cands = [c for c in _search(query, providers, allow_landscape, wide)
+             if c.key not in used and (c.portrait or allow_landscape) and not describes(c, avoid)]
+    cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target), reverse=True)
+    ranked = []
+    for c in cands[:shortlist]:
+        provider = by_name[c.provider]
+        img = thumbnail_image(c.thumbnail, provider.session, provider.thumb_dir)
+        if img is not None:
+            c.luma, c.thumb_size = image_luma(img), c.thumb_size or img.size
+        bonus = float(extra_score(c, img)) if extra_score else 0.0
+        ranked.append((score(c, min_duration, portrait_weight, luma_target) + bonus, c))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked
+
+
 def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Path,
                   min_duration: float, allow_landscape: bool = True, shortlist: int = 6,
                   count: int | None = None, extra_score: ExtraScore | None = None,
@@ -404,7 +427,8 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
     which the caller uses for visual judgement (a skyline for the hook shot,
     similarity to reference pictures). The thumbnail is None when it can't be
     fetched. If a clip fails to download, the next one on the shortlist is used.
-    Clips that ``describes`` with a word in ``avoid`` are skipped."""
+    Clips that ``describes`` with a word in ``avoid`` are skipped, and so are
+    the keys in ``exclude``."""
     if not providers:
         raise FootageError("no stock provider configured: enable Mixkit, set PEXELS_API_KEY "
                            "and/or PIXABAY_API_KEY, or pass --footage-dir with your own clips")
@@ -415,21 +439,11 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
     for query in queries:
         if count is not None and len(picks) >= count:
             break
-        cands = [c for c in _search(query, providers, allow_landscape, wide)
-                 if c.key not in used and (c.portrait or allow_landscape) and not describes(c, avoid)]
-        if not cands:
+        ranked = _rank_query(query, providers, used, min_duration, allow_landscape, shortlist,
+                             extra_score, portrait_weight, luma_target, wide, avoid)
+        if not ranked:
             log.warning("no footage for %r", query)
             continue
-        cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target), reverse=True)
-        ranked = []
-        for c in cands[:shortlist]:
-            provider = by_name[c.provider]
-            img = thumbnail_image(c.thumbnail, provider.session, provider.thumb_dir)
-            if img is not None:
-                c.luma, c.thumb_size = image_luma(img), c.thumb_size or img.size
-            bonus = float(extra_score(c, img)) if extra_score else 0.0
-            ranked.append((score(c, min_duration, portrait_weight, luma_target) + bonus, c))
-        ranked.sort(key=lambda item: item[0], reverse=True)
         for total, c in ranked:
             used.add(c.key)
             try:
@@ -446,30 +460,63 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
     return picks
 
 
+def shortlist_footage(queries: list[str], providers: list[_Provider], min_duration: float,
+                      count: int, per_query: int = 2, allow_landscape: bool = True,
+                      shortlist: int = 6, extra_score: ExtraScore | None = None,
+                      portrait_weight: float = 3.0, palette: str = "bright",
+                      exclude: set[str] | None = None, wide: bool = False,
+                      avoid: set[str] | None = None) -> list[tuple[float, Candidate]]:
+    """Clips to choose from, ranked the way ``fetch_footage`` ranks them but
+    without downloading: the best ``per_query`` of each search, in query
+    order, until ``count`` clips. The first ones are what a render would pick."""
+    luma_target = LUMA_TARGETS.get(palette, LUMA_TARGETS["bright"])
+    used: set[str] = set(exclude or ())
+    out: list[tuple[float, Candidate]] = []
+    for rnd in range(2):  # a second pass takes deeper picks when the searches run short
+        for query in queries:
+            if len(out) >= count:
+                return out
+            ranked = _rank_query(query, providers, used, min_duration, allow_landscape, shortlist,
+                                 extra_score, portrait_weight, luma_target, wide, avoid)
+            for total, c in ranked[:per_query if rnd == 0 else shortlist]:
+                if len(out) >= count:
+                    break
+                used.add(c.key)
+                out.append((total, c))
+    return out
+
+
+def ranked_best(queries: list[str], providers: list[_Provider], min_duration: float,
+                rank: ExtraScore, allow_landscape: bool = True, shortlist: int = 8,
+                portrait_weight: float = 3.0, palette: str = "bright", wide: bool = False,
+                avoid: set[str] | None = None, exclude: set[str] | None = None,
+                limit: int | None = None) -> list[tuple[float, Candidate]]:
+    """Candidates of every query compared together, best first, judged mostly
+    by ``rank(candidate, thumbnail)``."""
+    luma_target = LUMA_TARGETS.get(palette, LUMA_TARGETS["bright"])
+    seen: set[str] = set(exclude or ())
+    ranked: list[tuple[float, Candidate]] = []
+    for query in dict.fromkeys(queries):
+        found = _rank_query(query, providers, seen, min_duration, allow_landscape, shortlist,
+                            rank, portrait_weight, luma_target, wide, avoid)
+        seen.update(c.key for _, c in found)
+        ranked += found
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked[:limit] if limit else ranked
+
+
 def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min_duration: float,
             rank: ExtraScore, allow_landscape: bool = True, shortlist: int = 8,
             portrait_weight: float = 3.0, palette: str = "bright",
-            wide: bool = False, avoid: set[str] | None = None) -> tuple[Candidate, Path] | None:
+            wide: bool = False, avoid: set[str] | None = None,
+            exclude: set[str] | None = None) -> tuple[Candidate, Path] | None:
     """The single best clip across several searches, judged mostly by
     ``rank(candidate, thumbnail)`` (e.g. how clear a skyline is for the hook
     shot). Unlike ``fetch_footage`` it compares candidates of every query
     before choosing. None when nothing could be found or downloaded."""
     by_name = {p.name: p for p in providers}
-    luma_target = LUMA_TARGETS.get(palette, LUMA_TARGETS["bright"])
-    seen: set[str] = set()
-    ranked: list[tuple[float, Candidate]] = []
-    for query in dict.fromkeys(queries):
-        cands = [c for c in _search(query, providers, allow_landscape, wide)
-                 if c.key not in seen and (c.portrait or allow_landscape) and not describes(c, avoid)]
-        cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target), reverse=True)
-        for c in cands[:shortlist]:
-            seen.add(c.key)
-            provider = by_name[c.provider]
-            img = thumbnail_image(c.thumbnail, provider.session, provider.thumb_dir)
-            if img is not None:
-                c.luma, c.thumb_size = image_luma(img), c.thumb_size or img.size
-            ranked.append((score(c, min_duration, portrait_weight, luma_target) + float(rank(c, img)), c))
-    ranked.sort(key=lambda item: item[0], reverse=True)
+    ranked = ranked_best(queries, providers, min_duration, rank, allow_landscape, shortlist,
+                         portrait_weight, palette, wide, avoid, exclude)
     for total, c in ranked:
         try:
             path = _download(c, by_name[c.provider], Path(cache_dir) / "footage" / f"{c.key}.mp4")
@@ -480,6 +527,77 @@ def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min
                  c.key, c.width, c.height, c.duration, total)
         return c, path
     return None
+
+
+# --------------------------------------------------------------------------- reviewed clips
+
+PICK_FIELDS = ("provider", "id", "page_url", "download_url", "width", "height", "duration",
+               "author", "thumbnail", "query", "alt_urls")
+
+
+def pick_of(c: Candidate) -> dict:
+    """A candidate as JSON for a project's ``footage.picks``."""
+    d = {k: getattr(c, k) for k in PICK_FIELDS}
+    d["key"] = c.key
+    return d
+
+
+def candidate_of(pick: dict) -> Candidate | None:
+    """The candidate a ``footage.picks`` entry describes (None if malformed)."""
+    try:
+        return Candidate(provider=str(pick["provider"]), id=str(pick["id"]), page_url=str(pick.get("page_url") or ""),
+                         download_url=str(pick["download_url"]), width=int(pick.get("width") or 0),
+                         height=int(pick.get("height") or 0), duration=float(pick.get("duration") or 0),
+                         author=str(pick.get("author") or ""), thumbnail=pick.get("thumbnail"),
+                         query=str(pick.get("query") or "reviewed"),
+                         alt_urls=[str(u) for u in pick.get("alt_urls") or []])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def pick_key(pick: dict) -> str:
+    return str(pick.get("key") or f"{pick.get('provider')}_{pick.get('id')}")
+
+
+def fetch_pick(pick: dict, providers: list[_Provider], cache_dir: Path) -> tuple[Candidate, Path] | None:
+    """Download a clip chosen in the review. None when it is gone, or its site
+    is not among ``providers`` any more."""
+    c = candidate_of(pick)
+    by_name = {p.name: p for p in providers}
+    if c is None or c.provider not in by_name:
+        log.warning("reviewed clip %s can't be used (site turned off or entry damaged)", pick_key(pick))
+        return None
+    try:
+        path = _download(c, by_name[c.provider], Path(cache_dir) / "footage" / f"{c.key}.mp4")
+    except (requests.RequestException, FootageError) as exc:
+        log.warning("download failed for reviewed clip %s: %s", c.key, exc)
+        return None
+    log.info("footage (your pick) <- %s (%dx%d, %.0fs)", c.key, c.width, c.height, c.duration)
+    return c, path
+
+
+def contact_sheet(cands: list[Candidate], providers: list[_Provider], path: Path,
+                  tile: tuple[int, int] = (180, 320), cols: int = 8) -> dict:
+    """One JPEG with every candidate's thumbnail cropped to a 9:16 tile, left
+    to right and top to bottom, so a page can show them all from one file.
+    Returns {w, h, cols, rows}."""
+    by_name = {p.name: p for p in providers}
+    tw, th = tile
+    cols = max(1, min(cols, len(cands) or 1))
+    rows = max(1, -(-len(cands) // cols))
+    sheet = Image.new("RGB", (cols * tw, rows * th), (40, 44, 58))
+    for i, c in enumerate(cands):
+        provider = by_name.get(c.provider)
+        img = thumbnail_image(c.thumbnail, provider.session, provider.thumb_dir) if provider else None
+        if img is None:
+            continue
+        scale = max(tw / img.width, th / img.height)
+        img = img.resize((max(tw, round(img.width * scale)), max(th, round(img.height * scale))), Image.LANCZOS)
+        left, top = (img.width - tw) // 2, (img.height - th) // 2
+        sheet.paste(img.crop((left, top, left + tw, top + th)), ((i % cols) * tw, (i // cols) * th))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(path, "JPEG", quality=82, optimize=True)
+    return {"w": tw, "h": th, "cols": cols, "rows": rows}
 
 
 def write_credits(picks: list[tuple[Candidate, Path]], path: Path) -> Path:

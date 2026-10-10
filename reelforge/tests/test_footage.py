@@ -387,3 +387,45 @@ def test_download_tries_the_next_file_after_a_network_error(tmp_path, monkeypatc
     prov = FakeProvider(tmp_path, [])
     assert footage._download(c, prov, tmp_path / "1.mp4").read_bytes() == b"video"
     assert tried == ["https://x/4k.mp4", "https://x/1080.mp4"]
+
+
+# --------------------------------------------------------------------------- review
+
+def test_shortlist_ranks_like_fetch_footage_without_downloading(tmp_path, monkeypatch):
+    monkeypatch.setattr(footage, "download", lambda *a, **kw: pytest.fail("the review downloads nothing"))
+    p = FakeProvider(tmp_path, [cand(0, duration=3), cand(1), cand(2), cand(3)])
+    ranked = footage.shortlist_footage(["a", "b"], [p], min_duration=5, count=3, per_query=2)
+    assert [c.id for _, c in ranked] == ["1", "2", "3"]  # 2 from "a", then the next best from "b"
+    assert [c.id for _, c in footage.shortlist_footage(["a"], [p], 5, count=9, exclude={"fake_1"})] == \
+        ["2", "3", "0"]  # a second pass digs deeper when the searches run short
+
+
+def test_ranked_best_skips_excluded_clips(tmp_path):
+    p = FakeProvider(tmp_path, [cand("a"), cand("b"), cand("c")])
+    rank = {"a": 3.0, "b": 2.0, "c": 1.0}
+    ranked = footage.ranked_best(["x", "y"], [p], 5, rank=lambda c, img: rank[c.id], exclude={"fake_a"})
+    assert [c.id for _, c in ranked] == ["b", "c"]  # each clip once, across both searches
+
+
+def test_a_pick_round_trips_and_downloads(tmp_path, monkeypatch):
+    monkeypatch.setattr(footage, "download", lambda url, dst, **kw: Path(dst))
+    c = cand(7, page_url="https://x/7", alt_urls=["alt"], author="Ann")
+    pick = json.loads(json.dumps(footage.pick_of(c)))
+    assert pick["key"] == "fake_7" and footage.pick_key(pick) == "fake_7"
+    back = footage.candidate_of(pick)
+    assert (back.key, back.alt_urls, back.author, back.page_url) == ("fake_7", ["alt"], "Ann", "https://x/7")
+    got, path = footage.fetch_pick(pick, [FakeProvider(tmp_path, [])], tmp_path)
+    assert got.key == "fake_7" and path.name == "fake_7.mp4"
+    assert footage.fetch_pick({**pick, "provider": "gone"}, [FakeProvider(tmp_path, [])], tmp_path) is None
+    assert footage.candidate_of({"provider": "fake"}) is None
+
+
+def test_contact_sheet_crops_every_thumbnail_to_a_tile(tmp_path):
+    routes = {"https://cdn/w.jpg": jpeg((1280, 720), (250, 10, 10)), "https://cdn/t.jpg": jpeg((720, 1280), (10, 10, 250))}
+    p = FakeProvider(tmp_path, [], routes)
+    cands = [cand("w", thumbnail="https://cdn/w.jpg"), cand("t", thumbnail="https://cdn/t.jpg"), cand("none")]
+    tile = footage.contact_sheet(cands, [p], tmp_path / "sheet.jpg", tile=(90, 160), cols=2)
+    assert tile == {"w": 90, "h": 160, "cols": 2, "rows": 2}
+    with Image.open(tmp_path / "sheet.jpg") as img:
+        assert img.size == (180, 320)
+        assert img.getpixel((45, 80))[0] > 200 and img.getpixel((135, 80))[2] > 200

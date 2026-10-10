@@ -108,3 +108,63 @@ def test_slugs_keep_every_alphabet():
     assert slugify("Say it today. Just say it.") == "say-it-today-just-say-it"
     assert slugify("Кто ты, если забудешь всё?") == "кто-ты-если-забудешь-всё"
     assert slugify("Привет") != slugify("Пока") and slugify("?!") == "reel"
+
+
+# --------------------------------------------------------------------------- stock review
+
+class _Clips:
+    """A stock site with clips named by id, the same for every search."""
+    name = "fake"
+
+    def __init__(self, tmp_path, ids):
+        from reelforge import footage
+        import requests
+        self.session, self.thumb_dir = requests.Session(), tmp_path / "thumbs"
+        self.cands = [footage.Candidate(provider="fake", id=str(i), page_url=f"https://x/{i}",
+                                        download_url=f"u{i}", width=1080, height=1920, duration=20,
+                                        author="", thumbnail=None, query="q") for i in ids]
+
+    def search(self, query, per_page=15, allow_landscape=True, wide=False):
+        import dataclasses
+        return [dataclasses.replace(c, query=query) for c in self.cands]
+
+    def resolve(self, url):
+        return url
+
+
+def _stock_project(**footage):
+    p = project(items=[], queries=None, hook_query="mountains", **footage)
+    p.style.hook.mode = "terrain"
+    return p
+
+
+def test_review_lists_opening_and_pool_clips(tmp_path, monkeypatch):
+    from reelforge import pipeline
+    from reelforge.config import Settings
+    clips = _Clips(tmp_path, range(30))
+    monkeypatch.setattr(pipeline, "_providers", lambda project, settings: [clips])
+    p = _stock_project(banned=["fake_0"])
+    settings = Settings(cache_dir=tmp_path / "cache")
+    out = pipeline.review_footage(p, tmp_path, settings, tmp_path / "review", extra=4)
+    keys = [c["key"] for c in out["opening"] + out["pool"]]
+    assert 1 <= len(out["opening"]) <= 6 and "fake_0" not in keys and len(set(keys)) == len(keys)
+    assert len(out["pool"]) == out["rest_shots"] + 4 == out["stock_shots"] - 1 + 4
+    assert [c["tile"] for c in out["opening"] + out["pool"]] == list(range(len(keys)))
+    assert (tmp_path / "review" / "review.jpg").is_file() and out["tile"]["w"] == 180
+
+
+def test_render_uses_reviewed_picks_first_and_never_banned_clips(tmp_path, monkeypatch):
+    from reelforge import footage, pipeline
+    from reelforge.config import Settings
+    clips = _Clips(tmp_path, range(30))
+    monkeypatch.setattr(pipeline, "_providers", lambda project, settings: [clips])
+    monkeypatch.setattr(footage, "download", lambda url, dst, **kw: dst)
+    pick = lambda i, **kw: {**footage.pick_of(clips.cands[i]), **kw}
+    p = _stock_project(picks=[pick(9, slot="opening"), pick(5), pick(4)], banned=["fake_4", "fake_1"])
+    script = parse_script(p.script)
+    sources, _ = assign_sources(p, script, 5, hook_terrain=True)
+    paths, picks, warnings = pipeline.choose_stock(p, script, sources, True, Settings(cache_dir=tmp_path), [])
+    used = [c.key for c, _ in picks]
+    assert used[:2] == ["fake_9", "fake_5"]  # the opening pick, then the reviewed shot pick
+    assert len(used) == 5 == len(set(used)) and not {"fake_4", "fake_1"} & set(used)
+    assert sorted(paths) == [0, 1, 2, 3, 4] and paths[0].name == "fake_9.mp4" and not warnings

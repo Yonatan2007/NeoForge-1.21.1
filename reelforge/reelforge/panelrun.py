@@ -8,6 +8,9 @@ its files in the Artifact's asset store; a plan or render is a task
         Turn the project document (as ArtifactData saved it) into a project
         folder. Prints {"need": [asset ids]} until every file is in DIR.
     python -m reelforge.panelrun plan   --work DIR            -> DIR/plan.json
+    python -m reelforge.panelrun review --work DIR            -> DIR/review/review.json
+        Stock clips to choose from before rendering, with DIR/review/review.jpg
+        (all their thumbnails on one sheet) to upload to the asset store.
     python -m reelforge.panelrun render --work DIR [--voiceover URL]
         Renders; DIR/progress.json follows it, a DIR/cancel file stops it,
         DIR/result.json holds the result (or the error).
@@ -103,6 +106,20 @@ def plan(work: Path) -> dict:
     result = plan_project(_load(work), work, _settings(work))
     (work / "plan.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     return result
+
+
+def review(work: Path) -> dict:
+    from .pipeline import review_footage
+    out_dir = work / "review"
+    try:
+        result = review_footage(_load(work), work, _settings(work), out_dir)
+    except Exception as exc:  # reported to the panel
+        return {"ok": False, "error": str(exc) or type(exc).__name__}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "review.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"ok": True, "sheet": str(out_dir / result["sheet"]) if result.get("sheet") else None,
+            "json": str(out_dir / "review.json"), "opening": len(result["opening"]),
+            "pool": len(result["pool"]), "stock_shots": result["stock_shots"], "warnings": result["warnings"]}
 
 
 class _FileFlag(threading.Event):
@@ -213,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("doc")
     s.add_argument("--assets", required=True)
     s.add_argument("--work", required=True)
-    for name in ("plan", "status", "outputs"):
+    for name in ("plan", "review", "status", "outputs"):
         sub.add_parser(name).add_argument("--work", required=True)
     r = sub.add_parser("render")
     r.add_argument("--work", required=True)
@@ -224,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
         out = stage(Path(args.doc), Path(args.assets), work)
     elif args.cmd == "plan":
         out = plan(work)
+    elif args.cmd == "review":
+        out = review(work)
     elif args.cmd == "render":
         out = render(work, args.voiceover)
     elif args.cmd == "status":

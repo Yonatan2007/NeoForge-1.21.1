@@ -346,6 +346,177 @@ def _frame_at(path: Path, t: float):
         clip.close()
 
 
+def _references(project: Project, project_dir: Path) -> tuple[list[Path], list, list[str]]:
+    """(reference pictures, their signatures for ranking stock, search words from their colours)."""
+    from . import usermedia
+    references = [Path(project_path(i.path, project_dir)) for i in project.footage.items
+                  if i.role == "reference"]
+    references = [p for p in references if p.is_file()]
+    ref_sigs = ([usermedia.signature(p) for p in references]
+                if references and project.footage.reference_matching else [])
+    ref_terms = usermedia.palette_terms(ref_sigs) if ref_sigs else []
+    if not ref_sigs and project.footage.reference_matching and project.footage.palette == "bright":
+        ref_sigs = list(usermedia.builtin_reference_signatures())  # rank toward the reference look
+    return references, ref_sigs, ref_terms
+
+
+def _rankers(ref_sigs: list):
+    """(likeness to the references, skyline + likeness for the hook shot) as
+    ``extra_score`` functions for the stock search."""
+    from . import hook as hookmod, usermedia
+
+    def likeness(c, img) -> float:
+        return REFERENCE_WEIGHT * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
+
+    def skyline(c, img) -> float:
+        return (SKYLINE_WEIGHT * hookmod.skyline_score(img) if img is not None else 0.0) + likeness(c, img)
+
+    return likeness, skyline
+
+
+def _stock_common(project: Project) -> dict:
+    vs = project.style.video
+    wide = vs.aspect == "16:9"
+    return dict(min_duration=vs.max_shot + vs.crossfade,
+                allow_landscape=project.footage.allow_landscape or wide,
+                portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0),
+                palette=project.footage.palette, wide=wide,
+                avoid=avoided(project.footage.queries) | avoided([project.footage.hook_query or ""]))
+
+
+def _hook_slot(project: Project, hook_terrain: bool, stock_slots: list[int]) -> bool:
+    """True when the first shot is stock chosen for its skyline."""
+    fs = project.footage
+    return hook_terrain and 0 in stock_slots and bool(fs.hook_query) and not fs.queries
+
+
+def _spare_queries(project: Project, script: Script, queries: list[str]) -> list[str]:
+    """Searches to fall back on when ``queries`` run out of clips."""
+    spare = [q for q in footage_queries(script, len(queries) + 6, palette=project.footage.palette)
+             if q not in queries]
+    if project.footage.queries:  # the user's searches set the theme of the fallbacks too
+        spare = [q for q in dict.fromkeys(themed(spare, project.footage.queries)) if q not in queries]
+    return spare
+
+
+def choose_stock(project: Project, script: Script, sources: list[ShotSource], hook_terrain: bool,
+                 settings: Settings, ref_sigs: list, report=lambda *a: None):
+    """Find and download a clip for every stock shot. The clips chosen in the
+    review (``footage.picks``) come first: the opening pick for a skyline
+    hook shot, the rest in order; searches fill what is left and never use a
+    clip in ``footage.banned``. Returns ({shot: path}, [(candidate, path)], warnings)."""
+    fs = project.footage
+    warnings: list[str] = []
+    stock_slots = [k for k, s in enumerate(sources) if s.kind == "stock"]
+    stock_paths: dict[int, Path] = {}
+    providers = _providers(project, settings)
+    common = _stock_common(project)
+    likeness, skyline = _rankers(ref_sigs)
+    banned = set(fs.banned)
+    reviewed = [p for p in fs.picks if isinstance(p, dict) and footage.pick_key(p) not in banned]
+    opening = next((p for p in reviewed if p.get("slot") == "opening"), None)
+    chosen = [p for p in reviewed if p is not opening]
+
+    picks: list = []
+    rest = list(stock_slots)
+    if _hook_slot(project, hook_terrain, stock_slots):
+        hook_pick = footage.fetch_pick(opening, providers, settings.cache_dir) if opening else None
+        if hook_pick is None:
+            report("footage", 0.05, "choosing a first shot with a clear skyline")
+            hook_pick = footage.best_of(
+                [search_terms(fs.hook_query), *HOOK_SEARCHES], providers, settings.cache_dir,
+                rank=skyline, exclude=banned, **common)
+        if hook_pick is not None:
+            picks.append(hook_pick)
+            stock_paths[0] = hook_pick[1]
+            rest.remove(0)
+    elif opening:
+        chosen.insert(0, opening)
+    if rest:
+        found: list = []
+        for p in chosen:  # the clips chosen in the review come first, in order
+            if len(found) >= len(rest):
+                break
+            if footage.pick_key(p) in {c.key for c, _ in picks + found}:
+                continue
+            got = footage.fetch_pick(p, providers, settings.cache_dir)
+            if got is not None:
+                found.append(got)
+        if len(found) < len(rest):
+            queries = [sources[k].query for k in rest]
+            try:
+                found += footage.fetch_footage(
+                    queries + _spare_queries(project, script, queries), providers, settings.cache_dir,
+                    count=len(rest) - len(found), extra_score=likeness,
+                    exclude={c.key for c, _ in picks + found} | banned, **common)
+            except footage.FootageError:
+                if not found:
+                    raise
+        if len(found) < len(rest):
+            warnings.append(f"Found {len(found)} stock clips for {len(rest)} shots; "
+                            "some clips repeat.")
+        for j, k in enumerate(rest):
+            stock_paths[k] = found[j % len(found)][1]
+        picks += found
+    return stock_paths, picks, warnings
+
+
+def review_footage(project: Project, project_dir: Path, settings: Settings, out_dir: Path,
+                   extra: int = 8) -> dict:
+    """Stock clips to choose from before a render: the best candidates for
+    the opening shot (ranked by skyline) and a pool for the other stock
+    shots (the first ones are what a render would pick), plus a contact sheet
+    of their thumbnails at ``out_dir/review.jpg``. The shot count is the
+    plan's estimate: the real voiceover can add or remove a shot."""
+    script = parse_script(project.script, project.auto_emphasis)
+    if not script.words:
+        raise ValueError("Write a script first: the stock searches come from it.")
+    vs = project.style.video
+    speech = _estimate_seconds(project, Path(project_dir), script)
+    plan = timing.fit_duration(speech, project.duration, vs.voice_delay, vs.tail)
+    timing.synthetic_timings(script.words, plan.intro, plan.intro + speech / plan.tempo)
+    hook_words, _ = split_hook(script, project)
+    hook_terrain = project.style.hook.mode == "terrain" and bool(hook_words)
+    shots = plan_shots(script.words, plan.total, vs,
+                       keep_until=_hook_cut(hook_words) if hook_terrain else 0.0)
+    _, ref_sigs, ref_terms = _references(project, Path(project_dir))
+    sources, warnings = assign_sources(project, script, len(shots), hook_terrain, ref_terms)
+    stock_slots = [k for k, s in enumerate(sources) if s.kind == "stock"]
+    out = {"shots": len(shots), "stock_shots": len(stock_slots), "opening": [], "pool": [],
+           "warnings": warnings, "sheet": None, "tile": None}
+    if not stock_slots:
+        out["warnings"].append("Every shot uses your own footage, so there is no stock to choose.")
+        return out
+    providers = _providers(project, settings)
+    if not providers:
+        raise ValueError("No stock site is turned on.")
+    common = _stock_common(project)
+    likeness, skyline = _rankers(ref_sigs)
+    banned = set(project.footage.banned)
+    rest = list(stock_slots)
+    opening: list = []
+    if _hook_slot(project, hook_terrain, stock_slots):
+        opening = [c for _, c in footage.ranked_best(
+            [search_terms(project.footage.hook_query), *HOOK_SEARCHES], providers, rank=skyline,
+            exclude=banned, limit=6, **common)]
+        rest.remove(0)
+    pool: list = []
+    if rest:
+        queries = [sources[k].query for k in rest]
+        pool = [c for _, c in footage.shortlist_footage(
+            queries + _spare_queries(project, script, queries), providers, count=len(rest) + extra,
+            extra_score=likeness, exclude=banned | {c.key for c in opening}, **common)]
+    if not opening and not pool:
+        raise ValueError("The stock searches found nothing: try other searches on the Footage tab.")
+    out["tile"] = footage.contact_sheet(opening + pool, providers, Path(out_dir) / "review.jpg")
+    out["sheet"] = "review.jpg"
+    for i, c in enumerate(opening + pool):
+        (out["opening"] if i < len(opening) else out["pool"]).append(
+            {**footage.pick_of(c), "tile": i, "portrait": c.portrait})
+    out["rest_shots"] = len(rest)
+    return out
+
+
 def render_project(project: Project, project_dir: Path, settings: Settings,
                    progress: Progress | None = None, cancel: threading.Event | None = None) -> dict:
     """Build the reel. Returns output paths relative to ``project_dir``."""
@@ -410,58 +581,15 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
 
     # 3. Footage ----------------------------------------------------------------
     report("footage", 0.0, f"{len(shots)} shots; finding footage")
-    references = [Path(project_path(i.path, project_dir)) for i in project.footage.items
-                  if i.role == "reference"]
-    references = [p for p in references if p.is_file()]
-    ref_sigs = ([usermedia.signature(p) for p in references]
-                if references and project.footage.reference_matching else [])
-    ref_terms = usermedia.palette_terms(ref_sigs) if ref_sigs else []
-    if not ref_sigs and project.footage.reference_matching and project.footage.palette == "bright":
-        ref_sigs = list(usermedia.builtin_reference_signatures())  # rank toward the reference look
+    references, ref_sigs, ref_terms = _references(project, project_dir)
     sources, w = assign_sources(project, script, len(shots), hook_terrain, ref_terms)
     warnings += w
 
     stock_slots = [k for k, s in enumerate(sources) if s.kind == "stock"]
     stock_paths: dict[int, Path] = {}
     if stock_slots:
-        providers = _providers(project, settings)
-        wide = vs.aspect == "16:9"
-        common = dict(min_duration=vs.max_shot + vs.crossfade,
-                      allow_landscape=project.footage.allow_landscape or wide,
-                      portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0),
-                      palette=project.footage.palette, wide=wide,
-                      avoid=avoided(project.footage.queries) | avoided([project.footage.hook_query or ""]))
-
-        def likeness(c, img) -> float:
-            return REFERENCE_WEIGHT * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
-
-        picks: list = []
-        rest = list(stock_slots)
-        if hook_terrain and 0 in stock_slots and project.footage.hook_query and not project.footage.queries:
-            report("footage", 0.05, "choosing a first shot with a clear skyline")
-            hook_pick = footage.best_of(
-                [search_terms(project.footage.hook_query), *HOOK_SEARCHES], providers, settings.cache_dir,
-                rank=lambda c, img: (SKYLINE_WEIGHT * hookmod.skyline_score(img) if img is not None
-                                     else 0.0) + likeness(c, img), **common)
-            if hook_pick is not None:
-                picks.append(hook_pick)
-                stock_paths[0] = hook_pick[1]
-                rest.remove(0)
-        if rest:
-            queries = [sources[k].query for k in rest]
-            spare = [q for q in footage_queries(script, len(queries) + 6, palette=project.footage.palette)
-                     if q not in queries]
-            if project.footage.queries:  # the user's searches set the theme of the fallbacks too
-                spare = [q for q in dict.fromkeys(themed(spare, project.footage.queries)) if q not in queries]
-            found = footage.fetch_footage(
-                queries + spare, providers, settings.cache_dir, count=len(rest),
-                extra_score=likeness, exclude={c.key for c, _ in picks}, **common)
-            if len(found) < len(rest):
-                warnings.append(f"Found {len(found)} stock clips for {len(rest)} shots; "
-                                "some clips repeat.")
-            for j, k in enumerate(rest):
-                stock_paths[k] = found[j % len(found)][1]
-            picks += found
+        stock_paths, picks, w = choose_stock(project, script, sources, hook_terrain, settings, ref_sigs, report)
+        warnings += w
         footage.write_credits(picks, out_dir / "credits.txt")
     report("footage", 1.0, "footage ready")
 

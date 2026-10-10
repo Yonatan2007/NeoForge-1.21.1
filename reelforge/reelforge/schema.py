@@ -340,6 +340,10 @@ FOOTAGE = Section("footage", "Footage", "Your own pictures and videos, and free 
           "they look like your reference pictures."),
     _bool("footage.allow_landscape", "Allow landscape clips", "Crop landscape clips to fit when there "
           "are not enough vertical ones.", advanced=True),
+    Field("footage.picks", "Clips you chose", "Stock clips picked on the Footage tab's review, used for "
+          "the stock shots in this order before anything is searched.", "list", advanced=True),
+    Field("footage.banned", "Clips you ruled out", "Stock clips the review marked as not wanted; no "
+          "search uses them.", "lines", advanced=True),
 ))
 
 VOICE = Section("voice", "Voice", "Where the voiceover comes from and how words are timed.", (
