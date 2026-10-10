@@ -157,6 +157,8 @@ def assemble(clips: list[Path], shots: list[tuple[float, float]], audio: Path | 
             ffmpeg_params=[*pad, "-crf", str(vs.crf), "-maxrate", vs.maxrate, "-bufsize", vs.bufsize,
                            "-movflags", "+faststart", "-profile:v", "high"],
             threads=os.cpu_count(),
+            # moviepy's temporary audio goes next to the output, not into the current folder
+            temp_audiofile=str(Path(out_path).with_name(Path(out_path).stem + "-temp-audio.m4a")),
             logger=_FrameProgress(on_progress) if on_progress else logger)
     finally:
         video.close()
