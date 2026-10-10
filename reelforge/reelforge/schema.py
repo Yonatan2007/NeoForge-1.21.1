@@ -241,8 +241,9 @@ HOOK = Section("hook", "Hook", "The opening sentence, laid along the skyline of 
 
 VIDEO = Section("video", "Video", "Format, cutting rhythm and file quality.", (
     _sel(V + "aspect", "Format", "Shape of the video. 9:16 fills a phone screen.", ASPECT_OPTIONS),
-    _bool(V + "letterbox", "Black bars to 9:16", "Keep this shape but save the video as 9:16, with black "
-          "bars above and below, so it posts full-screen with the picture in the middle."),
+    _bool(V + "letterbox", "Black bars to 9:16", "For the 4:5 and 1:1 formats: keep that shape but save "
+          "the video as 9:16, with black bars above and below, so it posts full-screen with the picture "
+          "in the middle. A 9:16 video needs no bars."),
     _bool(V + "draft", "Quick draft", "Render at half resolution: much faster, for checking timing "
           "before the final video."),
     _int(V + "fps", "Frames per second", "30 suits social media.", 15, 60, "fps", advanced=True),

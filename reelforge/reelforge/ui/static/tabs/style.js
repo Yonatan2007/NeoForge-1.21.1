@@ -5,12 +5,13 @@
  */
 
 import { api, isUnsupported } from "../api.js";
-import { button, clone, confirmDialog, h, menuButton, toast, toastError } from "../dom.js";
+import { callout } from "../components.js";
+import { button, clear, clone, confirmDialog, h, menuButton, toast, toastError } from "../dom.js";
 import { renderFields } from "../fields.js";
 import { icon } from "../icons.js";
 import { createPreview } from "../preview.js";
 import {
-  markUnsupported, on, projectBinding, replaceParts, schemaSections, state, supports,
+  markUnsupported, on, projectBinding, replaceParts, schemaSections, setValue, state, supports,
 } from "../store.js";
 
 const STYLE_SECTIONS = ["caption", "hook", "video", "look"];
@@ -171,9 +172,36 @@ export function render(panel) {
     }
   }
 
+  /** Black bars only pad shapes wider than 9:16: say so when they are on for a 9:16 video. */
+  function letterboxNote() {
+    const card = forms.querySelector('[data-section="video"]');
+    if (!card) return;
+    const vs = state.project.style.video;
+    const old = card.querySelector(".letterbox-note");
+    if (!(vs.letterbox && vs.aspect === "9:16")) {
+      if (old) old.remove();
+      return;
+    }
+    if (old) return;
+    const note = callout("warn", h("span", {},
+      "Black bars only show with the 4:5 or 1:1 format: a 9:16 video already fills the screen, so nothing changes. ",
+      button("Make it 4:5 with black bars", { size: "sm", variant: "secondary", onClick: () => {
+        setValue("style.video.aspect", "4:5");
+        clear(forms);
+        draw();
+        letterboxNote();
+        preview.update(state.project);
+        toast("Format set to 4:5 with black bars. Render again to see it.", { kind: "success" });
+      } })));
+    note.classList.add("letterbox-note");
+    card.querySelector(".card-head").after(note);
+  }
+
   draw();
+  letterboxNote();
   preview.update(state.project);
   const off = on("change", ({ paths }) => {
+    if (paths.some((p) => p === "style.video.aspect" || p === "style.video.letterbox")) letterboxNote();
     const focus = paths.some((p) => p.startsWith("style.hook")) ? "hook" : paths.some((p) => p.startsWith("style.caption")) ? "caption" : null;
     if (paths.some((p) => p.startsWith("style") || p === "script")) preview.update(state.project, focus);
   });
