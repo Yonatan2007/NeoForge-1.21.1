@@ -2,9 +2,11 @@
 
 The control panel's Ideas page asks for scripts (an "ideas" task); Claude
 runs ``python -m reelforge.panelrun ideas`` here, which calls the Gemini
-API with the key in ``GEMINI_API_KEY`` (an environment secret, never in the
-panel). ``GEMINI_MODEL`` picks the model; otherwise the newest Gemini Pro
-(or Flash) that the key can use is chosen from the API's model list.
+API. The key is a network secret of Claude's environment (the proxy adds an
+``x-goog-api-key`` header to requests to generativelanguage.googleapis.com),
+or, for local runs, ``GEMINI_API_KEY`` in the environment; it is never kept
+in the panel. ``GEMINI_MODEL`` picks the model; otherwise the newest stable
+Gemini Pro (or Flash) the key can use is chosen from the API's model list.
 """
 from __future__ import annotations
 
@@ -21,13 +23,15 @@ class IdeasError(RuntimeError):
     pass
 
 
-def _key() -> str:
+NO_KEY = ("Gemini has no API key from this Claude environment. Add it in the environment's settings: "
+          "Edit → Network secrets, allowed website generativelanguage.googleapis.com, custom header "
+          "x-goog-api-key with your key (no prefix); then start a new session.")
+
+
+def _headers() -> dict:
+    """The key header for local runs; in Claude's cloud environment the network adds it."""
     key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not key:
-        raise IdeasError("GEMINI_API_KEY isn't set in this Claude environment. Add your Gemini API key "
-                         "in the environment's settings (Edit → Network secrets, named GEMINI_API_KEY) "
-                         "and start a new session.")
-    return key
+    return {"x-goog-api-key": key} if key else {}
 
 
 def _version(name: str) -> tuple[float, ...]:
@@ -54,10 +58,10 @@ def pick_model(models: list[dict]) -> str:
     return max(pool, key=rank)["name"].split("/", 1)[-1]
 
 
-def _model(session: requests.Session, key: str) -> str:
+def _model(session: requests.Session, headers: dict) -> str:
     if os.environ.get("GEMINI_MODEL"):
         return os.environ["GEMINI_MODEL"]
-    r = session.get(f"{API}/models", params={"key": key, "pageSize": 200}, timeout=30)
+    r = session.get(f"{API}/models", params={"pageSize": 200}, headers=headers, timeout=30)
     _raise(r)
     return pick_model(r.json().get("models", []))
 
@@ -69,6 +73,8 @@ def _raise(r: requests.Response) -> None:
         msg = r.json()["error"]["message"]
     except (ValueError, KeyError, TypeError):
         msg = r.text[:300]
+    if r.status_code in (401, 403) and ("unregistered callers" in msg or "API key" in msg and "missing" in msg):
+        raise IdeasError(NO_KEY)
     raise IdeasError(f"Gemini said: {msg} (HTTP {r.status_code})")
 
 
@@ -115,14 +121,14 @@ def generate(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] |
              examples: list[str] | None = None, session: requests.Session | None = None) -> dict:
     """{model, ideas: [{title, script, why}]} from Gemini."""
     count = max(1, min(int(count or 5), 10))
-    key = _key()
+    headers = _headers()
     session = session or requests.Session()
-    model = _model(session, key)
+    model = _model(session, headers)
     body = {
         "contents": [{"role": "user", "parts": [{"text": prompt(topic, count, tone, avoid, examples)}]}],
         "generationConfig": {"temperature": 1.0, "responseMimeType": "application/json", "responseSchema": SCHEMA},
     }
-    r = session.post(f"{API}/models/{model}:generateContent", params={"key": key}, json=body, timeout=180)
+    r = session.post(f"{API}/models/{model}:generateContent", headers=headers, json=body, timeout=180)
     _raise(r)
     data = r.json()
     try:

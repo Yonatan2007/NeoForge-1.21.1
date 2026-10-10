@@ -118,8 +118,10 @@ A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
    write), and the task `{status: "done", message: "Found <n> clips"}`. On
    `{"ok": false}`: task `{status: "error", error}`. No voiceover is needed.
 7. **ideas** (the Ideas page; scripts from Google Gemini): save the task with
-   `out_dir`, run `python -m reelforge.panelrun ideas <task file>` (it needs
-   `GEMINI_API_KEY` in the environment; `GEMINI_MODEL` picks a model). On
+   `out_dir`, run `python -m reelforge.panelrun ideas <task file>`. The Gemini
+   key is a network secret of the environment (header `x-goog-api-key` for
+   generativelanguage.googleapis.com, added by the network), or
+   `GEMINI_API_KEY` for local runs; `GEMINI_MODEL` picks a model. On
    `{"ok": true, "result": {model, ideas}}`: `ArtifactData batch` with
    `set ideas/<task id>` = `{created: <now ISO>, topic, model, ideas}` and the
    task `{status: "done", message: "Gemini wrote <n> scripts", result}`. On
