@@ -310,6 +310,10 @@
   position: absolute; top: 7px; left: 7px; min-width: 24px; height: 24px; padding: 0 7px; border-radius: 999px;
   display: none; align-items: center; justify-content: center; font: 700 12.5px/1 var(--font);
 }
+.rv-wide {
+  position: absolute; left: 6px; right: 6px; bottom: 6px; padding: 3px 6px; border-radius: 7px; text-align: center;
+  font: 650 11px/1.2 var(--font); background: rgba(11, 13, 16, .72); color: #ffd27a;
+}
 .rv-tile.is-chosen .rv-pick { box-shadow: 0 0 0 3px var(--accent) inset; }
 .rv-tile.is-chosen .rv-badge { display: inline-flex; background: var(--accent); color: var(--accent-ink); }
 .rv-tile.is-auto .rv-pick { box-shadow: 0 0 0 2px var(--accent-line) inset; }

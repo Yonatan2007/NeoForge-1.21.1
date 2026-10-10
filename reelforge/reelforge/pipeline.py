@@ -38,7 +38,8 @@ STAGES = {
     "finish": (0.97, 1.00),
 }
 # How much a portrait source matters for each output shape.
-PORTRAIT_WEIGHT = {"9:16": 3.0, "4:5": 2.0, "1:1": 0.5, "16:9": -3.0}  # negative: landscape wins
+# 4:5 is still a tall picture: a wide clip keeps under half its width there, so vertical clips win as for 9:16
+PORTRAIT_WEIGHT = {"9:16": 3.0, "4:5": 3.0, "1:1": 0.5, "16:9": -3.0}  # negative: landscape wins
 # Extra searches tried for the hook shot; the clearest skyline across all wins.
 HOOK_SEARCHES = ("mountains", "hills", "hiking", "snow mountains")
 SKYLINE_WEIGHT = 12.0     # the hook clip is chosen almost only by its skyline

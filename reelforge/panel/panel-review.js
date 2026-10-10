@@ -163,9 +163,12 @@ export function footageReview() {
       const y = tile.rows > 1 ? (row / (tile.rows - 1)) * 100 : 0;
       const name = clipTitle(c);
       const badge = h("span", { class: "rv-badge", "aria-hidden": "true" });
+      // a wide (landscape) clip keeps less than half its picture in a tall frame: it looks zoomed in
+      const wide = c.width && c.height ? c.width > c.height : c.portrait === false;
       const pick = h("button", { type: "button", class: "rv-pick" },
         h("span", { class: "rv-img", style: `background-image:url("${sheet}");background-size:${tile.cols * 100}% ${tile.rows * 100}%;background-position:${x}% ${y}%` }),
-        badge);
+        badge,
+        wide ? h("span", { class: "rv-wide", title: "A wide clip: in a tall video most of it is cut off, so it looks zoomed in" }, "Wide · zoomed") : null);
       pick.addEventListener("click", () => toggle(c, isOpening));
       const ban = h("button", { type: "button", class: "rv-ban", title: "Never use this clip", html: `${icon("x", { size: 14 })}<span>Never</span>` });
       ban.addEventListener("click", () => never(c));
@@ -175,7 +178,7 @@ export function footageReview() {
             h("span", { html: icon("play", { size: 12 }) }), SITES[c.provider] || c.provider),
           ban),
         h("span", { class: "rv-name" }, name));
-      tiles.set(keyOf(c), { li, pick, ban, badge, name, isOpening });
+      tiles.set(keyOf(c), { li, pick, ban, badge, name, isOpening, wide });
       return li;
     };
 
@@ -216,7 +219,7 @@ export function footageReview() {
         t.li.classList.toggle("is-banned", ban.has(key));
         t.badge.textContent = on ? (t.isOpening ? "✓" : order) : ban.has(key) ? "✕" : "";
         t.pick.setAttribute("aria-pressed", String(on && !isAuto));
-        t.pick.setAttribute("aria-label", `${t.name}${on ? (isAuto ? ", Claude's pick" : t.isOpening ? ", chosen for the opening" : `, chosen as clip ${order}`) : ""}${ban.has(key) ? ", never used" : ""}`);
+        t.pick.setAttribute("aria-label", `${t.name}${t.wide ? ", wide clip, looks zoomed in" : ""}${on ? (isAuto ? ", Claude's pick" : t.isOpening ? ", chosen for the opening" : `, chosen as clip ${order}`) : ""}${ban.has(key) ? ", never used" : ""}`);
         t.ban.setAttribute("aria-pressed", String(ban.has(key)));
       }
       const chosenPool = chosen.filter((k) => pool.some((c) => keyOf(c) === k)).length;
