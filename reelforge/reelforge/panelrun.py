@@ -11,6 +11,9 @@ its files in the Artifact's asset store; a plan or render is a task
     python -m reelforge.panelrun review --work DIR            -> DIR/review/review.json
         Stock clips to choose from before rendering, with DIR/review/review.jpg
         (all their thumbnails on one sheet) to upload to the asset store.
+    python -m reelforge.panelrun ideas  TASK.json
+        Script ideas from Gemini for an "ideas" task (topic, count, tone,
+        avoid, examples); needs GEMINI_API_KEY in the environment.
     python -m reelforge.panelrun render --work DIR [--voiceover URL]
         Renders; DIR/progress.json follows it, a DIR/cancel file stops it,
         DIR/result.json holds the result (or the error).
@@ -120,6 +123,19 @@ def review(work: Path) -> dict:
     return {"ok": True, "sheet": str(out_dir / result["sheet"]) if result.get("sheet") else None,
             "json": str(out_dir / "review.json"), "opening": len(result["opening"]),
             "pool": len(result["pool"]), "stock_shots": result["stock_shots"], "warnings": result["warnings"]}
+
+
+def ideas(task_path: Path) -> dict:
+    from . import ideas as gemini
+    raw = json.loads(task_path.read_text(encoding="utf-8"))
+    task = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+    try:
+        result = gemini.generate(topic=task.get("topic") or "", count=task.get("count") or 5,
+                                 tone=task.get("tone") or "", avoid=task.get("avoid") or [],
+                                 examples=task.get("examples") or [])
+    except (gemini.IdeasError, OSError, ValueError) as exc:  # network errors are OSErrors
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "result": result}
 
 
 class _FileFlag(threading.Event):
@@ -232,17 +248,20 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--work", required=True)
     for name in ("plan", "review", "status", "outputs"):
         sub.add_parser(name).add_argument("--work", required=True)
+    sub.add_parser("ideas").add_argument("task")
     r = sub.add_parser("render")
     r.add_argument("--work", required=True)
     r.add_argument("--voiceover")
     args = ap.parse_args(argv)
-    work = Path(args.work).resolve()
+    work = Path(getattr(args, "work", None) or ".").resolve()
     if args.cmd == "stage":
         out = stage(Path(args.doc), Path(args.assets), work)
     elif args.cmd == "plan":
         out = plan(work)
     elif args.cmd == "review":
         out = review(work)
+    elif args.cmd == "ideas":
+        out = ideas(Path(args.task))
     elif args.cmd == "render":
         out = render(work, args.voiceover)
     elif args.cmd == "status":
