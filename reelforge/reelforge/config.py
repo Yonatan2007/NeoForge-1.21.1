@@ -62,6 +62,7 @@ class Settings:
     whisper_model: str = "base.en"
     whisper_device: str = "cpu"
     cache_dir: Path = Path.home() / ".cache" / "reelforge"
+    mixkit_per_query: int = 8      # clips read per Mixkit search (batches of reels need more)
     home_dir: Path = Path.home() / ".config" / "reelforge"   # saved defaults live here
 
     @classmethod
@@ -80,6 +81,7 @@ class Settings:
             whisper_device=os.getenv("WHISPER_DEVICE", "cpu"),
             cache_dir=Path(os.getenv("REELFORGE_CACHE", str(Path.home() / ".cache" / "reelforge"))),
             home_dir=Path(os.getenv("REELFORGE_HOME", str(Path.home() / ".config" / "reelforge"))),
+            mixkit_per_query=int(os.getenv("REELFORGE_MIXKIT_PER_QUERY") or 8),
         )
 
 

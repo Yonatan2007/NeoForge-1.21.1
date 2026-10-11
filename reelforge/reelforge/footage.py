@@ -174,7 +174,7 @@ class _Provider:
         # (non-Latin searches have an empty slug) and the name short
         slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")[:50]
         digest = hashlib.sha1(query.encode()).hexdigest()[:10]
-        variant = ("_wide" if wide else "") + ("" if allow_landscape else "_portrait")
+        variant = ("_wide" if wide else "") + ("" if allow_landscape else "_portrait") + self.cache_variant
         cache = self.cache_dir / f"{self.name}_{slug}_{digest}_{per_page}{variant}.json"
         if cache.exists() and time.time() - cache.stat().st_mtime < SEARCH_TTL:
             data = json.loads(cache.read_text())
@@ -187,6 +187,8 @@ class _Provider:
     def resolve(self, url: str) -> str:
         """The direct file URL behind a candidate's download URL."""
         return url
+
+    cache_variant = ""  # sets apart cached searches made with other provider settings
 
     def _request(self, query: str, per_page: int, allow_landscape: bool) -> dict:
         raise NotImplementedError
@@ -279,6 +281,7 @@ class Mixkit(_Provider):
                  per_query: int = 8, delay: float = 1.0):
         super().__init__("", cache_dir, session)
         self.per_query, self.delay = per_query, delay
+        self.cache_variant = f"_d{per_query}" if per_query != 8 else ""
 
     def _get(self, url: str, **kwargs) -> str:
         time.sleep(self.delay)  # be polite: a search costs ~2 + per_query page loads

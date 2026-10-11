@@ -58,6 +58,8 @@ from . import config, media
 from .config import Project, Settings
 
 ASSET_LIMIT = 18 * 1024 * 1024   # the asset store takes 20 MiB per file; keep a margin
+BATCH_DEPTH = 30                 # clips read per stock search for a batch of reels (one reel: 8)
+NEAR_HOURS = 48                  # reels this close in time never share a clip
 LOG_LINES = 200
 
 
@@ -183,9 +185,8 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
     import secrets
     from datetime import datetime, timedelta
 
-    from . import autopilot as ap, ideas, voiceover
-    from .pipeline import review_footage, slugify
-    from .script import parse_script
+    from . import autopilot as ap, ideas
+    from .pipeline import slugify
 
     data = _read(inp)
     settings = ap.settings_of(data.get("settings"))
@@ -211,9 +212,11 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
     need = _missing(files, assets)
     if need:
         return {"need": need}
+    recent = [k for h in history[-40:] for k in h.get("clips") or []]
     plan = {"tz": tz, "brand_id": str(brand.get("id") or ""), "settings": settings,
             "template_id": data["template"].get("id") or data.get("template_id"), "model": None,
-            "files": files, "items": []}
+            "files": files, "items": [],
+            "banned": sorted(set((template_project.get("footage") or {}).get("banned") or []) | set(recent))}
     if not slots:
         _write(out / "plan.json", plan)
         return {"ok": True, "slots": 0, "plan": str(out / "plan.json")}
@@ -233,8 +236,6 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
 
     up = out / "_uploads"
     _unpack(files, assets, up)
-    recent = [k for h in history[-40:] for k in h.get("clips") or []]
-    st = _settings(out / "x")
     for i, (slot, idea) in enumerate(zip(slots, written)):
         sid = ap.slot_id(slot)
         work = out / sid
@@ -253,35 +254,80 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
             "work": str(work), "project_id": f"{slugify(idea['title'], 5)}-{secrets.token_hex(3)}",
             "song": project["music"].get("file")})
 
-    # footage for the whole batch: no clip in two reels, none from recent reels
-    reviews = []
+    _plan_footage(plan)
+    _write(out / "plan.json", plan)
+    return {"ok": True, "slots": len(plan["items"]), "plan": str(out / "plan.json"),
+            "first": plan["items"][0]["slot"], "last": plan["items"][-1]["slot"], "model": plan["model"]}
+
+
+def _plan_footage(plan: dict) -> None:
+    """Stock clips for every reel of ``plan``, one reel after another: each
+    searches without the clips the reels before it got (nor ``plan.banned``:
+    the template's and recent reels'), so every reel has its own opening and
+    clips; the other opening clips it found are kept for swaps. Then each
+    reel's own render rules out every other reel's clips."""
+    from . import autopilot as ap, voiceover
+    from .pipeline import review_footage
+    from .script import parse_script
+
+    from datetime import datetime
+
+    base = set(plan.get("banned") or [])
+    used: set[str] = set()
+    when: dict[str, list[datetime]] = {}  # clip -> slots of the reels using it
+    st = None
+
+    def review_with(project, work, banned):
+        project.footage.picks = []
+        project.footage.banned = sorted(banned)
+        config.save_project(project, work / "project.json")
+        try:
+            return review_footage(project, work, st, work / "review")
+        except Exception as exc:  # the render searches by itself then
+            logging.getLogger("reelforge").warning("footage plan for %s: %s", work.name, exc)
+            return {}
+
     for item in plan["items"]:
         work = Path(item["work"])
-        try:
-            reviews.append(review_footage(_load(work), work, st, work / "review"))
-        except Exception as exc:  # the render searches by itself then
-            logging.getLogger("reelforge").warning("footage plan for %s failed: %s", item["id"], exc)
-            reviews.append({})
-    assigned = ap.assign_clips(reviews, banned=recent)
-    spares = ap.spare_openings(reviews, assigned)
-    everyone = {p["key"] for picks in assigned for p in picks}
-    for item, picks, spare in zip(plan["items"], assigned, spares):
-        work = Path(item["work"])
+        if st is None:
+            st = _settings(work)
+            st.mixkit_per_query = max(st.mixkit_per_query, BATCH_DEPTH)
+        slot = datetime.fromisoformat(item["slot"])
         project = _load(work)
-        own = {p["key"] for p in picks}
+        review = review_with(project, work, base | used)
+        picks = ap.assign_clips([review], banned=base | used)[0]
+        if len(picks) < int(review.get("rest_shots") or 4) + 1:
+            # the stock sites ran out of fresh clips: reuse ones from reels far away in time
+            near = {k for k, slots in when.items() if any(abs((slot - t).total_seconds()) < NEAR_HOURS * 3600 for t in slots)}
+            review = review_with(project, work, base | near)
+            picks = ap.assign_clips([review], banned=base | near)[0]
+        item["openings"] = [c for c in ap.spare_openings([review], [picks])[0] if c["key"] not in used]
+        used |= {p["key"] for p in picks}
+        for p in picks:
+            when.setdefault(p["key"], []).append(slot)
         project.footage.picks = picks
-        project.footage.banned = sorted(set(project.footage.banned) | (everyone - own))
         config.save_project(project, work / "project.json")
         script = parse_script(project.script, project.auto_emphasis)
         item["picks"] = len(picks)
-        item["openings"] = spare
         item["voice_request"] = voiceover.higgsfield_request(
             script, project.voice.higgsfield_preset,
             project.voice.voice_id or Settings.from_env().higgsfield_voice_id,
             voice_type=project.voice.voice_type if project.voice.voice_id else "preset")
-    _write(out / "plan.json", plan)
-    return {"ok": True, "slots": len(plan["items"]), "plan": str(out / "plan.json"),
-            "first": plan["items"][0]["slot"], "last": plan["items"][-1]["slot"], "model": plan["model"]}
+    for item in plan["items"]:
+        work = Path(item["work"])
+        project = _load(work)
+        own = {p["key"] for p in project.footage.picks}
+        project.footage.banned = sorted(base | (used - own))
+        config.save_project(project, work / "project.json")
+
+
+def autopilot_footage(plan_path: Path) -> dict:
+    """Plan the stock clips of an existing plan again (scripts and slots stay)."""
+    plan = _read(plan_path)
+    _plan_footage(plan)
+    _write(plan_path, plan)
+    return {"ok": True, "picks": {it["id"]: it["picks"] for it in plan["items"]},
+            "openings": {it["id"]: len(it["openings"]) for it in plan["items"]}}
 
 
 def autopilot_render(plan_path: Path, voices_path: Path, jobs: int = 2) -> dict:
@@ -303,6 +349,7 @@ def autopilot_render(plan_path: Path, voices_path: Path, jobs: int = 2) -> dict:
         n, item = n_item
         work = Path(item["work"])
         env = {**os.environ, "REELFORGE_CACHE": str(plan_path.parent / f".cache-{n % max(1, jobs)}"),
+               "REELFORGE_MIXKIT_PER_QUERY": str(BATCH_DEPTH),
                "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
         subprocess.run([sys.executable, "-m", "reelforge.panelrun", "render", "--work", str(work),
                         "--voiceover", voices[item["id"]]], env=env, capture_output=True, text=True)
@@ -585,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--plan", required=True)
     a.add_argument("--voices", required=True)
     a.add_argument("--jobs", type=int, default=2)
+    sub.add_parser("autopilot-footage").add_argument("--plan", required=True)
     a = sub.add_parser("autopilot-swap")
     a.add_argument("--plan", required=True)
     a.add_argument("--ids", required=True)
@@ -611,6 +659,8 @@ def main(argv: list[str] | None = None) -> int:
         out = autopilot_prepare(Path(args.input), Path(args.assets), Path(args.out).resolve())
     elif args.cmd == "autopilot-render":
         out = autopilot_render(Path(args.plan).resolve(), Path(args.voices), args.jobs)
+    elif args.cmd == "autopilot-footage":
+        out = autopilot_footage(Path(args.plan).resolve())
     elif args.cmd == "autopilot-swap":
         out = autopilot_swap(Path(args.plan).resolve(), [i for i in args.ids.split(",") if i])
     elif args.cmd == "autopilot-posts":

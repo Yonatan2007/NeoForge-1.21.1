@@ -50,9 +50,17 @@ def test_slots_take_the_busiest_hours_apart_from_each_other():
 
 
 def test_slots_squeeze_closer_when_a_day_is_short_and_fall_back_without_data():
+    # four don't fit 18:00-22:00 even 2 h apart: three do, never closer than 2 h
     slots = ap.pick_slots({}, date(2026, 10, 12), days=1, per_day=4, window=("18:00", "22:00"), min_gap=3)
-    assert len(slots) == 4 and len(set(slots)) == 4
+    assert [s.hour for s in slots] == [18, 20, 22]
     assert [s.hour for s in ap.pick_slots({}, date(2026, 10, 12), days=1, per_day=1)] == [19]
+
+
+def test_a_late_start_keeps_reels_apart_instead_of_an_hour_apart():
+    # tonight from 19:00: the greedy pick was 19, 20, 22; the best set 2 h apart is 19, 21, 23
+    g = ap.grid_of(grid({19: 341, 20: 250, 21: 186, 22: 158, 23: 105}))
+    slots = ap.pick_slots(g, date(2026, 10, 11), days=1, per_day=3, earliest=datetime(2026, 10, 11, 18, 24))
+    assert [s.hour for s in slots] == [19, 21, 23]
 
 
 def test_taken_slots_are_read_in_the_brands_time_zone():

@@ -23,6 +23,7 @@ Panel documents:
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import random
 import re
@@ -47,6 +48,7 @@ DEFAULTS = {
 PLATFORMS = ("instagram", "youtube", "tiktok")
 # hours that do well on short video when Metricool has no data yet, best first
 FALLBACK_HOURS = (19, 12, 21, 9, 17, 15, 22, 11, 20, 13, 18, 10, 14, 16, 23, 8)
+MIN_GAP_FLOOR = 2.0       # two reels are never posted closer than this (hours): a day gets fewer instead
 
 
 def _minutes(hhmm: str) -> int:
@@ -113,14 +115,32 @@ def combine(grids: list[dict[int, dict[int, float]]]) -> dict[int, dict[int, flo
     return {d: {h: v / used for h, v in hours.items()} for d, hours in total.items()} if used else {}
 
 
+def _best_hours(cands: list[datetime], score: dict[int, float], k: int, gap: float,
+                busy: list[datetime]) -> list[datetime]:
+    """The ``k`` candidates with the highest total score that are all ``gap``
+    hours apart from each other and from ``busy`` ([] if no such set)."""
+    apart = lambda a, b: abs((a - b).total_seconds()) >= gap * 3600
+    free = [c for c in cands if all(apart(c, b) for b in busy)]
+    best, best_score = [], -1.0
+    for combo in itertools.combinations(free, k):
+        if all(apart(a, b) for a, b in itertools.combinations(combo, 2)):
+            total = sum(score.get(c.hour, 0.0) for c in combo)
+            if total > best_score:
+                best, best_score = list(combo), total
+    return best
+
+
 def pick_slots(grid: dict[int, dict[int, float]], today: date, days: int, per_day: int,
                window: tuple[str, str] | list[str] = ("08:00", "23:30"), min_gap: float = 3,
                taken: list[datetime] | tuple = (), earliest: datetime | None = None) -> list[datetime]:
     """The hours to post on each of ``days`` days from ``today``: up to
     ``per_day`` a day counting the slots already ``taken`` that day, on the
-    hour, inside ``window``, not before ``earliest``, the busiest hours first
-    and at least ``min_gap`` hours apart (relaxed an hour at a time when a day
-    can't fit them). Without activity data, hours that do well on short video."""
+    hour, inside ``window``, not before ``earliest``: the set of hours with
+    the most audience activity that are at least ``min_gap`` hours apart.
+    When a day can't fit them (a late start, a short window) the gap shrinks
+    an hour at a time down to ``MIN_GAP_FLOOR``; past that the day gets fewer
+    reels rather than two close together. Without activity data, hours that
+    do well on short video."""
     start_m, end_m = _minutes(window[0]), _minutes(window[1])
     picked: list[datetime] = []
     for i in range(days):
@@ -132,21 +152,18 @@ def pick_slots(grid: dict[int, dict[int, float]], today: date, days: int, per_da
         cands = [datetime.combine(day, time(h)) for h in range(24) if start_m <= h * 60 <= end_m]
         if earliest is not None:
             cands = [c for c in cands if c >= earliest]
-        scores = grid.get(day.isoweekday()) or {}
-        if scores:
-            cands.sort(key=lambda c: (-scores.get(c.hour, 0.0), c.hour))
-        else:
-            rank = {h: n for n, h in enumerate(FALLBACK_HOURS)}
-            cands.sort(key=lambda c: rank.get(c.hour, 99))
+        score = grid.get(day.isoweekday()) or {}
+        if not score:
+            score = {h: float(len(FALLBACK_HOURS) - n) for n, h in enumerate(FALLBACK_HOURS)}
+        floor = min(float(min_gap), MIN_GAP_FLOOR)
         chosen: list[datetime] = []
-        gap = float(min_gap)
-        while len(chosen) < need and gap >= 0.5:
-            for c in cands:
-                if len(chosen) >= need:
-                    break
-                if c not in chosen and all(abs((c - o).total_seconds()) >= gap * 3600 for o in chosen + busy):
-                    chosen.append(c)
-            gap -= 1
+        for k in range(min(need, len(cands)), 0, -1):  # as many as fit, then the best of them
+            gap = float(min_gap)
+            while gap >= floor and not chosen:
+                chosen = _best_hours(cands, score, k, gap, busy)
+                gap -= 1
+            if chosen:
+                break
         picked += chosen
     return sorted(picked)
 

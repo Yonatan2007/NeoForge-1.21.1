@@ -344,7 +344,7 @@ def _providers(project: Project, settings: Settings) -> list:
     if "pixabay" in wanted and settings.pixabay_api_key:
         providers.append(footage.Pixabay(settings.pixabay_api_key, settings.cache_dir))
     if "mixkit" in wanted:
-        providers.append(footage.Mixkit(settings.cache_dir))
+        providers.append(footage.Mixkit(settings.cache_dir, per_query=settings.mixkit_per_query))
     return providers
 
 
