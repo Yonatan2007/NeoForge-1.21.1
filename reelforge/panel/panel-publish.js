@@ -28,6 +28,7 @@ import {
 import { paintRange, switchControl } from "./fields.js";
 import { icon } from "./icons.js";
 import { bestTimePicker, canWrite, renderCalendar, renderStats, sampleProblem, viewerTz, writePost } from "./panel-growth.js";
+import { renderAutopilot } from "./panel-autopilot.js";
 import { checkTiktok, coverCard, markTiktokPosted, renderBatch, renderIdeas, viralityCard } from "./panel-more.js";
 import { footageReview } from "./panel-review.js";
 
@@ -1242,9 +1243,10 @@ async function videoLookup() {
 }
 
 export const extras = {
-  nav: [{ id: "ideas", label: "Ideas", icon: "sparkle" }, { id: "publish", label: "Publish", icon: "upload" }, { id: "calendar", label: "Calendar", icon: "calendar" },
+  nav: [{ id: "autopilot", label: "Autopilot", icon: "wand" }, { id: "ideas", label: "Ideas", icon: "sparkle" },
+        { id: "publish", label: "Publish", icon: "upload" }, { id: "calendar", label: "Calendar", icon: "calendar" },
         { id: "stats", label: "Stats", icon: "chart" }, { id: "accounts", label: "Accounts", icon: "link" }],
-  homeActions: [{ label: "Script ideas", icon: "sparkle", href: "#/x/ideas" }, { label: "Render several", icon: "render", href: "#/x/batch" }],
+  homeActions: [{ label: "Autopilot", icon: "wand", href: "#/x/autopilot" }, { label: "Script ideas", icon: "sparkle", href: "#/x/ideas" }],
   footageReview,
   homeStats() {
     const span = h("span", {});
@@ -1258,6 +1260,7 @@ export const extras = {
     if (id === "accounts") return renderAccounts(container);
     if (id === "calendar") return renderCalendar(container, { findVideo: videoLookup });
     if (id === "ideas") return renderIdeas(container);
+    if (id === "autopilot") return renderAutopilot(container);
     if (id === "batch") return renderBatch(container);
     if (id === "stats") return renderStats(container, { findVideo: videoLookup });
     if (id === "publish" && sub) {

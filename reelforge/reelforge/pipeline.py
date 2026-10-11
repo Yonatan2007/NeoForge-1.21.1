@@ -382,7 +382,8 @@ def _stock_common(project: Project) -> dict:
                 allow_landscape=project.footage.allow_landscape or wide,
                 portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0),
                 palette=project.footage.palette, wide=wide,
-                avoid=avoided(project.footage.queries) | avoided([project.footage.hook_query or ""]))
+                avoid=avoided(project.footage.queries) | avoided([project.footage.hook_query or ""]),
+                frame=(vs.width, vs.height))  # the picture's size: clips that must be enlarged rank lower
 
 
 def _hook_slot(project: Project, hook_terrain: bool, stock_slots: list[int]) -> bool:
@@ -664,8 +665,8 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
              on_progress=lambda f: report("render", f))
 
     report("finish", 0.2, "writing cover and timings")
-    cover = media.extract_frame(video, (hook_end - 0.1) if hook_terrain else min(1.5, total / 2),
-                                out_dir / "cover.jpg")
+    cover_time = (hook_end - 0.1) if hook_terrain else min(1.5, total / 2)
+    cover = media.extract_frame(video, cover_time, out_dir / "cover.jpg")
     (out_dir / "timings.json").write_text(json.dumps({
         "duration": total, "tempo": plan.tempo, "intro": plan.intro, "outro": plan.outro,
         "method": method,
@@ -687,4 +688,4 @@ def render_project(project: Project, project_dir: Path, settings: Settings,
     return {"video": rel(video), "srt": rel(out_dir / "captions.srt"), "cover": rel(cover),
             "credits": rel(credits) if credits.exists() else None,
             "timings": rel(out_dir / "timings.json"), "duration": round(total, 2),
-            "warnings": warnings}
+            "warnings": warnings, "cover_time": round(max(0.0, cover_time), 2)}

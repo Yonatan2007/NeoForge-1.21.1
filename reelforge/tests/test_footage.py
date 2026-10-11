@@ -429,3 +429,23 @@ def test_contact_sheet_crops_every_thumbnail_to_a_tile(tmp_path):
     with Image.open(tmp_path / "sheet.jpg") as img:
         assert img.size == (180, 320)
         assert img.getpixel((45, 80))[0] > 200 and img.getpixel((135, 80))[2] > 200
+
+
+# --------------------------------------------------------------------------- sharpness
+
+def test_clips_that_must_be_enlarged_rank_lower():
+    tall = (1080, 1920)
+    sharp, soft = cand("hd"), cand("sd", width=720, height=1280)
+    wide_hd, wide_4k = cand("w", width=1920, height=1080), cand("w4", width=3840, height=2160)
+    assert footage.upscale(sharp, tall) == 1.0 and footage.upscale(wide_hd, tall) == pytest.approx(1920 / 1080)
+    assert footage.upscale(wide_4k, tall) < 1.0  # a 4K wide clip still fills a tall frame without enlarging
+    assert score(sharp, 5, frame=tall) - score(soft, 5, frame=tall) == pytest.approx(1.0 + 2.5 * (1.5 - 1.05))
+    assert score(wide_hd, 5, portrait_weight=0.0, frame=tall) < score(wide_4k, 5, portrait_weight=0.0, frame=tall)
+    assert score(soft, 5) == score(soft, 5, frame=None)  # no frame given: as before
+
+
+def test_fetch_footage_prefers_the_sharper_clip_for_the_frame(tmp_path, monkeypatch):
+    monkeypatch.setattr(footage, "download", lambda url, dst, **kw: Path(dst))
+    p = FakeProvider(tmp_path, [cand("soft", width=540, height=960, duration=30), cand("sharp", duration=12)])
+    (pick,) = fetch_footage(["a"], [p], tmp_path, min_duration=5, frame=(1080, 1920))
+    assert pick[0].id == "sharp"

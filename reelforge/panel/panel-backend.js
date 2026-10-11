@@ -568,7 +568,8 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
   }
 
   const ASKS = { plan: "plan my reel", render: "render my reel", review: "review my clips", publish: "publish my video",
-                 profile: "apply my reelforge profile changes", ideas: "get my script ideas", virality: "check my video" };
+                 profile: "apply my reelforge profile changes", ideas: "get my script ideas", virality: "check my video",
+                 autopilot: "run autopilot" };
   const askFor = (kind) => ASKS[kind] || `run my ${kind}`;
 
   /** Mark tasks that Claude wasn't told about with what to type instead. */

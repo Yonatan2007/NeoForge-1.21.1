@@ -14,6 +14,22 @@ its files in the Artifact's asset store; a plan or render is a task
     python -m reelforge.panelrun ideas  TASK.json
         Script ideas from Gemini for an "ideas" task (topic, count, tone,
         avoid, examples); needs GEMINI_API_KEY in the environment.
+
+Autopilot (reels made and scheduled in batches, see autopilot.py):
+
+    python -m reelforge.panelrun autopilot-prepare IN.json --assets DIR --out DIR
+        Slots at the best hours, Gemini's scripts and posts, a work folder per
+        reel with its footage planned -> DIR/plan.json (with each reel's
+        Higgsfield voice request).
+    python -m reelforge.panelrun autopilot-render --plan PLAN --voices VOICES.json [--jobs 2]
+        Render every reel that has a voice URL, two at a time, and check them
+        -> results.json next to the plan.
+    python -m reelforge.panelrun autopilot-posts --plan PLAN --results RES --media MEDIA.json
+        Metricool createScheduledPost arguments for the reels that passed.
+    python -m reelforge.panelrun autopilot-docs --plan PLAN --results RES --media MEDIA.json
+                                               --covers COVERS.json --metricool MC.json
+        The panel's documents (projects/<id>, autopilot/<slot>) as an
+        ArtifactData batch.
     python -m reelforge.panelrun render --work DIR [--voiceover URL]
         Renders; DIR/progress.json follows it, a DIR/cancel file stops it,
         DIR/result.json holds the result (or the error).
@@ -56,13 +72,12 @@ def _asset_file(assets: Path, asset_id: str) -> Path | None:
     return hits[0] if hits else None
 
 
-def stage(doc_path: Path, assets: Path, work: Path) -> dict:
-    doc = _doc_body(json.loads(doc_path.read_text(encoding="utf-8")))
-    files = doc.get("files") or []
-    need = [i for f in files for i in (f.get("store") or {}).get("ids", []) if not _asset_file(assets, i)]
-    if need:
-        return {"need": need}
-    up = work / "uploads"
+def _missing(files: list[dict], assets: Path) -> list[str]:
+    return [i for f in files for i in (f.get("store") or {}).get("ids", []) if not _asset_file(assets, i)]
+
+
+def _unpack(files: list[dict], assets: Path, up: Path) -> None:
+    """Write the panel's file records (raw or base64 parts in ``assets``) into ``up``."""
     up.mkdir(parents=True, exist_ok=True)
     for f in files:
         store = f.get("store") or {}
@@ -74,6 +89,16 @@ def stage(doc_path: Path, assets: Path, work: Path) -> dict:
                     out.write(base64.b64decode("".join(part.read_text(encoding="utf-8").split())))
         elif parts:
             dst.write_bytes(parts[0].read_bytes())
+
+
+def stage(doc_path: Path, assets: Path, work: Path) -> dict:
+    doc = _doc_body(json.loads(doc_path.read_text(encoding="utf-8")))
+    files = doc.get("files") or []
+    need = _missing(files, assets)
+    if need:
+        return {"need": need}
+    up = work / "uploads"
+    _unpack(files, assets, up)
     project = config.from_dict(Project, doc["project"])
     config.save_project(project, work / "project.json")
     out = {"ready": True, "work": str(work), "files": sorted(p.name for p in up.iterdir()),
@@ -136,6 +161,242 @@ def ideas(task_path: Path) -> dict:
     except (gemini.IdeasError, OSError, ValueError) as exc:  # network errors are OSErrors
         return {"ok": False, "error": str(exc)}
     return {"ok": True, "result": result}
+
+
+# --------------------------------------------------------------------------- autopilot
+
+def _read(path: Path | str) -> dict | list:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _write(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
+    """Plan a batch: slots, scripts with their posts, a work folder per reel
+    (project.json and uploads) with its stock clips assigned."""
+    import secrets
+    from datetime import datetime, timedelta
+
+    from . import autopilot as ap, ideas, voiceover
+    from .pipeline import review_footage, slugify
+    from .script import parse_script
+
+    data = _read(inp)
+    settings = ap.settings_of(data.get("settings"))
+    brand = data.get("brand") or {}
+    tz = brand.get("timezone") or "UTC"
+    template = _doc_body(data["template"])
+    files = list({f["name"]: f for f in [*(template.get("files") or []), *(data.get("files") or [])]}.values())
+    need = _missing(files, assets)
+    if need:
+        return {"need": need}
+    now = datetime.fromisoformat(data["now"]) if data.get("now") else ap.now_in(tz)
+    best = data.get("best") or {}
+    grid = ap.combine([ap.grid_of(best.get(p)) for p in settings["platforms"] if best.get(p)])
+    taken = ap.taken_slots(data.get("scheduled") or [], tz)
+    slots = ap.pick_slots(grid, now.date(), settings["days"], settings["per_day"], settings["window"],
+                          settings["min_gap"], taken, earliest=now + timedelta(hours=3))
+    plan = {"tz": tz, "brand_id": str(brand.get("id") or ""), "settings": settings,
+            "template_id": data["template"].get("id") or data.get("template_id"), "model": None,
+            "files": files, "items": []}
+    if not slots:
+        _write(out / "plan.json", plan)
+        return {"ok": True, "slots": 0, "plan": str(out / "plan.json")}
+
+    # scripts and posts: Gemini (or ideas the caller wrote, when the user chose that)
+    history = data.get("history") or []
+    avoid = [*(data.get("avoid") or []), *(h.get("title", "") for h in history)]
+    written = list(data.get("ideas") or [])
+    writer = writer or ideas.generate
+    while len(written) < len(slots):
+        got = writer(topic=settings["topic"], count=min(8, len(slots) - len(written)), tone=settings["tone"],
+                     avoid=[*avoid, *(w["title"] for w in written)], examples=data.get("examples") or [],
+                     post=True)
+        plan["model"] = got.get("model")
+        if not got.get("ideas"):
+            raise ideas.IdeasError("Gemini returned no scripts.")
+        written += got["ideas"]
+
+    up = out / "_uploads"
+    _unpack(files, assets, up)
+    recent = [k for h in history[-40:] for k in h.get("clips") or []]
+    template_project = template["project"]
+    tsong = (template_project.get("music") or {}).get("file")
+    st = _settings(out / "x")
+    for i, (slot, idea) in enumerate(zip(slots, written)):
+        sid = ap.slot_id(slot)
+        work = out / sid
+        (work / "uploads").mkdir(parents=True, exist_ok=True)
+        for f in up.iterdir():
+            link = work / "uploads" / f.name
+            if not link.exists():
+                link.symlink_to(f.resolve())
+        project = ap.build_project(template_project, idea["script"], idea["title"],
+                                   music=ap.pick_song(settings, i, tsong), banned=recent, fmt=settings["format"])
+        config.save_project(config.from_dict(Project, project), work / "project.json")
+        plan["items"].append({
+            "id": sid, "slot": slot.strftime("%Y-%m-%dT%H:%M"), "tz": tz, "title": idea["title"],
+            "script": idea["script"], "why": idea.get("why", ""), "caption": idea.get("caption") or idea["title"],
+            "hashtags": idea.get("hashtags") or [], "youtube_title": idea.get("youtube_title") or idea["title"],
+            "work": str(work), "project_id": f"{slugify(idea['title'], 5)}-{secrets.token_hex(3)}",
+            "song": project["music"].get("file")})
+
+    # footage for the whole batch: no clip in two reels, none from recent reels
+    reviews = []
+    for item in plan["items"]:
+        work = Path(item["work"])
+        try:
+            reviews.append(review_footage(_load(work), work, st, work / "review"))
+        except Exception as exc:  # the render searches by itself then
+            logging.getLogger("reelforge").warning("footage plan for %s failed: %s", item["id"], exc)
+            reviews.append({})
+    assigned = ap.assign_clips(reviews, banned=recent)
+    everyone = {p["key"] for picks in assigned for p in picks}
+    for item, picks in zip(plan["items"], assigned):
+        work = Path(item["work"])
+        project = _load(work)
+        own = {p["key"] for p in picks}
+        project.footage.picks = picks
+        project.footage.banned = sorted(set(project.footage.banned) | (everyone - own))
+        config.save_project(project, work / "project.json")
+        script = parse_script(project.script, project.auto_emphasis)
+        item["picks"] = len(picks)
+        item["voice_request"] = voiceover.higgsfield_request(
+            script, project.voice.higgsfield_preset,
+            project.voice.voice_id or Settings.from_env().higgsfield_voice_id,
+            voice_type=project.voice.voice_type if project.voice.voice_id else "preset")
+    _write(out / "plan.json", plan)
+    return {"ok": True, "slots": len(plan["items"]), "plan": str(out / "plan.json"),
+            "first": plan["items"][0]["slot"], "last": plan["items"][-1]["slot"], "model": plan["model"]}
+
+
+def autopilot_render(plan_path: Path, voices_path: Path, jobs: int = 2) -> dict:
+    """Render every reel of the plan that has a voice, ``jobs`` at a time
+    (each lane with its own cache), check each one -> results.json."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import autopilot as ap
+
+    plan = _read(plan_path)
+    voices = _read(voices_path)
+    out = plan_path.parent / "results.json"
+    results = _read(out) if out.exists() else {}
+    todo = [it for it in plan["items"] if voices.get(it["id"]) and not (results.get(it["id"]) or {}).get("ok")]
+    lock = threading.Lock()
+
+    def one(n_item):
+        n, item = n_item
+        work = Path(item["work"])
+        env = {**os.environ, "REELFORGE_CACHE": str(plan_path.parent / f".cache-{n % max(1, jobs)}"),
+               "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+        subprocess.run([sys.executable, "-m", "reelforge.panelrun", "render", "--work", str(work),
+                        "--voiceover", voices[item["id"]]], env=env, capture_output=True, text=True)
+        try:
+            res = json.loads((work / "result.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            res = {"ok": False, "error": "the render stopped without a result"}
+        try:
+            used = json.loads((work / "output" / "credits.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            used = []
+        r = res.get("result") or {}
+        entry = {"ok": bool(res.get("ok")), "problems": ap.quality_problems(res, used),
+                 "video": str(work / r["video"]) if r.get("video") else None,
+                 "cover": str(work / r["cover"]) if r.get("cover") else None,
+                 "cover_ms": int(float(r.get("cover_time") or 0) * 1000) if res.get("ok") else None,
+                 "duration": r.get("duration"), "clips": [f"{c['provider']}_{c['id']}" for c in used]}
+        with lock:
+            results[item["id"]] = entry
+            _write(out, results)
+        return item["id"], entry
+
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        done = list(pool.map(one, enumerate(todo)))
+    good = [i for i, e in done if e["ok"] and not e["problems"]]
+    return {"ok": True, "rendered": len(done), "passed": len(good),
+            "held": {i: e["problems"] for i, e in done if e["problems"]}, "results": str(out)}
+
+
+def autopilot_posts(plan_path: Path, results_path: Path, media_path: Path, now=None) -> dict:
+    """createScheduledPost arguments for the reels that passed, leaving out
+    slots too close to schedule (under 15 minutes away)."""
+    from datetime import datetime, timedelta
+
+    from . import autopilot as ap
+    plan, results, media = _read(plan_path), _read(results_path), _read(media_path)
+    soon = (now or ap.now_in(plan["tz"])) + timedelta(minutes=15)
+    posts, late = [], []
+    for item in plan["items"]:
+        res, m = results.get(item["id"]) or {}, media.get(item["id"]) or {}
+        if not (res.get("ok") and not res.get("problems") and m.get("url")):
+            continue
+        if datetime.fromisoformat(item["slot"]) < soon:
+            late.append(item["id"])
+            continue
+        posts.append(ap.metricool_post(item, plan["settings"], plan["brand_id"], m["url"], res.get("cover_ms")))
+    _write(plan_path.parent / "posts.json", posts)
+    return {"ok": True, "posts": len(posts), "late": late, "file": str(plan_path.parent / "posts.json")}
+
+
+def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers_path: Path,
+                   metricool_path: Path) -> dict:
+    """The panel's documents for the batch, as ArtifactData batch writes (one file per document)."""
+    from datetime import datetime, timezone
+
+    plan, results, media = _read(plan_path), _read(results_path), _read(media_path)
+    covers, mc = _read(covers_path), _read(metricool_path)
+    files = plan.get("files") or []
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    review = plan["settings"]["approval"] == "review"
+    folder = plan_path.parent / "docs"
+    writes = []
+    for item in plan["items"]:
+        res = results.get(item["id"]) or {}
+        m = media.get(item["id"]) or {}
+        post = mc.get(item["id"]) or {}
+        if not res:
+            status = "planned"
+        elif not res.get("ok"):
+            status = "failed"
+        elif res.get("problems"):
+            status = "held"
+        elif post.get("error") or not post.get("id"):
+            status = "failed" if post.get("error") else "ready"
+        else:
+            status = "review" if review else "scheduled"
+        project_path = Path(item["work"]) / "project.json"
+        if res.get("ok") and project_path.exists():
+            project = json.loads(project_path.read_text(encoding="utf-8"))
+            outputs = {k: v for k, v in {"cover": covers.get(item["id"]), "master_url": m.get("url"),
+                                         "master_media_id": m.get("media_id")}.items() if v}
+            doc = {"name": item["title"], "project": project, "files": files, "outputs": outputs,
+                   "created": now, "updated": now, "autopilot": item["id"]}
+            _write(folder / f"project-{item['id']}.json", doc)
+            writes.append({"op": "set", "collection": "projects", "doc_id": item["project_id"],
+                           "file_path": str(folder / f"project-{item['id']}.json")})
+        ad = {"slot": item["slot"], "tz": item["tz"], "status": status, "project_id": item["project_id"],
+              "title": item["title"], "script": item["script"], "caption": item["caption"],
+              "hashtags": item["hashtags"], "youtube_title": item["youtube_title"],
+              "platforms": plan["settings"]["platforms"], "master_url": m.get("url"),
+              "master_media_id": m.get("media_id"), "cover": covers.get(item["id"]),
+              "cover_ms": res.get("cover_ms"), "duration": res.get("duration"), "clips": res.get("clips") or [],
+              "problems": res.get("problems") or ([post["error"]] if post.get("error") else []),
+              "metricool": {k: post.get(k) for k in ("id", "uuid", "plannerUrl") if post.get(k)} or None,
+              "created": now, "updated": now}
+        _write(folder / f"autopilot-{item['id']}.json", ad)
+        writes.append({"op": "set", "collection": "autopilot", "doc_id": item["id"],
+                       "file_path": str(folder / f"autopilot-{item['id']}.json")})
+    _write(folder / "writes.json", writes)
+    counts: dict[str, int] = {}
+    for w in writes:
+        if w["collection"] == "autopilot":
+            st = _read(w["file_path"])["status"]
+            counts[st] = counts.get(st, 0) + 1
+    return {"ok": True, "writes": len(writes), "file": str(folder / "writes.json"), "statuses": counts}
 
 
 class _FileFlag(threading.Event):
@@ -249,6 +510,20 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("plan", "review", "status", "outputs"):
         sub.add_parser(name).add_argument("--work", required=True)
     sub.add_parser("ideas").add_argument("task")
+    a = sub.add_parser("autopilot-prepare")
+    a.add_argument("input")
+    a.add_argument("--assets", required=True)
+    a.add_argument("--out", required=True)
+    a = sub.add_parser("autopilot-render")
+    a.add_argument("--plan", required=True)
+    a.add_argument("--voices", required=True)
+    a.add_argument("--jobs", type=int, default=2)
+    a = sub.add_parser("autopilot-posts")
+    for flag in ("--plan", "--results", "--media"):
+        a.add_argument(flag, required=True)
+    a = sub.add_parser("autopilot-docs")
+    for flag in ("--plan", "--results", "--media", "--covers", "--metricool"):
+        a.add_argument(flag, required=True)
     r = sub.add_parser("render")
     r.add_argument("--work", required=True)
     r.add_argument("--voiceover")
@@ -262,6 +537,15 @@ def main(argv: list[str] | None = None) -> int:
         out = review(work)
     elif args.cmd == "ideas":
         out = ideas(Path(args.task))
+    elif args.cmd == "autopilot-prepare":
+        out = autopilot_prepare(Path(args.input), Path(args.assets), Path(args.out).resolve())
+    elif args.cmd == "autopilot-render":
+        out = autopilot_render(Path(args.plan).resolve(), Path(args.voices), args.jobs)
+    elif args.cmd == "autopilot-posts":
+        out = autopilot_posts(Path(args.plan), Path(args.results), Path(args.media))
+    elif args.cmd == "autopilot-docs":
+        out = autopilot_docs(Path(args.plan), Path(args.results), Path(args.media), Path(args.covers),
+                             Path(args.metricool))
     elif args.cmd == "render":
         out = render(work, args.voiceover)
     elif args.cmd == "status":

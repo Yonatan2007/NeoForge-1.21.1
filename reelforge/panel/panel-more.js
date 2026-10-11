@@ -41,7 +41,7 @@ function taskLine(t, doneText) {
 
 // --------------------------------------------------------------------------- Ideas
 
-const TONES = [["", "Like my best reels"], ["gentle and comforting", "Gentle"], ["blunt and confronting", "Blunt"],
+export const TONES = [["", "Like my best reels"], ["gentle and comforting", "Gentle"], ["blunt and confronting", "Blunt"],
                ["hopeful and uplifting", "Hopeful"], ["dark and haunting", "Haunting"]];
 
 async function makeReel(idea) {

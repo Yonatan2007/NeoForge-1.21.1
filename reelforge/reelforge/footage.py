@@ -82,17 +82,32 @@ def rendition_rank(width: int, height: int) -> tuple:
     return (1, 0 if height >= 1920 else 1, abs(height - 2160))
 
 
+UPSCALE_WEIGHT = 2.5      # per 1x of enlargement beyond 5 %: a soft, zoomed-in clip loses to a sharp one
+UPSCALE_CAP = 4.0
+
+
+def upscale(c: Candidate, frame: tuple[int, int] | None) -> float:
+    """How much ``c`` is enlarged when it is cropped to fill ``frame`` (1.0 =
+    no enlargement; a 1920x1080 clip in a 1080x1920 frame is 1.78)."""
+    if not frame or c.width <= 0 or c.height <= 0:
+        return 1.0
+    return max(frame[0] / c.width, frame[1] / c.height)
+
+
 def score(c: Candidate, min_duration: float, portrait_weight: float = 3.0,
-          luma_target: float = LUMA_TARGETS["bright"]) -> float:
+          luma_target: float = LUMA_TARGETS["bright"], frame: tuple[int, int] | None = None) -> float:
     """Heuristic fit of a clip: portrait orientation (worth ``portrait_weight``,
     which the caller lowers for square output and makes negative for wide
     output, so landscape clips win there), a full-HD source,
-    enough length for a shot, and thumbnail brightness near ``luma_target``."""
+    enough length for a shot, thumbnail brightness near ``luma_target``, and,
+    given the output ``frame``, sharpness: a clip that must be enlarged to fill
+    the frame looks soft and zoomed in."""
     s = portrait_weight if c.portrait else 0.0
     s += 1.0 if min(c.width, c.height) >= 1080 else 0.0
     s += 1.0 if c.duration >= min_duration else -1.0
     if c.luma is not None:
         s += 2.5 * (1.0 - abs(c.luma - luma_target) / 0.5)
+    s -= min(UPSCALE_CAP, UPSCALE_WEIGHT * max(0.0, upscale(c, frame) - 1.05))
     return s
 
 
@@ -393,14 +408,14 @@ def _download(c: Candidate, provider: _Provider, dst: Path) -> Path:
 def _rank_query(query: str, providers: list[_Provider], used: set[str], min_duration: float,
                 allow_landscape: bool, shortlist: int, extra_score: ExtraScore | None,
                 portrait_weight: float, luma_target: float, wide: bool,
-                avoid: set[str] | None) -> list[tuple[float, Candidate]]:
+                avoid: set[str] | None, frame: tuple[int, int] | None = None) -> list[tuple[float, Candidate]]:
     """One search's best ``shortlist`` candidates, best first, each scored by
     ``score`` plus ``extra_score(candidate, thumbnail)`` (the thumbnail is
     fetched once and cached, and sets the clip's brightness)."""
     by_name = {p.name: p for p in providers}
     cands = [c for c in _search(query, providers, allow_landscape, wide)
              if c.key not in used and (c.portrait or allow_landscape) and not describes(c, avoid)]
-    cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target), reverse=True)
+    cands.sort(key=lambda c: score(c, min_duration, portrait_weight, luma_target, frame), reverse=True)
     ranked = []
     for c in cands[:shortlist]:
         provider = by_name[c.provider]
@@ -408,7 +423,7 @@ def _rank_query(query: str, providers: list[_Provider], used: set[str], min_dura
         if img is not None:
             c.luma, c.thumb_size = image_luma(img), c.thumb_size or img.size
         bonus = float(extra_score(c, img)) if extra_score else 0.0
-        ranked.append((score(c, min_duration, portrait_weight, luma_target) + bonus, c))
+        ranked.append((score(c, min_duration, portrait_weight, luma_target, frame) + bonus, c))
     ranked.sort(key=lambda item: item[0], reverse=True)
     return ranked
 
@@ -418,7 +433,8 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
                   count: int | None = None, extra_score: ExtraScore | None = None,
                   portrait_weight: float = 3.0, palette: str = "bright",
                   exclude: set[str] | None = None, wide: bool = False,
-                  avoid: set[str] | None = None) -> list[tuple[Candidate, Path]]:
+                  avoid: set[str] | None = None,
+                  frame: tuple[int, int] | None = None) -> list[tuple[Candidate, Path]]:
     """One clip per query (in order) until ``count`` clips, never the same clip twice.
 
     Each query's candidates are ranked by ``score``; the best ``shortlist``
@@ -440,7 +456,7 @@ def fetch_footage(queries: list[str], providers: list[_Provider], cache_dir: Pat
         if count is not None and len(picks) >= count:
             break
         ranked = _rank_query(query, providers, used, min_duration, allow_landscape, shortlist,
-                             extra_score, portrait_weight, luma_target, wide, avoid)
+                             extra_score, portrait_weight, luma_target, wide, avoid, frame)
         if not ranked:
             log.warning("no footage for %r", query)
             continue
@@ -465,7 +481,8 @@ def shortlist_footage(queries: list[str], providers: list[_Provider], min_durati
                       shortlist: int = 6, extra_score: ExtraScore | None = None,
                       portrait_weight: float = 3.0, palette: str = "bright",
                       exclude: set[str] | None = None, wide: bool = False,
-                      avoid: set[str] | None = None) -> list[tuple[float, Candidate]]:
+                      avoid: set[str] | None = None,
+                      frame: tuple[int, int] | None = None) -> list[tuple[float, Candidate]]:
     """Clips to choose from, ranked the way ``fetch_footage`` ranks them but
     without downloading: the best ``per_query`` of each search, in query
     order, until ``count`` clips. The first ones are what a render would pick."""
@@ -477,7 +494,7 @@ def shortlist_footage(queries: list[str], providers: list[_Provider], min_durati
             if len(out) >= count:
                 return out
             ranked = _rank_query(query, providers, used, min_duration, allow_landscape, shortlist,
-                                 extra_score, portrait_weight, luma_target, wide, avoid)
+                                 extra_score, portrait_weight, luma_target, wide, avoid, frame)
             for total, c in ranked[:per_query if rnd == 0 else shortlist]:
                 if len(out) >= count:
                     break
@@ -490,7 +507,7 @@ def ranked_best(queries: list[str], providers: list[_Provider], min_duration: fl
                 rank: ExtraScore, allow_landscape: bool = True, shortlist: int = 8,
                 portrait_weight: float = 3.0, palette: str = "bright", wide: bool = False,
                 avoid: set[str] | None = None, exclude: set[str] | None = None,
-                limit: int | None = None) -> list[tuple[float, Candidate]]:
+                limit: int | None = None, frame: tuple[int, int] | None = None) -> list[tuple[float, Candidate]]:
     """Candidates of every query compared together, best first, judged mostly
     by ``rank(candidate, thumbnail)``."""
     luma_target = LUMA_TARGETS.get(palette, LUMA_TARGETS["bright"])
@@ -498,7 +515,7 @@ def ranked_best(queries: list[str], providers: list[_Provider], min_duration: fl
     ranked: list[tuple[float, Candidate]] = []
     for query in dict.fromkeys(queries):
         found = _rank_query(query, providers, seen, min_duration, allow_landscape, shortlist,
-                            rank, portrait_weight, luma_target, wide, avoid)
+                            rank, portrait_weight, luma_target, wide, avoid, frame)
         seen.update(c.key for _, c in found)
         ranked += found
     ranked.sort(key=lambda item: item[0], reverse=True)
@@ -509,14 +526,14 @@ def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min
             rank: ExtraScore, allow_landscape: bool = True, shortlist: int = 8,
             portrait_weight: float = 3.0, palette: str = "bright",
             wide: bool = False, avoid: set[str] | None = None,
-            exclude: set[str] | None = None) -> tuple[Candidate, Path] | None:
+            exclude: set[str] | None = None, frame: tuple[int, int] | None = None) -> tuple[Candidate, Path] | None:
     """The single best clip across several searches, judged mostly by
     ``rank(candidate, thumbnail)`` (e.g. how clear a skyline is for the hook
     shot). Unlike ``fetch_footage`` it compares candidates of every query
     before choosing. None when nothing could be found or downloaded."""
     by_name = {p.name: p for p in providers}
     ranked = ranked_best(queries, providers, min_duration, rank, allow_landscape, shortlist,
-                         portrait_weight, palette, wide, avoid, exclude)
+                         portrait_weight, palette, wide, avoid, exclude, frame=frame)
     for total, c in ranked:
         try:
             path = _download(c, by_name[c.provider], Path(cache_dir) / "footage" / f"{c.key}.mp4")

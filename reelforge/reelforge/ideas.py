@@ -86,10 +86,22 @@ SCHEMA = {
         "required": ["title", "script", "why"]}}},
     "required": ["ideas"],
 }
+POST_FIELDS = {"caption": {"type": "STRING"}, "hashtags": {"type": "ARRAY", "items": {"type": "STRING"}},
+               "youtube_title": {"type": "STRING"}}
+
+
+def schema(post: bool = False) -> dict:
+    """The answer's JSON schema; ``post`` adds each reel's caption, hashtags and YouTube title."""
+    if not post:
+        return SCHEMA
+    item = SCHEMA["properties"]["ideas"]["items"]
+    return {**SCHEMA, "properties": {"ideas": {"type": "ARRAY", "items": {
+        **item, "properties": {**item["properties"], **POST_FIELDS},
+        "required": [*item["required"], *POST_FIELDS]}}}}
 
 
 def prompt(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | None = None,
-           examples: list[str] | None = None) -> str:
+           examples: list[str] | None = None, post: bool = False) -> str:
     lines = [
         f"Write {count} new scripts for vertical short videos (Instagram Reels, YouTube Shorts, TikTok) on an account "
         "of late-night philosophical thoughts about love, loss, self-worth and becoming who you are.",
@@ -104,6 +116,14 @@ def prompt(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | N
         "- Every script takes a different angle; none may repeat an idea below.",
         "Also give each a short title (under 8 words) and one sentence on why it should do well.",
     ]
+    if post:
+        lines += [
+            "For each script also write the post that goes with it:",
+            "- caption: 2 to 4 short lines with a blank line between them; the first line is a hook on its own; end "
+            "with a question or a reason to save the post; no hashtags inside; at most 400 characters.",
+            "- hashtags: 5 to 8 that fit the video, without the # sign, mixing broad and niche ones.",
+            "- youtube_title: a hook title for the Short, at most 90 characters, no hashtags, no quotes.",
+        ]
     if topic:
         lines.append(f"Topic or angle to write about: {topic}")
     if tone:
@@ -117,16 +137,33 @@ def prompt(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | N
     return "\n".join(lines)
 
 
+def caption_lines(text: str) -> str:
+    """A caption Gemini wrote as one paragraph gets a line per sentence, a blank line between them."""
+    text = str(text or "").strip()
+    if "\n" in text:
+        return re.sub(r"\n{3,}", "\n\n", text)
+    return "\n\n".join(p for p in re.split(r"(?<=[.?!…])\s+", text) if p)
+
+
+def clean_tags(raw) -> list[str]:
+    items = raw if isinstance(raw, list) else re.split(r"[\s,]+", str(raw or ""))
+    tags = [re.sub(r"[^\w]", "", str(t).lstrip("#")) for t in items]
+    return list(dict.fromkeys(t for t in tags if t))[:30]
+
+
 def generate(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | None = None,
-             examples: list[str] | None = None, session: requests.Session | None = None) -> dict:
-    """{model, ideas: [{title, script, why}]} from Gemini."""
+             examples: list[str] | None = None, session: requests.Session | None = None,
+             post: bool = False) -> dict:
+    """{model, ideas: [{title, script, why}]} from Gemini; with ``post`` each
+    idea also has caption, hashtags and youtube_title."""
     count = max(1, min(int(count or 5), 10))
     headers = _headers()
     session = session or requests.Session()
     model = _model(session, headers)
     body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt(topic, count, tone, avoid, examples)}]}],
-        "generationConfig": {"temperature": 1.0, "responseMimeType": "application/json", "responseSchema": SCHEMA},
+        "contents": [{"role": "user", "parts": [{"text": prompt(topic, count, tone, avoid, examples, post)}]}],
+        "generationConfig": {"temperature": 1.0, "responseMimeType": "application/json",
+                             "responseSchema": schema(post)},
     }
     r = session.post(f"{API}/models/{model}:generateContent", headers=headers, json=body, timeout=180)
     _raise(r)
@@ -140,9 +177,15 @@ def generate(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] |
     clean = []
     for i in ideas:
         script = re.sub(r"\s+", " ", str(i.get("script", ""))).strip()
-        if script:
-            clean.append({"title": str(i.get("title", "")).strip()[:80] or script.split(".")[0][:60],
-                          "script": script, "why": str(i.get("why", "")).strip()[:300]})
+        if not script:
+            continue
+        idea = {"title": str(i.get("title", "")).strip()[:80] or script.split(".")[0][:60],
+                "script": script, "why": str(i.get("why", "")).strip()[:300]}
+        if post:
+            title = str(i.get("youtube_title") or idea["title"]).strip().strip('"“”')
+            idea.update(caption=caption_lines(i.get("caption"))[:2200], hashtags=clean_tags(i.get("hashtags")),
+                        youtube_title=title if len(title) <= 100 else f"{title[:99].rstrip()}…")
+        clean.append(idea)
     if not clean:
         raise IdeasError("Gemini returned no scripts. Try again.")
     return {"model": model, "ideas": clean[:count]}

@@ -55,6 +55,22 @@ def test_generate_sends_the_brief_and_reads_the_json(monkeypatch):
     assert "Write 3 new scripts" in brief and "letting go" in brief and "Most people spend their lives" in brief
 
 
+def test_post_copy_comes_with_each_script(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    text = json.dumps({"ideas": [{"title": "T", "script": "Hook? More.", "why": "",
+                                  "caption": "Their silence was the answer. You don't need theirs. Save this.",
+                                  "hashtags": ["#letting go", "closure", "closure", "self-worth"],
+                                  "youtube_title": '"' + "w" * 120 + '"'}]})
+    g = Gemini([], Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}))
+    idea = ideas.generate(count=1, session=g, post=True)["ideas"][0]
+    assert idea["caption"] == "Their silence was the answer.\n\nYou don't need theirs.\n\nSave this."
+    assert idea["hashtags"] == ["lettinggo", "closure", "selfworth"]  # one tag per item, no spaces
+    assert len(idea["youtube_title"]) == 100 and idea["youtube_title"].endswith("…")
+    item = g.posts[0][1]["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]
+    assert {"caption", "hashtags", "youtube_title"} <= set(item["required"])
+    assert ideas.caption_lines("Line one.\n\n\n\nLine two.") == "Line one.\n\nLine two."
+
+
 def test_errors_are_readable(monkeypatch, tmp_path):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
