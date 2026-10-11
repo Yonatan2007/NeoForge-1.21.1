@@ -306,3 +306,11 @@ def test_a_bad_opening_is_swapped_and_the_reel_made_again(tmp_path):
     assert "ap-0" not in res and res["ap-1"]["ok"]  # ap-0 is made again by the next autopilot-render
     assert res["ap-2"]["problems"] == ["None of its opening clips worked on screen."]  # held back
     assert [c["key"] for c in json.loads(plan.read_text())["items"][0]["openings"]] == ["m_1"]
+    # a chosen opening: another reel's clip is fine when that reel is days away, not when it is near
+    items = json.loads(plan.read_text())["items"]
+    for it, slot in zip(items, ["2026-10-12T10:00", "2026-10-15T10:00", "2026-10-12T16:00"]):
+        it["slot"] = slot
+    plan.write_text(json.dumps({"items": items}))
+    out = panelrun.autopilot_swap(plan, [], {"ap-2": clip("m_1"), "ap-0": clip("m_1")})
+    assert out["swapped"] == {"ap-0": "m_1", "ap-2": None}  # ap-1 has m_1 3 days away; ap-0 has it 6 h from ap-2
+    assert [x["key"] for x in config.load_project(tmp_path / "ap-0" / "project.json").footage.picks][0] == "m_1"

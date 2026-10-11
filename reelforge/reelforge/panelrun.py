@@ -25,8 +25,9 @@ Autopilot (reels made and scheduled in batches, see autopilot.py):
         Render every reel that has a voice URL, two at a time, and check them
         -> results.json next to the plan.
         Also covers.jpg: every reel's opening with its hook, numbered, to look over.
-    python -m reelforge.panelrun autopilot-swap --plan PLAN --ids ID[,ID...]
-        Another opening clip for those reels; autopilot-render then makes them again.
+    python -m reelforge.panelrun autopilot-swap --plan PLAN --ids ID[,ID...] [--choices FILE]
+        Another opening clip for those reels (the next spare, or the clip FILE
+        names per reel); autopilot-render then makes them again.
     python -m reelforge.panelrun autopilot-posts --plan PLAN --results RES --media MEDIA.json
         Metricool createScheduledPost arguments for the reels that passed.
     python -m reelforge.panelrun autopilot-docs --plan PLAN --results RES --media MEDIA.json
@@ -411,32 +412,52 @@ def _covers_sheet(plan: dict, results: dict, out: Path, width: int = 240, cols: 
     return out
 
 
-def autopilot_swap(plan_path: Path, ids: list[str]) -> dict:
+def autopilot_swap(plan_path: Path, ids: list[str], choices: dict[str, dict] | None = None) -> dict:
     """Give each named reel the next spare opening clip (the rejected one is
     banned) and drop its result so autopilot-render makes it again. A reel
-    with no spare left is held back instead."""
+    with no spare left is held back instead. ``choices`` ({reel id: a clip
+    as footage.pick_of gives it}) sets the opening instead, which may be a
+    clip of another reel unless that reel is within NEAR_HOURS of this one."""
+    from datetime import datetime
+
     plan = _read(plan_path)
     results_path = plan_path.parent / "results.json"
     results = _read(results_path) if results_path.exists() else {}
-    used = {p["key"] for item in plan["items"] for p in _load(Path(item["work"])).footage.picks}
+    picks_of = {item["id"]: {p["key"] for p in _load(Path(item["work"])).footage.picks} for item in plan["items"]}
+    slot_of = {item["id"]: datetime.fromisoformat(item["slot"]) for item in plan["items"] if item.get("slot")}
+    used = set().union(*picks_of.values()) if picks_of else set()
+    choices = choices or {}
     swapped: dict[str, str | None] = {}
     for item in plan["items"]:
-        if item["id"] not in ids:
+        if item["id"] not in ids and item["id"] not in choices:
             continue
         work = Path(item["work"])
         project = _load(work)
-        spare = next((c for c in item.get("openings") or [] if c["key"] not in used), None)
+        if item["id"] in choices:
+            spare = choices[item["id"]]
+            here = slot_of.get(item["id"])
+            near = [other for other, keys in picks_of.items() if other != item["id"] and spare["key"] in keys
+                    and (here is None or other not in slot_of
+                         or abs((slot_of[other] - here).total_seconds()) < NEAR_HOURS * 3600)]
+            if near:
+                swapped[item["id"]] = None
+                continue
+        else:
+            spare = next((c for c in item.get("openings") or [] if c["key"] not in used), None)
         if spare is None:
             entry = results.setdefault(item["id"], {"ok": False})
             entry["problems"] = [*(entry.get("problems") or []), "None of its opening clips worked on screen."]
             swapped[item["id"]] = None
             continue
         old = [p["key"] for p in project.footage.picks if p.get("slot") == "opening"]
-        project.footage.picks = [{**spare, "slot": "opening"}, *(p for p in project.footage.picks if p.get("slot") != "opening")]
-        project.footage.banned = sorted(set(project.footage.banned) | set(old))
+        spare = {k: v for k, v in spare.items() if k not in ("tile", "portrait", "score", "slot")}
+        project.footage.picks = [{**spare, "slot": "opening"},
+                                 *(p for p in project.footage.picks if p.get("slot") != "opening" and p["key"] != spare["key"])]
+        project.footage.banned = sorted((set(project.footage.banned) | set(old)) - {spare["key"]})
         config.save_project(project, work / "project.json")
-        item["openings"] = [c for c in item["openings"] if c["key"] != spare["key"]]
+        item["openings"] = [c for c in item.get("openings") or [] if c["key"] != spare["key"]]
         used.add(spare["key"])
+        picks_of[item["id"]] = {p["key"] for p in project.footage.picks}
         results.pop(item["id"], None)
         swapped[item["id"]] = spare["key"]
     _write(plan_path, plan)
@@ -635,7 +656,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("autopilot-footage").add_argument("--plan", required=True)
     a = sub.add_parser("autopilot-swap")
     a.add_argument("--plan", required=True)
-    a.add_argument("--ids", required=True)
+    a.add_argument("--ids", default="")
+    a.add_argument("--choices", help="JSON file {reel id: clip} with the opening to use")
     a = sub.add_parser("autopilot-posts")
     for flag in ("--plan", "--results", "--media"):
         a.add_argument(flag, required=True)
@@ -662,7 +684,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "autopilot-footage":
         out = autopilot_footage(Path(args.plan).resolve())
     elif args.cmd == "autopilot-swap":
-        out = autopilot_swap(Path(args.plan).resolve(), [i for i in args.ids.split(",") if i])
+        out = autopilot_swap(Path(args.plan).resolve(), [i for i in args.ids.split(",") if i],
+                             _read(args.choices) if args.choices else None)
     elif args.cmd == "autopilot-posts":
         out = autopilot_posts(Path(args.plan), Path(args.results), Path(args.media))
     elif args.cmd == "autopilot-docs":
