@@ -109,3 +109,50 @@ def test_words_bend_with_the_terrain_letter_by_letter():
     assert max(max(g.angle for g in p.glyphs) - min(g.angle for g in p.glyphs) for p in rest) > 0.3
     straight = hook.HookRenderer(timed(), HookStyle(per_glyph=False), _font(), frame, end=5.0)
     assert not any(p.bent for p in straight._items) and all(len(p.glyphs) == 1 for p in straight._items)
+
+
+def _line_extents(placed):
+    rows = {}
+    for p in placed:
+        if p.below:
+            continue
+        xs = [c for g in p.glyphs for c in g.corners()[:, 0]]
+        lo, hi = rows.get(p.line, (np.inf, -np.inf))
+        rows[p.line] = (min(lo, min(xs)), max(hi, max(xs)))
+    return [rows[k] for k in sorted(rows)]
+
+
+def test_wrapped_lines_read_in_order_over_a_wavy_skyline():
+    # A low, wavy skyline (like a band of cloud) under a long hook: the text
+    # wraps, and an upper line used to slide off the end of the line beneath
+    # and land beside it on the left: "patient; you are | you are not being".
+    ridge = ((0, 152), (45, 158), (90, 166), (135, 171), (180, 165), (225, 160), (270, 158),
+             (315, 166), (360, 159), (405, 162), (450, 191), (495, 191), (540, 189))
+    frame, _ = mountains(540, 675, ridge)
+    s = parse_script("You are not being patient; you are secretly keeping score.")
+    for i, w in enumerate(s.words):
+        w.start, w.end = 0.2 * i, 0.2 * i + 0.18
+    r = hook.HookRenderer(s.words, HookStyle(), _font(), frame, end=5.0)
+    lines = _line_extents(r._items)
+    assert r.lines >= 2 and len(lines) == r.lines
+    for (a0, a1), (b0, b1) in zip(lines, lines[1:]):
+        short = min(a1 - a0, b1 - b0)
+        stacked = min(a1, b1) - max(a0, b0) >= 0.5 * short
+        assert stacked or b0 >= a1 - 0.25 * short, "a line reads after the one below it"
+
+
+def test_reading_order_check_and_held_top():
+    frame, _ = mountains()
+    r = hook.HookRenderer(timed(), HookStyle(), _font(), frame, end=5.0)
+
+    def word(i, line, x, y):
+        return hook._Placed(i, "word", 40, 0.0, [hook._Glyph("word", x, y, 0.0, (-50, -40, 50, 0))], False, line)
+
+    assert not r._reads_in_order([word(0, 0, 400, 100), word(1, 1, 150, 110)])  # next line beside, on the left
+    assert r._reads_in_order([word(0, 0, 200, 100), word(1, 1, 220, 150)])      # stacked
+    assert r._reads_in_order([word(0, 0, 150, 100), word(1, 1, 400, 105)])      # one row, in order
+
+    held = r._held_top([word(0, 0, 150, 100), word(1, 0, 350, 80)])
+    assert np.isfinite(held).all()
+    assert held[0] == pytest.approx(60, abs=1) and held[-1] == pytest.approx(40, abs=1)  # ends held level
+    assert 40 <= held[250] <= 60                                                 # the gap is bridged

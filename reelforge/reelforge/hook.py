@@ -907,17 +907,26 @@ class HookRenderer:
             used = max(self._arc_end(words, path), 1.0)
             slack = path.length - used
             if slack > 2.0 and not force:
-                centred = self._lay_line(path, idxs, scale, obstacles, slack / 2, False)
+                shift = slack / 2
+                if li < n - 1:  # a wrapped line: centred over the line beneath it, not the frame
+                    a, b = self._x_extent(words)
+                    lo, hi = self._x_extent([p for p in placed if p.line == li + 1])
+                    left = (lo + hi) / 2 - (b - a) / 2
+                    shift = float(np.clip(np.interp(left, path.x, path.s) - np.interp(a, path.x, path.s),
+                                          0.0, slack))
+                centred = self._lay_line(path, idxs, scale, obstacles, shift, False)
                 if centred is not None:
                     words = centred
             for p in words:
                 p.line = li
             placed[:0] = words
             obstacles += [g.corners() for p in words for g in p.glyphs]
-            terrain = np.minimum(ys, self._ink_top(words))
+            terrain = np.minimum(ys, self._held_top(words))
             lift = (DESCENT + LINE_GAP) * self._typical(lines[li - 1], scale) if li else 0.0
         if self._below:
             placed.append(self._place_below(len(self.words) - 1, scale, placed, obstacles))
+        if not force and not self._reads_in_order(placed):
+            return None
         return placed
 
     @staticmethod
@@ -939,6 +948,39 @@ class HookRenderer:
                     cols = np.clip(np.round(xs).astype(int), 0, self.width - 1)
                     np.minimum.at(top, cols, ys)
         return top
+
+    def _held_top(self, words: list[_Placed]) -> np.ndarray:
+        """``_ink_top`` with the gaps between words bridged and the ends held
+        level out to the frame edges. A line wrapped above this one then
+        stays above it everywhere: beside its ends too, where it would
+        otherwise drop to the same height and read as one row with it."""
+        top = self._ink_top(words)
+        have = np.isfinite(top)
+        if not have.any():
+            return top
+        cols = np.arange(self.width)
+        return np.interp(cols, cols[have], top[have])
+
+    @staticmethod
+    def _x_extent(words: list[_Placed]) -> tuple[float, float]:
+        xs = [c for p in words for g in p.glyphs for c in g.corners()[:, 0]]
+        return (min(xs), max(xs)) if xs else (0.0, 0.0)
+
+    def _reads_in_order(self, placed: list[_Placed]) -> bool:
+        """Whether each wrapped line reads before the next: stacked over it
+        (sharing at least half of the shorter line's width), or beside it on
+        the left, as one row in order. A line beside the next one on its
+        right reads after it ("patient; you are | you are not being")."""
+        rows = sorted({p.line for p in placed if not p.below})
+        for upper, lower in zip(rows, rows[1:]):
+            a0, a1 = self._x_extent([p for p in placed if p.line == upper and not p.below])
+            b0, b1 = self._x_extent([p for p in placed if p.line == lower and not p.below])
+            short = min(a1 - a0, b1 - b0)
+            stacked = min(a1, b1) - max(a0, b0) >= 0.5 * short
+            beside_in_order = b0 >= a1 - 0.25 * short
+            if not (stacked or beside_in_order):
+                return False
+        return True
 
     # ------------------------------------------------------------------ placing words
     def _lay_line(self, path: _Path, idxs: list[int], scale: float, obstacles: list[np.ndarray],
