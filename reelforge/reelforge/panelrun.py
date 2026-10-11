@@ -412,12 +412,13 @@ def _covers_sheet(plan: dict, results: dict, out: Path, width: int = 240, cols: 
     return out
 
 
-def autopilot_swap(plan_path: Path, ids: list[str], choices: dict[str, dict] | None = None) -> dict:
+def autopilot_swap(plan_path: Path, ids: list[str], choices: dict[str, dict] | None = None,
+                   near_hours: float = NEAR_HOURS) -> dict:
     """Give each named reel the next spare opening clip (the rejected one is
     banned) and drop its result so autopilot-render makes it again. A reel
     with no spare left is held back instead. ``choices`` ({reel id: a clip
     as footage.pick_of gives it}) sets the opening instead, which may be a
-    clip of another reel unless that reel is within NEAR_HOURS of this one."""
+    clip of another reel unless that reel is within ``near_hours`` of this one."""
     from datetime import datetime
 
     plan = _read(plan_path)
@@ -438,7 +439,7 @@ def autopilot_swap(plan_path: Path, ids: list[str], choices: dict[str, dict] | N
             here = slot_of.get(item["id"])
             near = [other for other, keys in picks_of.items() if other != item["id"] and spare["key"] in keys
                     and (here is None or other not in slot_of
-                         or abs((slot_of[other] - here).total_seconds()) < NEAR_HOURS * 3600)]
+                         or abs((slot_of[other] - here).total_seconds()) < near_hours * 3600)]
             if near:
                 swapped[item["id"]] = None
                 continue
@@ -658,6 +659,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--plan", required=True)
     a.add_argument("--ids", default="")
     a.add_argument("--choices", help="JSON file {reel id: clip} with the opening to use")
+    a.add_argument("--near-hours", type=float, default=NEAR_HOURS,
+                   help="a chosen clip may be shared with reels further apart than this")
     a = sub.add_parser("autopilot-posts")
     for flag in ("--plan", "--results", "--media"):
         a.add_argument(flag, required=True)
@@ -685,7 +688,7 @@ def main(argv: list[str] | None = None) -> int:
         out = autopilot_footage(Path(args.plan).resolve())
     elif args.cmd == "autopilot-swap":
         out = autopilot_swap(Path(args.plan).resolve(), [i for i in args.ids.split(",") if i],
-                             _read(args.choices) if args.choices else None)
+                             _read(args.choices) if args.choices else None, args.near_hours)
     elif args.cmd == "autopilot-posts":
         out = autopilot_posts(Path(args.plan), Path(args.results), Path(args.media))
     elif args.cmd == "autopilot-docs":
