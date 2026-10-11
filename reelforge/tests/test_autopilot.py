@@ -105,6 +105,9 @@ def test_clips_are_shared_out_so_no_two_reels_repeat_one():
     assert a[0] == {k: v for k, v in clip("m_1").items() if k not in ("tile", "portrait")} | {"slot": "opening"}
     assert [x["key"] for x in a] == ["m_1", "p_1", "p_2", "p_3", "p_4"]
     assert [x["key"] for x in b] == ["m_2", "p_5", "p_6", "p_7"] and c == []
+    reviews[0]["opening"].append(clip("m_3"))
+    spares = ap.spare_openings(reviews, [a, b, c])
+    assert [[x["key"] for x in sp] for sp in spares] == [["m_3"], [], []]  # m_1 and m_2 are taken
 
 
 def test_post_text_fits_instagram():
@@ -179,7 +182,7 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
         mine = [x["key"] for x in p["footage"]["picks"]]
         assert "p_9" not in mine and p["footage"]["picks"][0]["slot"] == "opening"
         keys += mine
-        assert it["voice_request"]["params"]["prompt"].startswith("Hook here?")
+        assert it["voice_request"]["params"]["prompt"].startswith("Hook here?") and it["openings"] == []
     assert len(keys) == len(set(keys))  # no clip in two reels
 
     # renders (faked) -> posts -> documents
@@ -201,11 +204,11 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
                                    tmp_path / "media.json", tmp_path / "covers.json", tmp_path / "mc.json")
     assert docs["statuses"] == {"scheduled": 1, "held": 1, "failed": 1}
     writes = json.loads(open(docs["file"]).read())
-    proj = [w for w in writes if w["collection"] == "projects"]
-    assert len(proj) == 2  # the two reels that rendered
-    doc = json.loads(open(proj[0]["file_path"]).read())
-    assert doc["outputs"] == {"cover": "cov0", "master_url": "https://cdn/0.mp4", "master_media_id": "m0"}
-    assert doc["files"][0]["name"] == "song.mp3" and doc["autopilot"] == items[0]["id"]
+    assert [w["collection"] for w in writes] == ["autopilot"] * 3  # the queue only, not the Reels list
+    doc = json.loads(open(writes[0]["file_path"]).read())
+    assert (doc["status"], doc["cover"], doc["master_url"], doc["master_media_id"]) == ("scheduled", "cov0", "https://cdn/0.mp4", "m0")
+    assert doc["metricool"] == {"id": 1, "uuid": "u1", "plannerUrl": "https://m"} and doc["clips"] == ["m_0"]
+    assert writes[0]["doc_id"] == items[0]["id"] and doc["slot"] == items[0]["slot"]
 
 
 def test_render_runs_each_reel_once_and_checks_it(tmp_path, monkeypatch):
@@ -236,3 +239,32 @@ def test_render_runs_each_reel_once_and_checks_it(tmp_path, monkeypatch):
     assert sorted(v for _, _, v in seen) == ["https://v/0.mp3", "https://v/1.mp3"]
     again = panelrun.autopilot_render(tmp_path / "plan.json", tmp_path / "voices.json", jobs=2)
     assert again["rendered"] == 0  # finished reels aren't rendered twice
+
+
+def test_a_bad_opening_is_swapped_and_the_reel_made_again(tmp_path):
+    from PIL import Image
+
+    items = []
+    for n in range(3):
+        work = tmp_path / f"ap-{n}"
+        work.mkdir()
+        p = config.from_dict(Project, template_project())
+        p.footage.picks = [{**clip(f"m_{n}"), "slot": "opening"}, clip(f"p_{n}")]
+        config.save_project(p, work / "project.json")
+        items.append({"id": f"ap-{n}", "work": str(work), "openings": [clip("m_1"), clip(f"m_{n}9")] if n != 2 else []})
+        Image.new("RGB", (108, 192), (n * 80, 90, 120)).save(work / "cover.jpg")
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"items": items}))
+    results = {f"ap-{n}": {"ok": True, "problems": [], "cover": str(tmp_path / f"ap-{n}" / "cover.jpg")} for n in range(3)}
+    (tmp_path / "results.json").write_text(json.dumps(results))
+    sheet = panelrun._covers_sheet(json.loads(plan.read_text()), results, tmp_path / "covers.jpg", width=60, cols=2)
+    assert Image.open(sheet).size == (2 * 66 + 6, 2 * (107 + 6) + 6)  # 3 covers, 2 a row, numbered
+    out = panelrun.autopilot_swap(plan, ["ap-0", "ap-2"])
+    assert out["swapped"] == {"ap-0": "m_09", "ap-2": None}  # m_1 is ap-1's opening; ap-2 has no spare
+    p0 = config.load_project(tmp_path / "ap-0" / "project.json")
+    assert [x["key"] for x in p0.footage.picks] == ["m_09", "p_0"] and p0.footage.picks[0]["slot"] == "opening"
+    assert "m_0" in p0.footage.banned
+    res = json.loads((tmp_path / "results.json").read_text())
+    assert "ap-0" not in res and res["ap-1"]["ok"]  # ap-0 is made again by the next autopilot-render
+    assert res["ap-2"]["problems"] == ["None of its opening clips worked on screen."]  # held back
+    assert [c["key"] for c in json.loads(plan.read_text())["items"][0]["openings"]] == ["m_1"]

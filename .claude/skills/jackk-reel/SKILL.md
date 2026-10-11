@@ -80,7 +80,8 @@ on Routines, so the "reelforge panel button" Routine is turned off and the
 panel asks the user to type the request here.) That message is the user's own button press: carry
 the task out. (If the user writes "render my reel", "review my clips", "get my
 script ideas" or "check my video" in chat instead, `ArtifactData query tasks`
-where `status == "queued"` and do those.) Batches: do the renders one after
+where `status == "queued"` and do those; "run autopilot" is an Autopilot
+run, below.) Batches: do the renders one after
 another, each with its own work folder. W = a work folder in the scratchpad,
 A = an asset folder; run Python from `reelforge/` (or with `PYTHONPATH` set).
 
@@ -191,10 +192,76 @@ time in time zone `tz`; YouTube `title`) and accounts in `accounts/<id>`
    user to add the saved sound in the app at the saved volumes.
 4. Finish the task: `{status: "done", message, result: {<platform>: {status, message, url?}}}`.
 
+Post the master, never a smaller copy: the render's full file, or the
+project's `master.url` when it has one. After uploading a master to
+Higgsfield, keep it on the project (`update projects/<id>` with
+`{master: {url, media_id}}`) so later posts reuse it.
+
 The panel's Calendar and Stats pages and the best-time picker call Metricool
 themselves (the viewer's own connector), its caption writer asks Claude
 through the Artifact's `sample` capability, and TikTok's status is read with
 the viewer's Higgsfield connector: none of them sends you a task.
+
+### Autopilot runs (`kind: "autopilot"`, or "run autopilot" in chat)
+
+The Autopilot page fills the coming days with reels that Claude writes,
+voices, renders and schedules; Metricool then posts them at their times.
+Settings are in `settings/autopilot` (keys and defaults: `DEFAULTS` in
+`reelforge/autopilot.py`); the queue is `autopilot/<slot id>`. The button
+press (or the user's message) is the go-ahead to make and schedule the reels.
+R = a run folder in the scratchpad, A = the asset folder; run Python from
+`reelforge/` with the Gemini key available (see **ideas** above).
+
+1. Read the task and set it `running` ("Writing the scripts…"). If several
+   autopilot tasks are queued, run the newest and finish the others with
+   "Replaced by a newer run". Read `settings/autopilot` (missing: defaults;
+   the task's `days` / `per_day` win). `enabled: false`: finish the task
+   with "Autopilot is off" and stop.
+2. The template: `settings.template`, or the most recently `updated` project
+   that has a script. `ArtifactData get projects/<id>` with `out_dir`.
+3. Metricool, read only: `getBrandSettings` (brand id, timezone, and whether
+   TikTok is linked: drop `tiktok` from the platforms if not);
+   `getBestTimeToPostByNetwork` per chosen platform for the next 7 days;
+   `getScheduledPosts` from today to today + days + 1.
+4. `ArtifactData list autopilot`: `history` = the latest 40 as `{title,
+   clips}`. `avoid` = the first sentence of every reel's script and every
+   autopilot title; `examples` = the scripts of the 3 latest reels.
+5. Write R/in.json: `{settings, brand: {id, timezone}, template: <the saved
+   doc>, best: {<platform>: {"1": [24 hourly values from midnight], …, "7":
+   […]}}, scheduled: <getScheduledPosts data>, history, avoid, examples}`
+   (best times in this short form: day of week with Monday = 1, values as
+   Metricool gave them). Run `python -m reelforge.panelrun autopilot-prepare
+   R/in.json --assets A --out R/run` (fetch any `need` ids like a stage
+   does). `"slots": 0`: finish with "The next <days> days are already full".
+6. Voices: `generate_audio_batch` with each item's `voice_request.params`
+   unchanged (up to 12 a call; 2.4 credits each), `jobs_wait` until all are
+   done, then R/voices.json = `{<item id>: <result_url>}`. Never resubmit a
+   job whose outcome is unknown; a reel without a voice is left out.
+7. `panelrun autopilot-render --plan R/run/plan.json --voices R/voices.json`
+   in the background (two at a time, a few minutes a reel); update the task
+   message as `results.json` fills ("Made 5 of 21 reels…").
+8. Look at R/run/covers.jpg (each reel's opening with its hook, numbered in
+   plan order). Reels whose words cross a person or object, whose opening
+   is a road, town or building, or whose words are hard to read:
+   `panelrun autopilot-swap --plan R/run/plan.json --ids <id,id>`, then run
+   autopilot-render again (it only redoes those). Two rounds at most.
+9. Masters of the reels that passed: `media_upload` with `files` (up to 20),
+   PUT each (`Content-Type: video/mp4`), `media_confirm` with `media_ids` →
+   R/media.json `{<item id>: {url, media_id}}`. Covers: `Artifact` publish
+   to the panel, `asset: true`, `file_paths` (up to 25) → R/covers.json
+   `{<item id>: <asset id>}`.
+10. `panelrun autopilot-posts --plan … --results … --media R/media.json` →
+    posts.json. For each post `createScheduledPost` with its `blogId`,
+    `date` and `info` exactly as given; R/metricool.json = `{<slot_id>: {id,
+    uuid, plannerUrl}}` from the answers, or `{error}`. Reels listed as
+    `late` are left unscheduled.
+11. `panelrun autopilot-docs --plan … --results … --media … --covers …
+    --metricool R/metricool.json`, then `ArtifactData batch` with its
+    writes.json (50 writes a batch).
+12. Finish the task: `{status: "done", message: "Scheduled 18 reels; 2 wait
+    for your OK; 1 held back", result: {statuses}}` and tell the user in a
+    line or two. In "ask me first" mode the posts are Metricool drafts: the
+    Autopilot page approves or holds them itself.
 
 ### Profile requests (`kind: "profile"`)
 

@@ -24,12 +24,14 @@ Autopilot (reels made and scheduled in batches, see autopilot.py):
     python -m reelforge.panelrun autopilot-render --plan PLAN --voices VOICES.json [--jobs 2]
         Render every reel that has a voice URL, two at a time, and check them
         -> results.json next to the plan.
+        Also covers.jpg: every reel's opening with its hook, numbered, to look over.
+    python -m reelforge.panelrun autopilot-swap --plan PLAN --ids ID[,ID...]
+        Another opening clip for those reels; autopilot-render then makes them again.
     python -m reelforge.panelrun autopilot-posts --plan PLAN --results RES --media MEDIA.json
         Metricool createScheduledPost arguments for the reels that passed.
     python -m reelforge.panelrun autopilot-docs --plan PLAN --results RES --media MEDIA.json
                                                --covers COVERS.json --metricool MC.json
-        The panel's documents (projects/<id>, autopilot/<slot>) as an
-        ArtifactData batch.
+        The panel's queue documents (autopilot/<slot id>) as an ArtifactData batch.
     python -m reelforge.panelrun render --work DIR [--voiceover URL]
         Renders; DIR/progress.json follows it, a DIR/cancel file stops it,
         DIR/result.json holds the result (or the error).
@@ -254,8 +256,9 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
             logging.getLogger("reelforge").warning("footage plan for %s failed: %s", item["id"], exc)
             reviews.append({})
     assigned = ap.assign_clips(reviews, banned=recent)
+    spares = ap.spare_openings(reviews, assigned)
     everyone = {p["key"] for picks in assigned for p in picks}
-    for item, picks in zip(plan["items"], assigned):
+    for item, picks, spare in zip(plan["items"], assigned, spares):
         work = Path(item["work"])
         project = _load(work)
         own = {p["key"] for p in picks}
@@ -264,6 +267,7 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
         config.save_project(project, work / "project.json")
         script = parse_script(project.script, project.auto_emphasis)
         item["picks"] = len(picks)
+        item["openings"] = spare
         item["voice_request"] = voiceover.higgsfield_request(
             script, project.voice.higgsfield_preset,
             project.voice.voice_id or Settings.from_env().higgsfield_voice_id,
@@ -317,8 +321,73 @@ def autopilot_render(plan_path: Path, voices_path: Path, jobs: int = 2) -> dict:
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         done = list(pool.map(one, enumerate(todo)))
     good = [i for i, e in done if e["ok"] and not e["problems"]]
+    sheet = _covers_sheet(plan, results, plan_path.parent / "covers.jpg")
     return {"ok": True, "rendered": len(done), "passed": len(good),
-            "held": {i: e["problems"] for i, e in done if e["problems"]}, "results": str(out)}
+            "held": {i: e["problems"] for i, e in done if e["problems"]}, "results": str(out),
+            "covers": str(sheet) if sheet else None}
+
+
+def _covers_sheet(plan: dict, results: dict, out: Path, width: int = 240, cols: int = 6) -> Path | None:
+    """Every rendered reel's cover (its opening with the hook) on one numbered
+    sheet, to look over before scheduling. Numbers are the plan's order, from 1."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    tiles = []
+    for n, item in enumerate(plan["items"], 1):
+        cover = (results.get(item["id"]) or {}).get("cover")
+        if cover and Path(cover).is_file():
+            with Image.open(cover) as im:
+                tile = im.convert("RGB")
+            tile.thumbnail((width, width * 2))
+            tiles.append((n, tile))
+    if not tiles:
+        return None
+    th = max(t.height for _, t in tiles)
+    cols = min(cols, len(tiles))
+    rows = (len(tiles) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * (width + 6) + 6, rows * (th + 6) + 6), (24, 26, 32))
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default(size=26)
+    for i, (n, tile) in enumerate(tiles):
+        x, y = 6 + (i % cols) * (width + 6), 6 + (i // cols) * (th + 6)
+        sheet.paste(tile, (x, y))
+        draw.rectangle((x, y, x + 44, y + 36), fill=(0, 0, 0))
+        draw.text((x + 8, y + 3), str(n), fill=(255, 255, 255), font=font)
+    sheet.save(out, quality=85)
+    return out
+
+
+def autopilot_swap(plan_path: Path, ids: list[str]) -> dict:
+    """Give each named reel the next spare opening clip (the rejected one is
+    banned) and drop its result so autopilot-render makes it again. A reel
+    with no spare left is held back instead."""
+    plan = _read(plan_path)
+    results_path = plan_path.parent / "results.json"
+    results = _read(results_path) if results_path.exists() else {}
+    used = {p["key"] for item in plan["items"] for p in _load(Path(item["work"])).footage.picks}
+    swapped: dict[str, str | None] = {}
+    for item in plan["items"]:
+        if item["id"] not in ids:
+            continue
+        work = Path(item["work"])
+        project = _load(work)
+        spare = next((c for c in item.get("openings") or [] if c["key"] not in used), None)
+        if spare is None:
+            entry = results.setdefault(item["id"], {"ok": False})
+            entry["problems"] = [*(entry.get("problems") or []), "None of its opening clips worked on screen."]
+            swapped[item["id"]] = None
+            continue
+        old = [p["key"] for p in project.footage.picks if p.get("slot") == "opening"]
+        project.footage.picks = [{**spare, "slot": "opening"}, *(p for p in project.footage.picks if p.get("slot") != "opening")]
+        project.footage.banned = sorted(set(project.footage.banned) | set(old))
+        config.save_project(project, work / "project.json")
+        item["openings"] = [c for c in item["openings"] if c["key"] != spare["key"]]
+        used.add(spare["key"])
+        results.pop(item["id"], None)
+        swapped[item["id"]] = spare["key"]
+    _write(plan_path, plan)
+    _write(results_path, results)
+    return {"ok": True, "swapped": swapped}
 
 
 def autopilot_posts(plan_path: Path, results_path: Path, media_path: Path, now=None) -> dict:
@@ -344,12 +413,13 @@ def autopilot_posts(plan_path: Path, results_path: Path, media_path: Path, now=N
 
 def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers_path: Path,
                    metricool_path: Path) -> dict:
-    """The panel's documents for the batch, as ArtifactData batch writes (one file per document)."""
+    """The panel's queue documents (``autopilot/<slot id>``) for the batch, as
+    ArtifactData batch writes (one file per document). The reels stay out of
+    the Reels list: their videos are on Higgsfield, their covers in the panel."""
     from datetime import datetime, timezone
 
     plan, results, media = _read(plan_path), _read(results_path), _read(media_path)
     covers, mc = _read(covers_path), _read(metricool_path)
-    files = plan.get("files") or []
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     review = plan["settings"]["approval"] == "review"
     folder = plan_path.parent / "docs"
@@ -358,8 +428,8 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
         res = results.get(item["id"]) or {}
         m = media.get(item["id"]) or {}
         post = mc.get(item["id"]) or {}
-        if not res:
-            status = "planned"
+        if not res:  # no voice or no render by the end of the run
+            status, res = "failed", {"problems": ["It wasn't made: its voiceover or render didn't finish."]}
         elif not res.get("ok"):
             status = "failed"
         elif res.get("problems"):
@@ -368,16 +438,6 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
             status = "failed" if post.get("error") else "ready"
         else:
             status = "review" if review else "scheduled"
-        project_path = Path(item["work"]) / "project.json"
-        if res.get("ok") and project_path.exists():
-            project = json.loads(project_path.read_text(encoding="utf-8"))
-            outputs = {k: v for k, v in {"cover": covers.get(item["id"]), "master_url": m.get("url"),
-                                         "master_media_id": m.get("media_id")}.items() if v}
-            doc = {"name": item["title"], "project": project, "files": files, "outputs": outputs,
-                   "created": now, "updated": now, "autopilot": item["id"]}
-            _write(folder / f"project-{item['id']}.json", doc)
-            writes.append({"op": "set", "collection": "projects", "doc_id": item["project_id"],
-                           "file_path": str(folder / f"project-{item['id']}.json")})
         ad = {"slot": item["slot"], "tz": item["tz"], "status": status, "project_id": item["project_id"],
               "title": item["title"], "script": item["script"], "caption": item["caption"],
               "hashtags": item["hashtags"], "youtube_title": item["youtube_title"],
@@ -393,9 +453,8 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
     _write(folder / "writes.json", writes)
     counts: dict[str, int] = {}
     for w in writes:
-        if w["collection"] == "autopilot":
-            st = _read(w["file_path"])["status"]
-            counts[st] = counts.get(st, 0) + 1
+        st = _read(w["file_path"])["status"]
+        counts[st] = counts.get(st, 0) + 1
     return {"ok": True, "writes": len(writes), "file": str(folder / "writes.json"), "statuses": counts}
 
 
@@ -518,6 +577,9 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--plan", required=True)
     a.add_argument("--voices", required=True)
     a.add_argument("--jobs", type=int, default=2)
+    a = sub.add_parser("autopilot-swap")
+    a.add_argument("--plan", required=True)
+    a.add_argument("--ids", required=True)
     a = sub.add_parser("autopilot-posts")
     for flag in ("--plan", "--results", "--media"):
         a.add_argument(flag, required=True)
@@ -541,6 +603,8 @@ def main(argv: list[str] | None = None) -> int:
         out = autopilot_prepare(Path(args.input), Path(args.assets), Path(args.out).resolve())
     elif args.cmd == "autopilot-render":
         out = autopilot_render(Path(args.plan).resolve(), Path(args.voices), args.jobs)
+    elif args.cmd == "autopilot-swap":
+        out = autopilot_swap(Path(args.plan).resolve(), [i for i in args.ids.split(",") if i])
     elif args.cmd == "autopilot-posts":
         out = autopilot_posts(Path(args.plan), Path(args.results), Path(args.media))
     elif args.cmd == "autopilot-docs":

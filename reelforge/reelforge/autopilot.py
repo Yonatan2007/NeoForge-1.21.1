@@ -246,6 +246,13 @@ def assign_clips(reviews: list[dict], banned: set[str] | list[str] = ()) -> list
     return out
 
 
+def spare_openings(reviews: list[dict], assigned: list[list[dict]], limit: int = 4) -> list[list[dict]]:
+    """Each reel's other opening clips that no reel of the batch uses: what a
+    swap tries when the first one doesn't work on screen."""
+    used = {p["key"] for picks in assigned for p in picks}
+    return [[_pick(c) for c in rv.get("opening") or [] if c["key"] not in used][:limit] for rv in reviews]
+
+
 def _pick(c: dict) -> dict:
     return {k: v for k, v in c.items() if k not in ("tile", "portrait")}
 

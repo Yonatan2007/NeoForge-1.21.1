@@ -168,3 +168,20 @@ def test_render_uses_reviewed_picks_first_and_never_banned_clips(tmp_path, monke
     assert used[:2] == ["fake_9", "fake_5"]  # the opening pick, then the reviewed shot pick
     assert len(used) == 5 == len(set(used)) and not {"fake_4", "fake_1"} & set(used)
     assert sorted(paths) == [0, 1, 2, 3, 4] and paths[0].name == "fake_9.mp4" and not warnings
+
+
+def test_hook_shot_prefers_ridges_to_people_and_roads():
+    from reelforge import footage
+    from reelforge.pipeline import _rankers
+
+    def clip(slug):
+        return footage.Candidate("mixkit", "1", f"https://mixkit.co/free-stock-video/{slug}-1/", "u", 1080, 1920, 10, "", None, "q")
+
+    _, skyline = _rankers([])
+    score = {slug: skyline(clip(slug), None) for slug in (
+        "snowy-mountain-peaks-at-sunrise", "mountain-silhouette-at-dusk", "clouds-over-a-lake",
+        "highway-and-gas-station-in-a-flat-and-arid-environment", "man-slowly-descending-rocky-mountain",
+        "two-hikers-on-a-ridge", "mountaineer-at-the-top-observing-the-horizon")}
+    assert score["snowy-mountain-peaks-at-sunrise"] == score["mountain-silhouette-at-dusk"] > score["clouds-over-a-lake"] == 0.0
+    assert 0.0 > score["highway-and-gas-station-in-a-flat-and-arid-environment"] > score["two-hikers-on-a-ridge"]
+    assert score["man-slowly-descending-rocky-mountain"] < 0 and score["mountaineer-at-the-top-observing-the-horizon"] < 0

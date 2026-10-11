@@ -107,6 +107,10 @@ the plan/render shows a warning.
 * **Reference uploads** are not shown in the video: they rank stock clips by
   visual similarity, add colour-based search terms, and (with *Look → match
   uploads*) set the colour grade.
+* **Sharp, not zoomed.** Clips that would have to be enlarged a lot to fill the
+  frame rank lower, and landscape clips can be turned off
+  (`footage.allow_landscape`). The opening shot is picked for a clear ridge
+  for the hook; clips named for people, roads or towns rank lower for it.
 
 ## Settings reference (CLI and `project.json`)
 

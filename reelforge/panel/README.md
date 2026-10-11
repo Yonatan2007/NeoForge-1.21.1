@@ -35,10 +35,18 @@ so the whole app can be used from the Claude app on any device:
   with `GEMINI_API_KEY` in Claude's environment), Render several (one message
   for a batch of renders), the cover picker, "Will it go viral?" (Higgsfield's
   Virality Predictor, a "virality" task) and TikTok's post status.
+* `panel-autopilot.js` adds Autopilot: the settings (reels a day, platforms,
+  posting hours, the reel to copy, format, music, topics, tone, "ask me
+  first"), "Fill the next days" (an "autopilot" task: Claude writes the
+  scripts and posts with Gemini, voices them with Higgsfield, renders them,
+  looks over their openings and schedules them in Metricool at the
+  audience's busiest hours, see `reelforge/autopilot.py`) and the queue,
+  `autopilot/<slot id>`, where a waiting reel is approved or held back with
+  the viewer's Metricool connector.
 * The panel reaches Claude through the Routine in `settings/claude.trigger_id`
   (`fire_trigger`) or a direct `send_message`; when neither is allowed it says
   what to type in the chat.
-* "Preview plan", "Render", "Find clips", "Get ideas", "Will it go viral?", "Publish" and "Change on my accounts" become tasks
+* "Preview plan", "Render", "Find clips", "Get ideas", "Will it go viral?", "Publish", "Fill the next days" and "Change on my accounts" become tasks
   that Claude carries out (`reelforge/panelrun.py`; the procedures are in
   `.claude/skills/jackk-reel/SKILL.md`, "Control panel requests"). The panel
   messages the session named in its `settings/claude` doc, so a new session
@@ -51,6 +59,6 @@ then publish `<dir>/index.html` with every other file in `<dir>` and the
 capabilities `{db: {}, assets: {}, downloads: true, sample: {}, mcp: {servers:
 [{server: "Claude Code Remote", tools: ["send_message", "fire_trigger"]}, {server: "higgsfield",
 tools: ["list_voices", "tiktok_accounts", "tiktok_connect", "tiktok_reconnect",
-"tiktok_music_trending", "tiktok_publish_status"]}, {server: "Metricool Social Media Management", tools:
+"tiktok_music_trending", "tiktok_publish_status", "balance"]}, {server: "Metricool Social Media Management", tools:
 ["getBrandSettings", "getBestTimeToPostByNetwork", "getScheduledPosts",
 "updateScheduledPost", "getAnalyticsDataByMetrics"]}]}}`.

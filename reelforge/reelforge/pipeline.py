@@ -43,6 +43,17 @@ PORTRAIT_WEIGHT = {"9:16": 3.0, "4:5": 3.0, "1:1": 0.5, "16:9": -3.0}  # negativ
 # Extra searches tried for the hook shot; the clearest skyline across all wins.
 HOOK_SEARCHES = ("mountains", "hills", "hiking", "snow mountains")
 SKYLINE_WEIGHT = 12.0     # the hook clip is chosen almost only by its skyline
+# The hook is laid along a ridge: clips named for mountains rank higher for the
+# first shot, ones named for people (who would end up under the words) or for
+# roads and towns (a flat, busy horizon) lower.
+HOOK_PEOPLE = {"people", "person", "man", "men", "woman", "women", "girl", "boy", "couple", "crowd", "kid",
+               "child", "children", "family", "friends", "lady", "guy", "human", "hiker", "climber",
+               "mountaineer", "tourist", "traveler", "backpacker", "runner", "cyclist", "skier", "surfer",
+               "dancing", "model"}
+HOOK_BUILT = {"highway", "road", "gas", "station", "town", "city", "street", "building", "car", "traffic",
+              "bridge", "village", "house"}
+HOOK_TERRAIN = {"mountain", "peak", "ridge", "summit", "hill", "cliff", "range", "alps", "volcano", "dune", "canyon"}
+HOOK_PEOPLE_PENALTY, HOOK_BUILT_PENALTY, HOOK_TERRAIN_BONUS = SKYLINE_WEIGHT, 4.0, 2.0
 REFERENCE_WEIGHT = 5.0    # similarity to the reference look steers every other pick
 
 
@@ -370,7 +381,9 @@ def _rankers(ref_sigs: list):
         return REFERENCE_WEIGHT * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
 
     def skyline(c, img) -> float:
-        return (SKYLINE_WEIGHT * hookmod.skyline_score(img) if img is not None else 0.0) + likeness(c, img)
+        named = (HOOK_TERRAIN_BONUS * footage.describes(c, HOOK_TERRAIN) - HOOK_PEOPLE_PENALTY * footage.describes(c, HOOK_PEOPLE)
+                 - HOOK_BUILT_PENALTY * footage.describes(c, HOOK_BUILT))
+        return (SKYLINE_WEIGHT * hookmod.skyline_score(img) if img is not None else 0.0) + likeness(c, img) + named
 
     return likeness, skyline
 
