@@ -227,8 +227,9 @@ HOOK = Section("hook", "Hook", "The opening sentence, laid along the skyline of 
          -40, 120, "px"),
     _int(H + "margin", "Side margin", "Keep the hook this far from the left and right edges." + PX_NOTE,
          0, 200, "px", advanced=True),
-    _bool(H + "per_glyph", "Bend letters around peaks", "Place single letters one by one around sharp "
-          "peaks, like \"w o u l d\" in the reference.", advanced=True),
+    _bool(H + "per_glyph", "Bend words with the terrain", "Each letter sits on the ridge and leans with it, "
+          "so words curve along the mountains (letters fan out around peaks, like \"w o u l d\"). "
+          "Off: each word stays straight and only tilts."),
     _bool(H + "last_word_below", "Drop the last word below", "Show the final word large, under the end "
           "of the line (\"are?\" in the reference)."),
     _num(H + "hold", "Keep on screen", "How long the hook stays after its last word is spoken.",

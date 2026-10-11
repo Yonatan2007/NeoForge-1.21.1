@@ -179,6 +179,7 @@ def _write(path: Path, data) -> None:
 def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
     """Plan a batch: slots, scripts with their posts, a work folder per reel
     (project.json and uploads) with its stock clips assigned."""
+    import random
     import secrets
     from datetime import datetime, timedelta
 
@@ -191,16 +192,25 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
     brand = data.get("brand") or {}
     tz = brand.get("timezone") or "UTC"
     template = _doc_body(data["template"])
-    files = list({f["name"]: f for f in [*(template.get("files") or []), *(data.get("files") or [])]}.values())
-    need = _missing(files, assets)
-    if need:
-        return {"need": need}
     now = datetime.fromisoformat(data["now"]) if data.get("now") else ap.now_in(tz)
     best = data.get("best") or {}
     grid = ap.combine([ap.grid_of(best.get(p)) for p in settings["platforms"] if best.get(p)])
     taken = ap.taken_slots(data.get("scheduled") or [], tz)
     slots = ap.pick_slots(grid, now.date(), settings["days"], settings["per_day"], settings["window"],
                           settings["min_gap"], taken, earliest=now + timedelta(hours=3))
+    history = data.get("history") or []
+    template_project = template["project"]
+    tsong = (template_project.get("music") or {}).get("file")
+    # the same picks when this runs again after fetching files (seeded by the day)
+    songs = ap.pick_songs(settings, len(slots), tsong, data.get("library"),
+                          [h["song"] for h in history if h.get("song")], random.Random(str(data.get("seed") or now.date())))
+    picked = {song["name"] for song in songs if isinstance(song, dict)}
+    library = [{"name": song["name"], "store": song["store"]} for song in ap.library_songs(data.get("library"))
+               if song["name"] in picked]
+    files = list({f["name"]: f for f in [*(template.get("files") or []), *(data.get("files") or []), *library]}.values())
+    need = _missing(files, assets)
+    if need:
+        return {"need": need}
     plan = {"tz": tz, "brand_id": str(brand.get("id") or ""), "settings": settings,
             "template_id": data["template"].get("id") or data.get("template_id"), "model": None,
             "files": files, "items": []}
@@ -209,7 +219,6 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
         return {"ok": True, "slots": 0, "plan": str(out / "plan.json")}
 
     # scripts and posts: Gemini (or ideas the caller wrote, when the user chose that)
-    history = data.get("history") or []
     avoid = [*(data.get("avoid") or []), *(h.get("title", "") for h in history)]
     written = list(data.get("ideas") or [])
     writer = writer or ideas.generate
@@ -225,8 +234,6 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
     up = out / "_uploads"
     _unpack(files, assets, up)
     recent = [k for h in history[-40:] for k in h.get("clips") or []]
-    template_project = template["project"]
-    tsong = (template_project.get("music") or {}).get("file")
     st = _settings(out / "x")
     for i, (slot, idea) in enumerate(zip(slots, written)):
         sid = ap.slot_id(slot)
@@ -237,7 +244,7 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
             if not link.exists():
                 link.symlink_to(f.resolve())
         project = ap.build_project(template_project, idea["script"], idea["title"],
-                                   music=ap.pick_song(settings, i, tsong), banned=recent, fmt=settings["format"])
+                                   music=songs[i], banned=recent, fmt=settings["format"])
         config.save_project(config.from_dict(Project, project), work / "project.json")
         plan["items"].append({
             "id": sid, "slot": slot.strftime("%Y-%m-%dT%H:%M"), "tz": tz, "title": idea["title"],
@@ -441,7 +448,8 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
         ad = {"slot": item["slot"], "tz": item["tz"], "status": status, "project_id": item["project_id"],
               "title": item["title"], "script": item["script"], "caption": item["caption"],
               "hashtags": item["hashtags"], "youtube_title": item["youtube_title"],
-              "platforms": plan["settings"]["platforms"], "master_url": m.get("url"),
+              "platforms": plan["settings"]["platforms"], "song": Path(item["song"]).name if item.get("song") else None,
+              "master_url": m.get("url"),
               "master_media_id": m.get("media_id"), "cover": covers.get(item["id"]),
               "cover_ms": res.get("cover_ms"), "duration": res.get("duration"), "clips": res.get("clips") or [],
               "problems": res.get("problems") or ([post["error"]] if post.get("error") else []),

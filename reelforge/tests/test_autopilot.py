@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import date, datetime
 
@@ -87,9 +88,29 @@ def test_a_new_reel_keeps_the_templates_look_with_a_fresh_script():
     assert ap.build_project(t, "a", "b", music=None)["music"]["file"] is None
     rotated = ap.build_project(t, "a", "b", music="uploads/other.mp3")["music"]
     assert (rotated["file"], rotated["source_in"]) == ("uploads/other.mp3", 0)
-    s = ap.settings_of({"music": "rotate", "songs": ["a.mp3", "b.mp3"]})
-    assert [ap.pick_song(s, i, "uploads/song.mp3") for i in range(3)] == ["uploads/a.mp3", "uploads/b.mp3", "uploads/a.mp3"]
-    assert ap.pick_song(ap.settings_of({"music": "none"}), 0, "x") is None
+    lib = ap.build_project(t, "a", "b", music={"name": "x.mp3", "file": "uploads/x.mp3", "start": 12.5})["music"]
+    assert (lib["file"], lib["source_in"], lib["source_out"]) == ("uploads/x.mp3", 12.5, None)
+
+
+def song(name, **kw):
+    return {"name": name, "store": {"type": "b64", "ids": [f"id-{name}"]}, **kw}
+
+
+def test_library_songs_are_dealt_at_random_like_cards():
+    import random
+    library = [song("a.mp3"), song("b.mp3", start=7), {"id": "x", "data": song("c.mp3")}, song("off.mp3", enabled=False)]
+    s = ap.settings_of({"music": "random"})
+    picks = ap.pick_songs(s, 7, "uploads/t.mp3", library, recent=["a.mp3", "b.mp3"], rng=random.Random(3))
+    names = [p["name"] for p in picks]
+    assert sorted(names[:3]) == ["a.mp3", "b.mp3", "c.mp3"] and sorted(names[3:6]) == ["a.mp3", "b.mp3", "c.mp3"]
+    assert names[0] == "c.mp3" and names[1:3] == ["a.mp3", "b.mp3"]  # never heard first, the latest last
+    assert all(x != y for x, y in zip(names, names[1:])) and "off.mp3" not in names
+    assert picks[names.index("b.mp3")] == {"name": "b.mp3", "file": "uploads/b.mp3", "start": 7.0}
+    assert ap.pick_songs(s, 2, "uploads/t.mp3", [], rng=random.Random(1)) == [True, True]  # empty library: its song
+    assert ap.pick_songs(s, 1, None, []) == [None]
+    assert ap.pick_songs(ap.settings_of({"music": "none"}), 2, "x", library) == [None, None]
+    assert ap.pick_songs(ap.settings_of({"music": "template"}), 1, "x", library) == [True]
+    assert ap.settings_of({"music": "rotate"})["music"] == "random" and ap.settings_of(None)["music"] == "random"
 
 
 def clip(key, w=1080, h=1920):
@@ -148,13 +169,15 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
     (assets / "abc123.mp3").write_bytes(b"ID3 song")
     template = {"id": "tpl-1", "data": {"project": template_project(),
                                        "files": [{"name": "song.mp3", "store": {"type": "raw", "ids": ["abc123"]}}]}}
+    (assets / "id-lib1.mp3").write_text(base64.b64encode(b"ID3 one").decode())  # the panel keeps songs as base64
     inp = tmp_path / "in.json"
     inp.write_text(json.dumps({
         "settings": {"per_day": 2, "days": 2, "platforms": ["instagram", "youtube"]},
         "brand": {"id": "7327885", "timezone": "Asia/Jerusalem"},
         "template": template, "best": {"instagram": grid({19: 100, 12: 90})},
         "scheduled": [{"publicationDate": {"dateTime": "2026-10-12T19:00:00", "timezone": "Asia/Jerusalem"}}],
-        "history": [{"title": "Old one", "clips": ["p_9"]}], "now": "2026-10-12T08:00"}))
+        "history": [{"title": "Old one", "clips": ["p_9"]}], "now": "2026-10-12T08:00",
+        "library": [song("lib1.mp3", start=3), song("lib2.mp3")]}))
     calls = []
 
     def writer(**kw):
@@ -164,6 +187,9 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
                                                   "why": "", "caption": "Cap", "hashtags": ["x"], "youtube_title": "YT"}
                                                  for i in range(n)]}
 
+    need = panelrun.autopilot_prepare(inp, assets, tmp_path / "run", writer=writer)
+    assert need == {"need": ["id-lib2.mp3"]} and not calls  # the picked songs' files come first, Gemini after
+    (assets / "id-lib2.mp3").write_text(base64.b64encode(b"ID3 two").decode())
     pools = iter(range(100))
     monkeypatch.setattr(pipeline, "review_footage", lambda project, work, settings, out: {
         "opening": [clip(f"m_{next(pools)}")], "pool": [clip("p_9"), *(clip(f"p_{next(pools)}") for _ in range(4))],
@@ -183,7 +209,10 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
         assert "p_9" not in mine and p["footage"]["picks"][0]["slot"] == "opening"
         keys += mine
         assert it["voice_request"]["params"]["prompt"].startswith("Hook here?") and it["openings"] == []
+        assert p["music"]["file"] == it["song"] and (work / it["song"]).read_bytes().startswith(b"ID3")
     assert len(keys) == len(set(keys))  # no clip in two reels
+    songs = [it["song"] for it in items]
+    assert set(songs) == {"uploads/lib1.mp3", "uploads/lib2.mp3"} and songs[0] != songs[1]
 
     # renders (faked) -> posts -> documents
     results = {items[0]["id"]: {"ok": True, "problems": [], "cover_ms": 2000, "duration": 40, "clips": ["m_0"],
@@ -209,6 +238,7 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
     assert (doc["status"], doc["cover"], doc["master_url"], doc["master_media_id"]) == ("scheduled", "cov0", "https://cdn/0.mp4", "m0")
     assert doc["metricool"] == {"id": 1, "uuid": "u1", "plannerUrl": "https://m"} and doc["clips"] == ["m_0"]
     assert writes[0]["doc_id"] == items[0]["id"] and doc["slot"] == items[0]["slot"]
+    assert doc["song"] == items[0]["song"].split("/")[-1]  # next runs avoid songs heard lately
 
 
 def test_render_runs_each_reel_once_and_checks_it(tmp_path, monkeypatch):

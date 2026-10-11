@@ -224,15 +224,19 @@ R = a run folder in the scratchpad, A = the asset folder; run Python from
    `getBestTimeToPostByNetwork` per chosen platform for the next 7 days;
    `getScheduledPosts` from today to today + days + 1.
 4. `ArtifactData list autopilot`: `history` = the latest 40 as `{title,
-   clips}`. `avoid` = the first sentence of every reel's script and every
-   autopilot title; `examples` = the scripts of the 3 latest reels.
+   clips, song}`. `avoid` = the first sentence of every reel's script and
+   every autopilot title; `examples` = the scripts of the 3 latest reels.
+   `ArtifactData list music` → `library` (the songs of the Music page, as
+   saved: `{name, store, start, enabled}`); with `music: "random"` each reel
+   gets one of them, dealt like cards (none repeats before the others).
 5. Write R/in.json: `{settings, brand: {id, timezone}, template: <the saved
    doc>, best: {<platform>: {"1": [24 hourly values from midnight], …, "7":
-   […]}}, scheduled: <getScheduledPosts data>, history, avoid, examples}`
+   […]}}, scheduled: <getScheduledPosts data>, history, avoid, examples,
+   library}`
    (best times in this short form: day of week with Monday = 1, values as
    Metricool gave them). Run `python -m reelforge.panelrun autopilot-prepare
    R/in.json --assets A --out R/run` (fetch any `need` ids like a stage
-   does). `"slots": 0`: finish with "The next <days> days are already full".
+   does: the template's files and the songs picked for this run). `"slots": 0`: finish with "The next <days> days are already full".
 6. Voices: `generate_audio_batch` with each item's `voice_request.params`
    unchanged (up to 12 a call; 2.4 credits each), `jobs_wait` until all are
    done, then R/voices.json = `{<item id>: <result_url>}`. Never resubmit a

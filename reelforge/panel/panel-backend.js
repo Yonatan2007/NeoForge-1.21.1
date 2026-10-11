@@ -3,6 +3,8 @@
  * api.js, but kept inside the claude.ai Artifact instead of a local server.
  *
  *   projects/<id>   {name, updated, project, files: [record], outputs: {key: assetId}}
+ *   music/<id>      the music library: a song's record {name, kind, info, size, store, peaks}
+ *                   plus {start (seconds into the song), enabled (dealt by Autopilot), created}
  *   settings/defaults {project}
  *   tasks/<id>      {kind: "plan" | "render" | "review", project_id, status, stage, progress,
  *                    message, log, result, error, cancel_requested, created}
@@ -473,6 +475,8 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
       }
       Object.values(d.outputs || {}).forEach((x) => x && ids.add(x));
     }
+    const music = await retrying(() => db.collection("music").get());
+    for (const doc of music.docs) recordIds(doc.data()).forEach((x) => ids.add(x));  // library songs stay
     return ids;
   }
 
@@ -503,6 +507,53 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
       project.footage.items.push({ ...clone(data.footageItem), path: rel, role, kind });
     }
   }
+
+  // ---- the music library: songs kept once, used by any reel, dealt at random by Autopilot
+
+  const M = (id) => db.doc(`music/${id}`);
+
+  async function listSongs() {
+    const snap = await retrying(() => db.collection("music").get());
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => String(a.created).localeCompare(String(b.created)));
+  }
+
+  async function addSong(file, { onProgress, signal } = {}) {
+    const progress = (f) => onProgress && onProgress(Math.max(0, Math.min(1, f)));
+    const check = () => {
+      if (signal && signal.aborted) throw new DOMException("Upload cancelled", "AbortError");
+    };
+    const name0 = file.name || "song";
+    const kind = kindOf(file);
+    if (!["audio", "video"].includes(kind)) throw unprocessable(`“${name0}” isn't a song: please add an audio file.`, 415);
+    if (!file.size) throw unprocessable("The file is empty.");
+    if (file.size > data.meta.max_upload_mb * 1e6) throw unprocessable(`The file is too big: the limit is ${data.meta.max_upload_mb} MB.`, 413);
+    progress(0.02);
+    const { info } = await probe(file, kind);
+    const peaks = await computePeaks(file);
+    if (peaks && info.duration == null) info.duration = peaks.duration;
+    check();
+    const store = await storeFile(file, mimeOf(file), (f) => progress(0.05 + 0.9 * f), check);
+    const name = uniqueName(await listSongs(), safeName(name0));
+    const id = `${slug(stemOf(name))}-${hex(3)}`;
+    const doc = { name, kind, info, size: file.size, store, peaks: peaks || null, start: 0, enabled: true, created: nowIso() };
+    await retrying(() => M(id).set(doc));
+    if (store.type === "b64") resolved.set(store.ids[0], URL.createObjectURL(new Blob([file], { type: store.mime })));
+    progress(1);
+    return { id, ...doc };
+  }
+
+  const updateSong = (id, patch) => retrying(() => M(id).update({ ...patch, updated: nowIso() }));
+
+  async function deleteSong(id) {
+    const snap = await retrying(() => M(id).get());
+    if (!snap.exists) return;
+    const song = snap.data();
+    await retrying(() => M(id).delete());
+    await deleteAssets(recordIds(song), await referencedIds(null));  // reels using it keep it
+  }
+
+  /** Where a library song can be played (base64 songs are decoded once per page). */
+  const songUrl = (song) => (song.store.type === "raw" ? Promise.resolve(blobUrl(song.store.ids[0])) : resolveB64(song.store));
 
   // ---- tasks (plans and renders, done by Claude) --------------------------------------
 
@@ -646,7 +697,8 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
 
     // for the control panel's own pages (publishing, accounts)
     _panel: { db, assets, mcp, sample, data, retrying, storeError, uploadAsset, storeFile, resolveB64, probe,
-              blobUrl, newTask, newTasks, askFor, nowIso, hex, mimeOf, kindOf, safeName, clone, urlOf, routing },
+              blobUrl, newTask, newTasks, askFor, nowIso, hex, mimeOf, kindOf, safeName, clone, urlOf, routing,
+              listSongs, addSong, updateSong, deleteSong, songUrl },
 
     meta: async () => clone(data.meta),
     schema: async () => clone(data.schema),
@@ -786,6 +838,30 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
       }
       progress(1);
       return { project: d.project, file: { ...fileView(rec, d.project), peaks: peaks || null } };
+    },
+
+    /** The music library's songs a reel can use (panel only: the Music tab offers them when present). */
+    musicLibrary: async () => (await listSongs()).filter((song) => song.enabled !== false)
+      .map(({ id, name, info, start }) => ({ id, name, duration: (info && info.duration) || null, start: start || 0 })),
+
+    /** Make a library song the reel's music: its record is shared, nothing is uploaded again. */
+    useLibrarySong: async (projectId, songId) => {
+      const snap = await retrying(() => M(songId).get());
+      if (!snap.exists) throw notFound(`song ${songId}`);
+      const song = snap.data();
+      const d = await load(projectId);
+      d.files = d.files || [];
+      let rec = d.files.find((f) => f.store && f.store.ids && f.store.ids[0] === song.store.ids[0]);
+      if (!rec) {
+        const name = uniqueName(d.files, song.name);
+        rec = { name, path: `uploads/${name}`, kind: song.kind || "audio", info: song.info || {}, size: song.size,
+                uploaded: nowIso(), store: song.store, thumb: null, peaks: song.peaks || null, library: songId };
+        d.files.push(rec);
+      }
+      attach(d.project, rec.path, "music", rec.kind, null, rec.name);
+      d.project.music.source_in = Number(song.start) || 0;
+      await save(projectId, d);
+      return { project: d.project, file: { ...fileView(rec, d.project), peaks: rec.peaks || null } };
     },
 
     deleteUpload: async (projectId, name) => {

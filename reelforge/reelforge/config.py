@@ -136,7 +136,7 @@ class HookStyle:
     shadow: bool = False                   # the reference hook has no shadow
     offset: int = 8                        # gap between the contour and the text baseline, px
     margin: int = 36                       # left/right safe margin, px
-    per_glyph: bool = True                 # bend single letters around sharp peaks
+    per_glyph: bool = True                 # bend words letter by letter along the terrain
     last_word_below: bool = True           # drop the final word large under the line end ("are?")
     hold: float = 0.6                      # keep the hook text this long after its last word
     min_confidence: float = 0.35           # weaker skylines use the fallback pattern

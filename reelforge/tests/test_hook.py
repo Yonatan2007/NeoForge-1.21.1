@@ -95,3 +95,17 @@ def test_overlay_is_fast_enough_for_video():
         r.overlay(frame, 3.0 + k / 30)
     assert (time.perf_counter() - t0) / 20 < 0.05
     assert r.preview().size == (1080, 1920)
+
+
+def test_words_bend_with_the_terrain_letter_by_letter():
+    frame, _ = mountains()
+    words = timed()
+    r = hook.HookRenderer(words, HookStyle(), _font(), frame, end=5.0)
+    on_ridge = [p for p in r._items if not p.below]
+    first, rest = on_ridge[0], [p for p in on_ridge[1:] if len(p.text) > 1]
+    assert not first.bent and len(first.glyphs) == 1  # the big opening word stays one piece
+    assert rest and all(p.bent and len(p.glyphs) > 1 for p in rest)
+    # the letters of a word over a peak lean differently: the word curves, it doesn't just tilt
+    assert max(max(g.angle for g in p.glyphs) - min(g.angle for g in p.glyphs) for p in rest) > 0.3
+    straight = hook.HookRenderer(timed(), HookStyle(per_glyph=False), _font(), frame, end=5.0)
+    assert not any(p.bent for p in straight._items) and all(len(p.glyphs) == 1 for p in straight._items)

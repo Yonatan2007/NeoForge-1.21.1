@@ -6,7 +6,8 @@ each script with its caption, hashtags and YouTube title. Each reel is a copy
 of the user's template reel with the new script, so the look, voice, captions,
 music and footage searches stay the same; the stock clips are planned for the
 whole batch at once so no two reels share a clip, and clips used by recent
-autopilot reels are ruled out so the feed keeps changing.
+autopilot reels are ruled out so the feed keeps changing. The music comes
+from the user's music library, dealt at random like cards.
 
 The steps that need the user's connectors (the Higgsfield voice and upload,
 Metricool's scheduling) are done by Claude in its session; ``panelrun
@@ -14,14 +15,16 @@ autopilot-*`` does the rest (see panelrun.py and the jackk-reel skill).
 
 Panel documents:
     settings/autopilot   the user's settings (``DEFAULTS``)
+    music/<id>           the music library: {name, store, start (seconds into the song), enabled, ...}
     autopilot/<slot id>  one reel: {slot, tz, status, project_id, title, script, caption, hashtags,
-                         youtube_title, platforms, master_url, master_media_id, cover, cover_ms,
+                         youtube_title, platforms, song, master_url, master_media_id, cover, cover_ms,
                          metricool: {id, uuid, plannerUrl}, clips, problems, created, updated}
 """
 from __future__ import annotations
 
 import copy
 import json
+import random
 import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -36,8 +39,7 @@ DEFAULTS = {
     "min_gap": 3,                   # hours between two reels
     "template": None,               # project id whose look, voice and music are copied
     "format": "template",           # "template" | "9:16" | "4:5" (4:5 with black bars)
-    "music": "template",            # "template" | "rotate" (through ``songs``) | "none"
-    "songs": [],                    # upload file names to rotate through
+    "music": "random",              # "random" (from the music library) | "template" (its song) | "none"
     "topic": "",
     "tone": "",
     "ai_label": False,              # label the posts as AI-generated on the platforms
@@ -67,8 +69,8 @@ def settings_of(raw: dict | None) -> dict:
     s["platforms"] = [p for p in dict.fromkeys(s["platforms"] or []) if p in PLATFORMS] or ["instagram"]
     s["approval"] = "review" if s["approval"] == "review" else "auto"
     s["format"] = s["format"] if s["format"] in ("template", "9:16", "4:5") else "template"
-    s["music"] = s["music"] if s["music"] in ("template", "rotate", "none") else "template"
-    s["songs"] = [str(x) for x in s["songs"] or []]
+    s["music"] = "random" if s["music"] == "rotate" else s["music"] if s["music"] in ("random", "template", "none") \
+        else "random"
     try:
         start, end = (_minutes(x) for x in list(s["window"] or [])[:2])
     except (TypeError, ValueError):
@@ -181,11 +183,12 @@ def taken_slots(posts: list[dict], tz: str) -> list[datetime]:
 
 # --------------------------------------------------------------------------- what to post
 
-def build_project(template: dict, script: str, title: str, *, music: str | bool | None = True,
+def build_project(template: dict, script: str, title: str, *, music: str | dict | bool | None = True,
                   banned: list[str] | set[str] = (), fmt: str = "template") -> dict:
     """A new reel from the template's settings: the same look, voice and
     searches with a new script. ``music`` True keeps the template's song, a
-    string uses that upload path, None means no music. The template's own clips
+    library pick (``pick_songs``) or a string upload path uses that song, None
+    means no music. The template's own clips
     stay with it (only its reference pictures carry over), and landscape clips
     are left out: in a tall frame they look zoomed in."""
     p = copy.deepcopy(template)
@@ -206,19 +209,51 @@ def build_project(template: dict, script: str, title: str, *, music: str | bool 
     m = p.setdefault("music", {})
     if music is None:
         m["file"] = None
+    elif isinstance(music, dict):
+        m.update(file=music["file"], source_in=float(music.get("start") or 0), source_out=None)
     elif isinstance(music, str) and music != m.get("file"):
         m.update(file=music, source_in=0, source_out=None)
     return p
 
 
-def pick_song(settings: dict, index: int, template_song: str | None) -> str | bool | None:
-    """The music for the ``index``-th reel of a run: the template's, the next
-    of the rotation (an upload path), or None for none."""
+def library_songs(library: list[dict] | None) -> list[dict]:
+    """The usable songs of the music library (documents as saved, or wrapped as ArtifactData returns them)."""
+    out = []
+    for raw in library or []:
+        song = raw["data"] if isinstance(raw.get("data"), dict) and "store" in raw["data"] else raw
+        if song.get("name") and song.get("store") and song.get("enabled", True):
+            out.append(song)
+    return out
+
+
+def pick_songs(settings: dict, count: int, template_song: str | None, library: list[dict] | None,
+               recent: list[str] | tuple = (), rng: random.Random | None = None) -> list:
+    """The music of ``count`` new reels, each None (no music), True (the
+    template's song) or a library song {name, file, start}. Library songs are
+    dealt like cards: every song once, in random order with the ones heard
+    lately (``recent``, oldest first) last, before any song comes again, and
+    never the same song twice in a row. An empty library falls back to the
+    template's song."""
     if settings["music"] == "none":
-        return None
-    if settings["music"] == "rotate" and settings["songs"]:
-        return f"uploads/{settings['songs'][index % len(settings['songs'])]}"
-    return True if template_song else None
+        return [None] * count
+    songs = library_songs(library)
+    if settings["music"] == "template" or not songs:
+        return [True if template_song else None] * count
+    rng = rng or random.Random()
+    last_heard = {name: i for i, name in enumerate(recent or [])}
+    out: list = []
+    deck: list[dict] = []
+    while len(out) < count:
+        if not deck:
+            deck = songs[:]
+            rng.shuffle(deck)
+            if not out:  # the first deal puts the songs heard lately at the bottom
+                deck.sort(key=lambda song: last_heard.get(song["name"], -1))
+            if out and len(deck) > 1 and deck[0]["name"] == out[-1]["name"]:
+                deck.append(deck.pop(0))
+        song = deck.pop(0)
+        out.append({"name": song["name"], "file": f"uploads/{song['name']}", "start": float(song.get("start") or 0)})
+    return out
 
 
 def assign_clips(reviews: list[dict], banned: set[str] | list[str] = ()) -> list[list[dict]]:

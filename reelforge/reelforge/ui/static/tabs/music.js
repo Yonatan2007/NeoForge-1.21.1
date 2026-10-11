@@ -1,5 +1,6 @@
 /**
- * Music tab: upload a track, choose the part of the song on its waveform
+ * Music tab: upload a track (or take one from the music library, where the
+ * backend has one), choose the part of the song on its waveform
  * (source_in..source_out), place it on the video timeline (start_at..end_at)
  * and set level, fades, looping and ducking.
  */
@@ -12,6 +13,7 @@ import { icon } from "../icons.js";
 import { lengthPlan, parseScript } from "../script-model.js";
 import {
   fileUrl, on, optional, projectBinding, removeUpload, schemaSections, setValue, state, supports, uploadFor,
+  useLibrarySong,
 } from "../store.js";
 import { RangeTrack, axis, drawWaveform } from "../waveform.js";
 
@@ -39,6 +41,46 @@ function secondsInput({ id, label, value, placeholder = "", onCommit }) {
     if (document.activeElement !== input) input.value = v == null ? "" : round1(v).toFixed(1);
   };
   return { input, el: h("div", { class: "field field-compact" }, h("label", { class: "field-label", for: id }, label), h("div", { class: "input-group" }, input, h("span", { class: "input-suffix" }, "s"))) };
+}
+
+/**
+ * The music library's songs (backends that keep one): a random song, or a
+ * chosen one, becomes the reel's music. Null when there is no library.
+ */
+function libraryPicker(current, onPicked) {
+  if (typeof api.musicLibrary !== "function") return null;
+  const box = h("div", { class: "library-pick" }, h("p", { class: "muted small" }, "Loading your music library…"));
+  api.musicLibrary().then((songs) => {
+    if (!songs.length) {
+      box.replaceChildren(h("p", { class: "muted small" }, "Songs you add on the ",
+        h("a", { href: "#/x/music" }, "Music page"), " can be used here with one tap."));
+      return;
+    }
+    const use = async (song, btn) => {
+      if (btn) btn.classList.add("is-loading");
+      try {
+        await useLibrarySong(song.id);
+        toast(`Music: ${song.name}`, { kind: "success" });
+        onPicked();
+      } catch (err) {
+        toastError("Could not use that song", err);
+      } finally {
+        if (btn) btn.classList.remove("is-loading");
+      }
+    };
+    const others = songs.filter((song) => song.name !== current);
+    const pool = others.length ? others : songs;
+    const random = button("Random song", { icon: "refresh", onClick: () => use(pool[Math.floor(Math.random() * pool.length)], random) });
+    const select = h("select", { class: "input select", "aria-label": "Choose a song from your music library" },
+      h("option", { value: "" }, `Or choose one of your ${songs.length} song${songs.length === 1 ? "" : "s"}`),
+      songs.map((song) => h("option", { value: song.id }, song.name)));
+    select.addEventListener("change", () => {
+      const song = songs.find((x) => x.id === select.value);
+      if (song) use(song, null);
+    });
+    box.replaceChildren(h("div", { class: "row row-wrap" }, random, select));
+  }).catch(() => box.remove());
+  return box;
 }
 
 async function loadPeaks(path, uploadInfo) {
@@ -273,6 +315,12 @@ export function render(panel) {
         supports("upload")
           ? [dropzone({ accept: "audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac", title: "Drop a song here, or browse", hint: "MP3, WAV, M4A, OGG, FLAC", iconName: "music", onFiles: upload }), progress]
           : callout("info", "This server does not accept uploads.")));
+      const library = libraryPicker(null, draw);
+      if (library) {
+        body.append(h("section", { class: "card", "aria-labelledby": "music-library" },
+          h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "music-library" }, "From your music library"),
+            h("p", { class: "card-sub" }, "Songs you keep in the panel, ready for any reel.")), library));
+      }
       body.append(callout("info", "No music? That’s fine: the reel uses only the voice."));
       return;
     }
@@ -299,7 +347,8 @@ export function render(panel) {
       }));
     const songCard = h("section", { class: "card", "aria-labelledby": "music-part" },
       h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "music-part" }, "Pick the part of the song")),
-      header, progress, h("div", { class: "wave-loading" }, h("span", { class: "spinner", role: "status", "aria-label": "Loading waveform" })));
+      header, libraryPicker(basename(m.file), draw), progress,
+      h("div", { class: "wave-loading" }, h("span", { class: "spinner", role: "status", "aria-label": "Loading waveform" })));
     const placeCard = h("section", { class: "card", "aria-labelledby": "music-place" },
       h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "music-place" }, "Where it plays in the video"),
         h("p", { class: "card-sub" }, "Drag the music block or its edges. It loops to fill the block when looping is on.")));

@@ -237,6 +237,20 @@ export async function uploadFile(file, role, { onProgress, signal } = {}) {
   await flush().catch(() => {});
   const before = version;
   const res = await api.upload(id, file, role, { onProgress, signal });
+  return adoptFile(id, res, role, before);
+}
+
+/** Make a song of the music library the reel's music (backends that have a library). */
+export async function useLibrarySong(songId) {
+  const id = state.projectId;
+  await flush().catch(() => {});
+  const before = version;
+  const res = await api.useLibrarySong(id, songId);
+  return adoptFile(id, res, "music", before);
+}
+
+/** Take the server's answer to a file change of `role` into the open project. */
+function adoptFile(id, res, role, before) {
   if (id !== state.projectId) return res.file;
   const server = res.project;
   if (server) {

@@ -2,9 +2,10 @@
 
 The reference reel opens on a mountain range with the first sentence written
 along the ridge: words appear one by one as they are spoken, sit just above
-the rock outline, tilt with the slope, single letters fan out around sharp
-peaks, the first and stressed words are big, function words small, and the
-last word drops large under the end of the line ("are?").
+the rock outline and bend with it letter by letter (each letter sits on the
+curve and leans with it, so letters fan out around sharp peaks), the first
+and stressed words are big, function words small, and the last word drops
+large under the end of the line ("are?").
 
 Two halves:
 
@@ -570,7 +571,7 @@ class _Sprite:
 REF_SIZE = 200            # metrics are measured once at this size
 FILL = 0.94               # use at most this share of the path for text
 MAX_GROW = 1.4            # short hooks grow at most this much
-ONE_LINE_SCALE = 0.6      # a single line along a craggy ridge (the reference look) down to this scale
+ONE_LINE_SCALE = 0.68     # a single line along a craggy ridge (the reference look) down to this scale
 FLAT_LINE_SCALE = 0.85    # ... but along a flat/straight contour wrapping reads better sooner
 UPPER_SLOPE = math.tan(math.radians(40))   # wrapped lines above the first are gentler arcs
 GOOD_SCALE = 0.74         # below this, wrapping onto another line reads better
@@ -578,13 +579,17 @@ MIN_PX = 26               # no word smaller than this (px at 1080 wide)
 WORD_GAP = 0.85           # word spacing as a share of the font's space (the reference packs tightly)
 MAX_ATTEMPTS = 48         # layout tries before falling back to the plain pattern
 CLOSE_EM = 1.2            # valleys of the text path are rounded to at least this many em
+BENT_CLOSE_EM = 2.2       # ... rounder when words bend, so letters in a valley don't crowd
 MAX_TILT = math.radians(75)   # steepest a normal-size word may lean ...
 BIG_TILT = math.radians(25)   # ... and a big_scale word (in between: interpolated)
 MIN_SCALE = 0.3
 MAX_LINES = 8
 STRESS_SHARE = 0.45       # stressed words get this share of big_scale's boost
 LAST_BOOST = 1.12         # the dropped last word is the biggest
-TRACKING = 0.06           # extra letter spacing (em) when a word is bent letter by letter
+TRACKING = 0.02           # extra letter spacing (em) when a word is bent letter by letter
+BENT_BIG_TILT = math.radians(50)   # steepest a letter of a big word may lean (normal words: MAX_TILT)
+BRIDGE = 0.7              # the text path is smoothed over this many em, so letters ride over
+BRIDGE_DIP = 0.45         # tree tops and rocks narrower than a word, dipping at most this many em
 MAX_SLOPE = math.tan(math.radians(70))
 LEAD = 0.04               # words appear this much before they are heard
 POP = 0.12                # pop-in duration
@@ -715,11 +720,18 @@ class HookRenderer:
             f[-1] = st.big_scale * (LAST_BOOST if self._below else 1.0)
         return f
 
-    def _tilt(self, i: int) -> float:
-        """Steepest angle word ``i`` may lean: big words stay nearly upright."""
+    def _bigness(self, i: int) -> float:
+        """0 for a normal word .. 1 for a big_scale word."""
         big = max(self.style.big_scale, 1.0 + 1e-6)
-        u = float(np.clip((self._factors[i] - 1.0) / (big - 1.0), 0.0, 1.0))
-        return MAX_TILT + (BIG_TILT - MAX_TILT) * u
+        return float(np.clip((self._factors[i] - 1.0) / (big - 1.0), 0.0, 1.0))
+
+    def _tilt(self, i: int) -> float:
+        """Steepest angle word ``i`` may lean as one piece: big words stay nearly upright."""
+        return MAX_TILT + (BIG_TILT - MAX_TILT) * self._bigness(i)
+
+    def _letter_tilt(self, i: int) -> float:
+        """Steepest angle a letter of word ``i`` may lean when the word bends."""
+        return MAX_TILT + (BENT_BIG_TILT - MAX_TILT) * self._bigness(i)
 
     def _has_room(self, contour: Contour) -> bool:
         """Whether most of the skyline leaves space for a line of text
@@ -850,8 +862,13 @@ class HookRenderer:
         do not converge; kept inside the safe area. A ``stacked`` line (one
         wrapped above another line of text) is a gentler, rounder arc."""
         y = _slope_limit(_dilate_up(terrain, lift), UPPER_SLOPE if stacked else MAX_SLOPE)
-        r = max(self.close_r, (3.0 if stacked else CLOSE_EM) * size)
+        r = max(self.close_r, (3.0 if stacked else BENT_CLOSE_EM if self.style.per_glyph else CLOSE_EM) * size)
         y = _erode_down(_dilate_up(y, r), r)
+        if self.style.per_glyph:
+            # Letters follow every wiggle of the path: smooth away spikes no
+            # wider than a letter (tree tops), letting them poke into the
+            # clearance a little, so the words ride the shape of the ridge.
+            y = np.minimum(_gauss1d(y, BRIDGE * size), y + BRIDGE_DIP * size)
         y = _gauss1d(y, 2.0 * self.k)
         top = self.top_safe + ascent
         bottom = self.height - self.bottom_safe
@@ -972,21 +989,18 @@ class HookRenderer:
         return "ok"
 
     def _fit_word(self, path: _Path, i: int, size: float, s: float) -> tuple[list[_Glyph], float, bool]:
-        """Place word ``i`` with its start at arc length ``s``: rigid along the
-        chord when the curve is gentle under it, letter by letter when it
-        bends sharply (and per_glyph is on)."""
+        """Place word ``i`` with its start at arc length ``s``: letter by
+        letter along the curve, so the word bends with the terrain (letters
+        fan out around peaks, "w o u l d"), or as one rigid piece along the
+        chord when per_glyph is off or the word is a single letter."""
         m = self._metrics[i]
         k = size / REF_SIZE
         width = m.advance * k
         chord = path.angle(s, s + width)
         p0 = path.at(s)
-        up = np.array([math.sin(chord), -math.cos(chord)])
-        dev = (path.points(s, s + width) - p0) @ up
-        # Over a sharp peak a rigid word would float far above the slopes,
-        # so its letters fan out along the curve instead ("w o u l d"); in a
-        # valley a rigid word simply bridges it unless the dip is very deep.
-        bend = (self.style.per_glyph and len(m.chars) > 1 and self._factors[i] <= 1.0
-                and (float(dev.max()) > 0.45 * size or float(-dev.min()) > 1.0 * size))
+        # The big opening word stays one piece (big letters stacked up a slope
+        # are hard to read); every other word bends.
+        bend = self.style.per_glyph and len(m.chars) > 1 and self._bigness(i) <= 0.5
         if not bend:
             # Lean with the chord (big words less), then rise straight up
             # until the baseline clears the path under the whole word, so it
@@ -1002,20 +1016,21 @@ class HookRenderer:
             end = float(np.interp(x1, path.x, path.s))
             return [_Glyph(m.text, float(anchor[0]), float(anchor[1]), theta, box)], max(s + width * 0.5, end), False
         track = TRACKING * size
-        for _ in range(4):
+        limit = self._letter_tilt(i)
+        for _ in range(6):
             glyphs = []
             for j, (ch, centre, adv, ink) in enumerate(m.chars):
                 c = s + centre * k + j * track
                 half = max(adv * k / 2, 0.3 * size)
                 q = path.at(c)
-                glyphs.append(_Glyph(ch, float(q[0]), float(q[1]), path.angle(c - half, c + half),
-                                     tuple(v * k for v in ink)))
+                lean = float(np.clip(path.angle(c - half, c + half), -limit, limit))
+                glyphs.append(_Glyph(ch, float(q[0]), float(q[1]), lean, tuple(v * k for v in ink)))
             # Letters may touch at the bottom where the curve fans them out;
             # only real overlap (boxes shrunk a little) spreads them.
             polys = [g.corners(-0.08 * size) for g in glyphs if g.text.strip()]
             if not any(_overlaps(a, b) for a, b in zip(polys, polys[1:])):
                 break
-            track += 0.08 * size  # letters converge in a tight bend: spread them
+            track += 0.06 * size  # letters converge in a tight bend: spread them
         return glyphs, s + width + track * (len(m.chars) - 1), True
 
     def _place_below(self, i: int, scale: float, placed: list[_Placed],

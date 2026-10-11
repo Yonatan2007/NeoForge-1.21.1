@@ -3,6 +3,7 @@
  * a few a day at the audience's busiest hours (reelforge/autopilot.py).
  *
  *   settings/autopilot   the settings on this page (the same keys as autopilot.DEFAULTS)
+ *   music/<id>           the music library (the Music page): "random" music deals from it
  *   autopilot/<slot id>  one reel of the queue: {slot, tz, status, title, caption, cover,
  *                        master_url, platforms, metricool: {id, uuid, plannerUrl}, problems}
  *   tasks/<id>           kind "autopilot" {days, per_day}: fill the coming days; Claude runs it
@@ -22,8 +23,8 @@ import { TONES } from "./panel-more.js";
 const P = () => api._panel;
 const DEFAULTS = {
   enabled: true, per_day: 3, days: 7, platforms: ["instagram", "youtube"], approval: "auto",
-  window: ["08:00", "23:30"], min_gap: 3, template: null, format: "template", music: "template",
-  songs: [], topic: "", tone: "", ai_label: false,
+  window: ["08:00", "23:30"], min_gap: 3, template: null, format: "template", music: "random",
+  topic: "", tone: "", ai_label: false,
 };
 const NETS = { instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };
 const CREDITS_PER_REEL = 2.4; // one Higgsfield voiceover
@@ -63,10 +64,11 @@ function liveStatus(it, live) {
 }
 
 export function renderAutopilot(container) {
-  const { db, retrying, newTask, nowIso, blobUrl } = P();
+  const { db, retrying, newTask, nowIso, blobUrl, listSongs } = P();
   let settings = { ...DEFAULTS };
   let items = [];
   let projects = [];
+  let library = []; // songs in the shuffle
   let live = new Map(); // Metricool posts by uuid
   let brand = null;
   let credits = null;
@@ -203,19 +205,15 @@ export function renderAutopilot(container) {
       [["template", "Same as that reel"], ["9:16", "9:16, full screen"], ["4:5", "4:5 with black bars"]]
         .map(([v, l]) => h("option", { value: v, selected: v === settings.format }, l)));
     format.addEventListener("change", () => set({ format: format.value }));
-    const songs = [...new Set(projects.flatMap((p) => (p.files || []).filter((f) => /\.(mp3|m4a|wav|aac|ogg)$/i.test(f.name)).map((f) => f.name)))];
     const music = h("select", { class: "input select", "aria-label": "Music" },
-      [["template", "That reel's song"], ["rotate", "Take turns between my songs"], ["none", "No music"]]
+      [["random", "A random song from my music library"], ["template", "That reel's song"], ["none", "No music"]]
         .map(([v, l]) => h("option", { value: v, selected: v === settings.music }, l)));
     music.addEventListener("change", () => set({ music: music.value }, true));
-    const songChips = settings.music === "rotate"
-      ? h("div", { class: "chips", role: "group", "aria-label": "Songs to take turns between" }, songs.length ? songs.map((name, i) => {
-          const id = `ap-song-${i}`;
-          const input = h("input", { type: "checkbox", id, class: "visually-hidden", checked: settings.songs.includes(name) });
-          input.addEventListener("change", () => set({ songs: input.checked ? [...settings.songs, name] : settings.songs.filter((x) => x !== name) }));
-          return [input, h("label", { class: "chip", for: id }, h("span", { class: "chip-check", html: icon("check", { size: 14 }) }), name.replace(/\.[^.]+$/, ""))];
-        }) : h("p", { class: "muted small" }, "Upload songs on a reel's Music tab first."))
-      : null;
+    const musicHelp = settings.music !== "random" ? null
+      : h("p", { class: "field-help" }, library.length
+        ? `${library.length} song${library.length === 1 ? "" : "s"} in the shuffle, dealt so none repeats before the others have played. `
+        : "Your music library is empty, so reels use that reel's song for now. ",
+        h("a", { href: "#/x/music" }, library.length ? "Manage songs" : "Add songs"));
     const topic = h("textarea", { class: "input textarea", rows: 2, placeholder: "Optional, e.g. letting go, self-worth, loneliness at night" }, settings.topic || "");
     topic.addEventListener("change", () => set({ topic: topic.value.trim() }));
     const tone = h("select", { class: "input select", "aria-label": "Tone" },
@@ -235,7 +233,7 @@ export function renderAutopilot(container) {
         field("Posting hours", h("div", { class: "row ap-window" }, from, h("span", { class: "muted" }, "to"), to, gap), "Within these hours, the busiest ones for your audience."),
         field("Make reels like", template, "They copy its look, captions, voice and searches; the script, clips and post are new."),
         field("Format", format),
-        field("Music", h("div", { class: "stack" }, music, songChips)),
+        field("Music", h("div", { class: "stack" }, music, musicHelp)),
         field("Topics", topic, "Leave empty and Gemini picks the angles."),
         field("Tone", tone),
         h("div", { class: "field field-bool" }, ai)));
@@ -333,9 +331,12 @@ export function renderAutopilot(container) {
 
   (async () => {
     try {
-      const [s, ps] = await Promise.all([retrying(() => db.doc("settings/autopilot").get()), retrying(() => db.collection("projects").get())]);
+      const [s, ps, songs] = await Promise.all([retrying(() => db.doc("settings/autopilot").get()),
+        retrying(() => db.collection("projects").get()), listSongs()]);
       if (s.exists) settings = { ...DEFAULTS, ...s.data() };
+      if (settings.music === "rotate") settings.music = "random";
       projects = ps.docs.map((d) => ({ id: d.id, ...d.data() }));
+      library = songs.filter((song) => song.enabled !== false);
     } catch (err) {
       toastError("Could not load the autopilot", err);
     }

@@ -43,6 +43,10 @@ so the whole app can be used from the Claude app on any device:
   audience's busiest hours, see `reelforge/autopilot.py`) and the queue,
   `autopilot/<slot id>`, where a waiting reel is approved or held back with
   the viewer's Metricool connector.
+* `panel-music.js` adds Music, the music library (`music/<id>`): songs added
+  once and kept in the panel, each with where it starts and whether it is in
+  the shuffle. Autopilot deals them at random to its reels, and every reel's
+  Music tab can take one ("Random song", or choose).
 * The panel reaches Claude through the Routine in `settings/claude.trigger_id`
   (`fire_trigger`) or a direct `send_message`; when neither is allowed it says
   what to type in the chat.
