@@ -29,7 +29,7 @@ const DEFAULTS = {
   window: ["08:00", "23:30"], min_gap: 3, template: null, format: "template", music: "random",
   topic: "", tone: "", ai_label: false,
   length: "short", first_comment: true, search: true, trial_reels: "some", collaborators: [], collab_every: 7,
-  tiktok_sound: "off",
+  tiktok_sound: "off", hashtags: false,
 };
 const NETS = { instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };
 const TRIAL_STATE = {
@@ -309,6 +309,8 @@ export function renderAutopilot(container) {
       label: "Ask a question in the first comment", onChange: (v) => set({ first_comment: v }) });
     const search = switchControl({ id: "ap-search", checked: settings.search,
       label: "Build posts around what people search for", onChange: (v) => set({ search: v }) });
+    const tags = switchControl({ id: "ap-hashtags", checked: settings.hashtags,
+      label: "Add hashtags under the caption", onChange: (v) => set({ hashtags: v }) });
     const trials = segmented({ label: "Trial Reels", value: settings.trial_reels,
       options: [{ value: "off", label: "Off" }, { value: "some", label: "1 in 3" }, { value: "all", label: "All" }],
       onChange: (v) => set({ trial_reels: v }) });
@@ -351,7 +353,9 @@ export function renderAutopilot(container) {
         h("div", { class: "field field-bool" }, comment,
           h("p", { class: "field-help" }, "A question people answer from their own life, posted with the reel on Instagram and YouTube (TikTok: business accounts). Apps can't pin it: pin it in the app if you like.")),
         h("div", { class: "field field-bool" }, search,
-          h("p", { class: "field-help" }, "Real searches from YouTube's suggestions go word for word into the caption, the title and a hashtag, so the reel is found in search long after it leaves the feed.")),
+          h("p", { class: "field-help" }, "Real searches from YouTube's suggestions go word for word into the caption and the title, so the reel is found in search long after it leaves the feed.")),
+        h("div", { class: "field field-bool" }, tags,
+          h("p", { class: "field-help" }, "Off: posts go out with the caption only, no hashtags.")),
         field("Trial Reels on Instagram", trials, trialHelp),
         field("Collabs on Instagram", h("div", { class: "row row-wrap ap-collabs" }, collabs, every),
           "Each account gets an invite; once it accepts, the reel shows on its profile and its followers' feeds too. Pages like yours work best. Never on a Trial Reel."),

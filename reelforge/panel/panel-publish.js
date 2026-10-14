@@ -724,20 +724,20 @@ async function renderComposer(container, key) {
     input.dispatchEvent(new Event("input"));
   };
 
-  // Claude writes the caption, hashtags and YouTube title from the script (the viewer's own Claude usage)
+  // Claude writes the caption and YouTube title from the script (the viewer's own Claude usage), no hashtags
   const writer = h("div", { class: "writer", "aria-live": "polite" });
   const writeBtn = canWrite() ? button("Write it for me", { icon: "sparkle", size: "sm", variant: "secondary" }) : null;
   let writing = null;
   const useSuggestion = (r) => {
     setField(captionField, r.caption);
-    setField(tagsField, tagText(r.hashtags));
+    if (r.hashtags.length) setField(tagsField, tagText(r.hashtags));
     if (r.title) {
       post.youtube.title = r.title;
       panels.youtube.replaceChildren(platformPanel("youtube", post, accounts, save, schedulePreview));
       save();
     }
     writer.replaceChildren();
-    toast(r.title ? "Caption, hashtags and the YouTube title are filled in." : "Caption and hashtags are filled in.", { kind: "success", timeout: 2500 });
+    toast(r.title ? "The caption and the YouTube title are filled in." : "The caption is filled in.", { kind: "success", timeout: 2500 });
   };
   const write = async (fresh) => {
     if (writing) writing.abort();

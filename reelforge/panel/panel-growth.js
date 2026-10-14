@@ -8,8 +8,8 @@
  *              comments, saves, shares, reach) and the best performers
  *   bestTimePicker / bestTimes   when the audience is most active, for the
  *              Publish page's "at a time I choose"
- *   writePost  a caption, hashtags and a YouTube title written by Claude
- *              from the reel's script
+ *   writePost  a caption and a YouTube title written by Claude from the
+ *              reel's script (no hashtags: the user doesn't want them)
  *
  * Metricool is read and changed with the viewer's own Metricool connector
  * (the mcp capability); the writer asks Claude through the sample
@@ -266,22 +266,25 @@ export async function writePost(ctx, { signal, fresh = false } = {}) {
     "Write:",
     "- caption: 2 to 4 short lines that make people stop and think; the first line must work on its own as a hook;",
     "  end with a question or a reason to save the post; no hashtags; at most 400 characters.",
-    "- hashtags: 5 to 8 hashtags that fit the video, without the # sign, mixing broad and niche ones.",
     "- youtube_title: a hook title for the Short, at most 90 characters, no hashtags, no quotes around it.",
     "",
-    'Answer with JSON only: {"caption": "...", "hashtags": ["..."], "youtube_title": "..."}',
+    'Answer with JSON only: {"caption": "...", "youtube_title": "..."}',
   ].filter((line) => line !== "").join("\n");
   const options = { modelTier: "default" };
   if (signal) options.signal = signal;
   if (fresh) options.cache = false;
   const out = await sample.json(prompt, options);
-  const caption = String((out && out.caption) || "").trim().slice(0, 2200);
+  const caption = withoutHashtags((out && out.caption) || "").slice(0, 2200);
   if (!caption) throw Object.assign(new Error("no caption"), { code: "empty_completion" });
-  const raw = Array.isArray(out.hashtags) ? out.hashtags : String(out.hashtags || "").split(/[\s,]+/);
-  const hashtags = [...new Set(raw.map((t) => String(t).replace(/^#+/, "").replace(/\s+/g, "").trim()).filter(Boolean))].slice(0, 30);
   let title = String(out.youtube_title || out.title || "").trim().replace(/^["“]|["”]$/g, "");
   if (title.length > 100) title = `${title.slice(0, 99).trimEnd()}…`;
-  return { caption, hashtags, title };
+  return { caption, hashtags: [], title };
+}
+
+/** The text with every #hashtag taken out (as autopilot.without_hashtags). */
+export function withoutHashtags(text) {
+  return String(text || "").split("\n").map((line) => line.replace(/(^|[^\w&])#\w+/g, "$1").replace(/[ \t]{2,}/g, " ").trim())
+    .join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 // --------------------------------------------------------------------------- shared page bits

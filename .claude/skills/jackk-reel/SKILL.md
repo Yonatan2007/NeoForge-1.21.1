@@ -8,6 +8,9 @@ description: Turn a short philosophical / emotional script into a finished verti
 The defaults match the user's reference reel (instagram.com/reel/DY7jc7CRZmp):
 bright film-graded nature footage, hook sentence following the mountain ridge,
 then one white lowercase word at a time. Don't change the look unless asked.
+The user doesn't want hashtags on their posts: never add them to a caption,
+title or post yourself (autopilot's `hashtags` setting stays off unless they
+turn it on).
 
 1. **Setup (once per container)**: `pip install -r reelforge/requirements.txt`
    (FFmpeg must be on PATH). Stock footage works without keys (Mixkit, Free

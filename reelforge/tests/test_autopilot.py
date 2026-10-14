@@ -145,6 +145,17 @@ def test_post_text_fits_instagram():
     assert long.endswith("\n\n#abcdef") and len(long) == 2199  # the tag that doesn't fit is dropped
 
 
+def test_hashtags_stay_off_unless_turned_on():
+    assert ap.without_hashtags("Let it go. #healing\n\nSave this.\n\n#a #b_c #d") == "Let it go.\n\nSave this."
+    assert ap.without_hashtags("No tags & no #") == "No tags & no #"
+    item = {"id": "ap-20261012-1900", "slot": "2026-10-12T19:00", "tz": "Asia/Jerusalem", "title": "T",
+            "caption": "Hook line #sneaky\n\nMore.", "hashtags": ["a", "b"], "youtube_title": "YT"}
+    off = json.loads(ap.metricool_post(item, ap.settings_of({}), "1", "u", None)["info"])
+    assert off["text"] == "Hook line\n\nMore."
+    on = json.loads(ap.metricool_post(item, ap.settings_of({"hashtags": True}), "1", "u", None)["info"])
+    assert on["text"] == "Hook line #sneaky\n\nMore.\n\n#a #b"
+
+
 def test_quality_gate():
     ok = {"ok": True, "result": {"duration": 44, "warnings": []}}
     assert ap.quality_problems(ok, [clip("a_1")]) == []
@@ -161,8 +172,9 @@ def test_growth_settings_are_kept_in_range():
     assert s["collaborators"] == ["night.thoughts", "other_page", "x"]  # three at most, without "@"
     assert s["collab_every"] == 1 and s["tiktok_sound"] == "off"
     d = ap.settings_of(None)
-    assert (d["length"], d["first_comment"], d["trial_reels"], d["collaborators"], d["tiktok_sound"]) == \
-        ("short", True, "some", [], "off")
+    assert (d["length"], d["first_comment"], d["trial_reels"], d["collaborators"], d["tiktok_sound"], d["hashtags"]) == \
+        ("short", True, "some", [], "off", False)
+    assert ap.settings_of({"hashtags": 1})["hashtags"] is True
     assert ap.settings_of({"tiktok_sound": "remind", "collab_every": "x"})["collab_every"] == 7
 
 
@@ -241,7 +253,7 @@ def test_metricool_post_reaches_every_platform_and_drafts_in_review_mode():
     assert info["draft"] is True and info["media"] == ["https://cdn/x.mp4"] and info["videoCoverMilliseconds"] == 3240
     assert [p["network"] for p in info["providers"]] == ["instagram", "youtube", "tiktok"]
     assert info["youtubeData"]["title"] == "YT title" and info["instagramData"]["type"] == "REEL"
-    assert info["text"] == "Hook line\n\n#a" and info["publicationDate"]["dateTime"] == "2026-10-12T19:00:00"
+    assert info["text"] == "Hook line" and info["publicationDate"]["dateTime"] == "2026-10-12T19:00:00"
 
 
 # --------------------------------------------------------------------------- the panelrun commands

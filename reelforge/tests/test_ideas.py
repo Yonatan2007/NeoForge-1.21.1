@@ -64,10 +64,16 @@ def test_post_copy_comes_with_each_script(monkeypatch):
     g = Gemini([], Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}))
     idea = ideas.generate(count=1, session=g, post=True)["ideas"][0]
     assert idea["caption"] == "Their silence was the answer.\n\nYou don't need theirs.\n\nSave this."
-    assert idea["hashtags"] == ["lettinggo", "closure", "selfworth"]  # one tag per item, no spaces
+    assert idea["hashtags"] == []  # not asked for: the user doesn't want hashtags
     assert len(idea["youtube_title"]) == 100 and idea["youtube_title"].endswith("…")
-    item = g.posts[0][1]["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]
-    assert {"caption", "hashtags", "youtube_title"} <= set(item["required"])
+    body = g.posts[0][1]
+    item = body["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]
+    assert {"caption", "youtube_title"} <= set(item["required"]) and "hashtags" not in item["properties"]
+    assert "- hashtags:" not in body["contents"][0]["parts"][0]["text"]
+    g = Gemini([], Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}))
+    tagged = ideas.generate(count=1, session=g, post=True, hashtags=True)["ideas"][0]
+    assert tagged["hashtags"] == ["lettinggo", "closure", "selfworth"]  # one tag per item, no spaces
+    assert "hashtags" in g.posts[0][1]["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]["required"]
     assert ideas.caption_lines("Line one.\n\n\n\nLine two.") == "Line one.\n\nLine two."
 
 
@@ -85,6 +91,7 @@ def test_growth_brief_length_comment_search_learnings_and_replies(monkeypatch):
     brief = body["contents"][0]["parts"][0]["text"]
     assert "60 to 85 words" in brief and "first two seconds" in brief
     assert "first_comment" in brief and "search_phrase" in brief and "- how to stop overthinking" in brief
+    assert "- hashtags:" not in brief and "one of the hashtags" not in brief
     assert 'Did best: "X"' in brief and "How do I let go?" in brief and "be gentle" in brief
     assert brief.index("How do I let go?") < brief.index('Did best: "X"')
     item = body["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]

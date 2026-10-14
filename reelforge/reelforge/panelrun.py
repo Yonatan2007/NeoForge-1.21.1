@@ -245,7 +245,7 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
     replies = replies[:max(0, len(slots) - len(written))]
     brief = dict(topic=settings["topic"], tone=settings["tone"], examples=data.get("examples") or [], post=True,
                  length=settings["length"], comment=settings["first_comment"], search=settings["search"],
-                 phrases=phrases or [], learnings=insights.get("learnings") or [])
+                 phrases=phrases or [], learnings=insights.get("learnings") or [], hashtags=settings["hashtags"])
     if replies:  # video replies to viewers' comments come first, one script each
         got = writer(count=len(replies), avoid=[*avoid, *(w["title"] for w in written)], replies=replies, **brief)
         plan["model"] = got.get("model")

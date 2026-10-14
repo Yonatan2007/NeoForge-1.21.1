@@ -2,7 +2,8 @@
 
 A run tops the coming days up to ``per_day`` reels at the audience's best
 hours (Metricool's activity data for the chosen platforms). Gemini writes
-each script with its caption, hashtags and YouTube title. Each reel is a copy
+each script with its caption and YouTube title (and hashtags, only when the
+``hashtags`` setting is on: the user doesn't want them). Each reel is a copy
 of the user's template reel with the new script, so the look, voice, captions,
 music and footage searches stay the same; the stock clips are planned for the
 whole batch at once so no two reels share a clip, and clips used by recent
@@ -63,6 +64,7 @@ DEFAULTS = {
     "collaborators": [],            # Instagram accounts invited as collaborators ...
     "collab_every": 7,              # ... on one reel in this many
     "tiktok_sound": "off",          # "remind": TikTok waits for a trending sound added at volume 0 (by the user)
+    "hashtags": False,              # hashtags under the caption; off: posts carry none (the user's choice)
 }
 PLATFORMS = ("instagram", "youtube", "tiktok")
 LENGTHS = ("short", "medium", "long")
@@ -115,6 +117,7 @@ def settings_of(raw: dict | None) -> dict:
     except (TypeError, ValueError):
         s["collab_every"] = 7
     s["tiktok_sound"] = "remind" if s["tiktok_sound"] == "remind" else "off"
+    s["hashtags"] = bool(s["hashtags"])
     return s
 
 
@@ -350,6 +353,15 @@ def _pick(c: dict) -> dict:
     return {k: v for k, v in c.items() if k not in ("tile", "portrait")}
 
 
+HASHTAG = re.compile(r"(?<![\w&])#\w+")
+
+
+def without_hashtags(text: str) -> str:
+    """The text with every #hashtag taken out (a line left empty goes too)."""
+    lines = [re.sub(r"[ \t]{2,}", " ", HASHTAG.sub("", line)).strip() for line in str(text or "").split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def post_text(caption: str, hashtags: list[str]) -> str:
     """The post's text: the caption, then the hashtags (within Instagram's 2,200 characters)."""
     tags = " ".join(f"#{t}" for t in hashtags or [])
@@ -444,7 +456,8 @@ def metricool_post(item: dict, settings: dict, brand_id: str, media_url: str, co
         "providers": [{"network": n} for n in nets],
         "publicationDate": {"dateTime": dt.strftime("%Y-%m-%dT%H:%M:00"), "timezone": tz},
         "shortener": False, "smartLinkData": {"ids": []},
-        "text": post_text(item.get("caption") or item["title"], item.get("hashtags") or []),
+        "text": post_text(item.get("caption") or item["title"], item.get("hashtags") or []) if settings["hashtags"]
+                else without_hashtags(item.get("caption") or item["title"])[:2200],
     }
     if cover_ms is not None:
         info["videoCoverMilliseconds"] = int(cover_ms)
