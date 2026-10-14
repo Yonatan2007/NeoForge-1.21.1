@@ -5,8 +5,8 @@
  * becomes a video reply: saved with status "idea", the next autopilot run
  * writes a reel that answers it (reelforge/autopilot.py, "replies").
  *
- *   replies/<id>         {reel_id, reel_title, platform, comment, drafts: [...], video: {hook, angle} | null,
- *                         status: "draft" | "idea", created, updated}
+ *   replies/<id>         {account, reel_id, reel_title, platform, comment, drafts: [...], video: {hook, angle} | null,
+ *                         status: "draft" | "idea", created, updated}: the reel's account answers it
  *   autopilot/<slot id>  a reel that answers one carries reply_to = <id>: shown here as answered
  *
  * No platform lets an app read or post comments for a personal account, so
@@ -19,6 +19,7 @@ import { button, confirmDialog, h, relativeTime, toast, toastError } from "./dom
 import { segmented } from "./fields.js";
 import { icon } from "./icons.js";
 import { canWrite, sampleProblem } from "./panel-growth.js";
+import { accountName, accountOf } from "./panel-autopilot.js";
 
 const P = () => api._panel;
 const NETS = { tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube" };
@@ -143,7 +144,8 @@ export function renderReplies(container) {
   function paintReels() {
     reelSelect.replaceChildren(
       h("option", { value: "" }, reels.length ? "Choose the reel" : "No posted reels yet"),
-      ...reels.map((r) => h("option", { value: r.id }, `${short(slotDate(r))} · ${r.title || "Untitled"}`)));
+      ...reels.map((r) => h("option", { value: r.id },
+        `${short(slotDate(r))} · ${accountOf(r) === "main" ? "" : `${accountName(accountOf(r))}: `}${r.title || "Untitled"}`)));
   }
 
   async function draft() {
@@ -157,7 +159,8 @@ export function renderReplies(container) {
     try {
       const out = await draftReplies({ comment: text, platform, reel }, { signal: running.signal });
       const id = `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-      const doc = { reel_id: reel ? reel.id : null, reel_title: reel ? reel.title : null, platform, comment: text,
+      const doc = { account: reel ? accountOf(reel) : "main", reel_id: reel ? reel.id : null, reel_title: reel ? reel.title : null,
+                    platform, comment: text,
                     drafts: out.replies, video: out.video, status: "draft", created: nowIso(), updated: nowIso() };
       await retrying(() => db.doc(`replies/${id}`).set(doc));
       saved = [{ id, ...doc }, ...saved];

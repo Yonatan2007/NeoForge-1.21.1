@@ -55,6 +55,7 @@ HOOK_BUILT = {"highway", "road", "gas", "station", "town", "city", "street", "bu
 HOOK_TERRAIN = {"mountain", "peak", "ridge", "summit", "hill", "cliff", "range", "alps", "volcano", "dune", "canyon"}
 HOOK_PEOPLE_PENALTY, HOOK_BUILT_PENALTY, HOOK_TERRAIN_BONUS = SKYLINE_WEIGHT, 4.0, 2.0
 REFERENCE_WEIGHT = 5.0    # similarity to the reference look steers every other pick
+THEME_BONUS, THEME_PENALTY = 2.0, SKYLINE_WEIGHT  # a clip named for the account's subject, or not (footage.theme)
 
 
 class Cancelled(RuntimeError):
@@ -372,13 +373,19 @@ def _references(project: Project, project_dir: Path) -> tuple[list[Path], list, 
     return references, ref_sigs, ref_terms
 
 
-def _rankers(ref_sigs: list):
+def _rankers(ref_sigs: list, theme: list[str] | None = None):
     """(likeness to the references, skyline + likeness for the hook shot) as
-    ``extra_score`` functions for the stock search."""
+    ``extra_score`` functions for the stock search. With a ``theme``, clips
+    whose names mention none of its words rank far lower: loose stock
+    searches ("moon") also return clocks and pumpkins."""
     from . import hook as hookmod, usermedia
+    words = {w.lower() for w in theme or [] if w}
+
+    def on_theme(c) -> float:
+        return 0.0 if not words else THEME_BONUS if footage.describes(c, words) else -THEME_PENALTY
 
     def likeness(c, img) -> float:
-        return REFERENCE_WEIGHT * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0
+        return (REFERENCE_WEIGHT * usermedia.reference_score(img, ref_sigs) if ref_sigs else 0.0) + on_theme(c)
 
     def skyline(c, img) -> float:
         named = (HOOK_TERRAIN_BONUS * footage.describes(c, HOOK_TERRAIN) - HOOK_PEOPLE_PENALTY * footage.describes(c, HOOK_PEOPLE)
@@ -426,7 +433,7 @@ def choose_stock(project: Project, script: Script, sources: list[ShotSource], ho
     stock_paths: dict[int, Path] = {}
     providers = _providers(project, settings)
     common = _stock_common(project)
-    likeness, skyline = _rankers(ref_sigs)
+    likeness, skyline = _rankers(ref_sigs, project.footage.theme)
     banned = set(fs.banned)
     reviewed = [p for p in fs.picks if isinstance(p, dict) and footage.pick_key(p) not in banned]
     opening = next((p for p in reviewed if p.get("slot") == "opening"), None)
@@ -439,7 +446,7 @@ def choose_stock(project: Project, script: Script, sources: list[ShotSource], ho
         if hook_pick is None:
             report("footage", 0.05, "choosing a first shot with a clear skyline")
             hook_pick = footage.best_of(
-                [search_terms(fs.hook_query), *HOOK_SEARCHES], providers, settings.cache_dir,
+                [search_terms(fs.hook_query), *(fs.hook_searches or HOOK_SEARCHES)], providers, settings.cache_dir,
                 rank=skyline, exclude=banned, **common)
         if hook_pick is not None:
             picks.append(hook_pick)
@@ -506,13 +513,14 @@ def review_footage(project: Project, project_dir: Path, settings: Settings, out_
     if not providers:
         raise ValueError("No stock site is turned on.")
     common = _stock_common(project)
-    likeness, skyline = _rankers(ref_sigs)
+    likeness, skyline = _rankers(ref_sigs, project.footage.theme)
     banned = set(project.footage.banned)
     rest = list(stock_slots)
     opening: list = []
     if _hook_slot(project, hook_terrain, stock_slots):
         opening = [c for _, c in footage.ranked_best(
-            [search_terms(project.footage.hook_query), *HOOK_SEARCHES], providers, rank=skyline,
+            [search_terms(project.footage.hook_query), *(project.footage.hook_searches or HOOK_SEARCHES)],
+            providers, rank=skyline,
             exclude=banned, limit=6, **common)]
         rest.remove(0)
     pool: list = []

@@ -42,7 +42,15 @@ so the whole app can be used from the Claude app on any device:
   looks over their openings and schedules them in Metricool at the
   audience's busiest hours, see `reelforge/autopilot.py`) and the queue,
   `autopilot/<slot id>`, where a waiting reel is approved or held back with
-  the viewer's Metricool connector. "Growing the account" holds the growth
+  the viewer's Metricool connector. There is one autopilot per account
+  (`#/x/autopilot/<account>`): the main account and one per niche ("Would
+  you rather", "Everyday psychology", "Space and science"; `panel-data/
+  niches.json` from `reelforge/niches.py`), each posting through the
+  Metricool brand chosen on its page, with its own settings, queue and
+  numbers. "Video types" mixes in comment videos: 7-10 s, one line on
+  screen, music and no voice, asking something people answer in the
+  comments. Calendar and Stats get a brand switcher once Metricool has more
+  than one brand. "Growing the account" holds the growth
   settings: video length, a question as the first comment, posts built
   around real searches, Instagram Trial Reels, collab invites, and a
   reminder to add a trending TikTok sound at volume 0. "What's working"

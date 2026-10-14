@@ -144,3 +144,14 @@ def test_counts_of_one_read_singular():
     assert insights._many(1, "saves") == "1 save"
     assert insights._many(1.0, "views") == "1 view"
     assert insights._many(18822, "likes") == "18,822 likes"
+
+
+def test_learnings_compare_comment_videos_with_longer_ones():
+    def entry(i, kind, score):
+        return {"id": f"{kind}{i}", "kind": kind, "score": score, "hook": f"{kind} {i}", "duration": 8 if kind == "comment" else 40,
+                "times": {"tiktok": round(2 ** score, 2)}, "stats": {"tiktok": {"views": 100}}}
+    ranked = sorted([entry(i, "comment", 1.5) for i in range(3)] + [entry(i, "watch", 0.0) for i in range(3)],
+                    key=lambda e: -e["score"])
+    lines = insights.learnings(ranked, [], TZ)
+    assert "Comment videos did 2.8× better than the longer ones." in lines
+    assert not any(line.startswith("Reels under 35 s") for line in lines)  # comment videos aren't "short reels"

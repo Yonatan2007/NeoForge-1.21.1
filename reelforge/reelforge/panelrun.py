@@ -185,22 +185,27 @@ def _write(path: Path, data) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=None) -> dict:
-    """Plan a batch: slots, scripts with their posts, a work folder per reel
-    (project.json and uploads) with its stock clips assigned. Gemini learns
-    from ``insights`` (the panel's insights/latest), answers the viewers'
-    comments in ``replies`` first, and builds the posts around real searches
-    (``search_phrases``, or YouTube's suggestions); each reel then gets its
-    extras (trial, collaborator, TikTok sound from ``sounds``)."""
+def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=None, line_writer=None) -> dict:
+    """Plan a batch for one account (``account``, default the main one):
+    slots, scripts with their posts, a work folder per reel (project.json and
+    uploads) with its stock clips assigned. The settings' ``mix`` makes some
+    reels comment videos (one line on screen, no voice). Gemini writes for
+    the account's niche, learns from ``insights`` (the account's insights
+    document), answers the viewers' comments in ``replies`` first, and builds
+    the posts around real searches (``search_phrases``, or YouTube's
+    suggestions); each reel then gets its extras (trial, collaborator,
+    TikTok sound from ``sounds``)."""
     import random
     import secrets
     from datetime import datetime, timedelta
 
-    from . import autopilot as ap, ideas, search
+    from . import autopilot as ap, ideas, niches, search
     from .pipeline import slugify
 
     data = _read(inp)
     settings = ap.settings_of(data.get("settings"))
+    account = ap.account_key(data.get("account"))
+    niche = settings["niche"]
     brand = data.get("brand") or {}
     tz = brand.get("timezone") or "UTC"
     template = _doc_body(data["template"])
@@ -224,7 +229,7 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
     if need:
         return {"need": need}
     recent = [k for h in history[-40:] for k in h.get("clips") or []]
-    plan = {"tz": tz, "brand_id": str(brand.get("id") or ""), "settings": settings,
+    plan = {"tz": tz, "brand_id": str(brand.get("id") or ""), "settings": settings, "account": account, "niche": niche,
             "template_id": data["template"].get("id") or data.get("template_id"), "model": None,
             "files": files, "items": [],
             "banned": sorted(set((template_project.get("footage") or {}).get("banned") or []) | set(recent))}
@@ -233,46 +238,63 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
         return {"ok": True, "slots": 0, "plan": str(out / "plan.json")}
 
     # scripts and posts: Gemini (or ideas the caller wrote, when the user chose that)
+    kinds = ap.kinds_for(len(slots), settings["mix"])
     avoid = [*(data.get("avoid") or []), *(h.get("title", "") for h in history)]
-    written = list(data.get("ideas") or [])
+    written = [i for i in data.get("ideas") or [] if i.get("kind", "watch") == "watch"]
+    lines = [i for i in data.get("ideas") or [] if i.get("kind") == "comment"]
     writer = writer or ideas.generate
+    line_writer = line_writer or ideas.generate_lines
     insights = data.get("insights") or {}
     phrases = data.get("search_phrases")
     if phrases is None and settings["search"]:
-        phrases = (searcher or search.phrases)(settings["topic"])
+        phrases = (searcher or search.phrases)(settings["topic"], seeds=search.seeds_for(settings["topic"],
+                                                                                        niches.get(niche).seeds))
     answered = {h.get("reply_to") for h in history if h.get("reply_to")}
     replies = [r for r in data.get("replies") or [] if r.get("id") and r.get("comment") and r["id"] not in answered]
-    replies = replies[:max(0, len(slots) - len(written))]
+    replies = replies[:max(0, kinds.count("watch") - len(written))]
     brief = dict(topic=settings["topic"], tone=settings["tone"], examples=data.get("examples") or [], post=True,
                  length=settings["length"], comment=settings["first_comment"], search=settings["search"],
-                 phrases=phrases or [], learnings=insights.get("learnings") or [], hashtags=settings["hashtags"])
+                 phrases=phrases or [], learnings=insights.get("learnings") or [], hashtags=settings["hashtags"],
+                 niche=niche)
+    used = lambda: [*avoid, *(w["title"] for w in written + lines)]  # noqa: E731
     if replies:  # video replies to viewers' comments come first, one script each
-        got = writer(count=len(replies), avoid=[*avoid, *(w["title"] for w in written)], replies=replies, **brief)
+        got = writer(count=len(replies), avoid=used(), replies=replies, **brief)
         plan["model"] = got.get("model")
         for r, idea in zip(replies, got.get("ideas") or []):
             written.append({**idea, "reply_to": r["id"]})
-    while len(written) < len(slots):
-        got = writer(count=min(8, len(slots) - len(written)), avoid=[*avoid, *(w["title"] for w in written)], **brief)
+    while len(written) < kinds.count("watch"):
+        got = writer(count=min(8, kinds.count("watch") - len(written)), avoid=used(), **brief)
         plan["model"] = got.get("model")
         if not got.get("ideas"):
             raise ideas.IdeasError("Gemini returned no scripts.")
         written += got["ideas"]
+    while len(lines) < kinds.count("comment"):
+        got = line_writer(count=min(10, kinds.count("comment") - len(lines)), avoid=[*used(), *(w["script"] for w in lines)],
+                          **{k: v for k, v in brief.items() if k not in ("examples", "post", "length")})
+        plan["model"] = plan["model"] or got.get("model")
+        if not got.get("ideas"):
+            raise ideas.IdeasError("Gemini returned no comment lines.")
+        lines += [{**i, "kind": "comment"} for i in got["ideas"]]
+    queue = {"watch": iter(written), "comment": iter(lines)}
+    written = [next(queue[k]) for k in kinds]
 
     up = out / "_uploads"
     _unpack(files, assets, up)
-    for i, (slot, idea) in enumerate(zip(slots, written)):
-        sid = ap.slot_id(slot)
+    for i, (slot, idea, kind) in enumerate(zip(slots, written, kinds)):
+        sid = ap.slot_id(slot, account)
         work = out / sid
         (work / "uploads").mkdir(parents=True, exist_ok=True)
         for f in up.iterdir():
             link = work / "uploads" / f.name
             if not link.exists():
                 link.symlink_to(f.resolve())
-        project = ap.build_project(template_project, idea["script"], idea["title"],
-                                   music=songs[i], banned=recent, fmt=settings["format"])
+        build = ap.build_comment_project if kind == "comment" else ap.build_project
+        project = build(template_project, idea["script"], idea["title"], music=songs[i], banned=recent,
+                        fmt=settings["format"], niche=niche)
         config.save_project(config.from_dict(Project, project), work / "project.json")
         plan["items"].append({
-            "id": sid, "slot": slot.strftime("%Y-%m-%dT%H:%M"), "tz": tz, "title": idea["title"],
+            "id": sid, "account": account, "kind": kind, "slot": slot.strftime("%Y-%m-%dT%H:%M"), "tz": tz,
+            "title": idea["title"],
             "script": idea["script"], "why": idea.get("why", ""), "caption": idea.get("caption") or idea["title"],
             "hashtags": idea.get("hashtags") or [], "youtube_title": idea.get("youtube_title") or idea["title"],
             "first_comment": ap.first_comment(idea.get("first_comment")), "search_phrase": idea.get("search_phrase"),
@@ -286,8 +308,9 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
     _plan_footage(plan)
     _write(out / "plan.json", plan)
     items = plan["items"]
-    return {"ok": True, "slots": len(items), "plan": str(out / "plan.json"),
+    return {"ok": True, "account": account, "slots": len(items), "plan": str(out / "plan.json"),
             "first": items[0]["slot"], "last": items[-1]["slot"], "model": plan["model"],
+            "comment_videos": sum(1 for it in items if it["kind"] == "comment"),
             "replies": sum(1 for it in items if it.get("reply_to")), "trials": sum(1 for it in items if it["trial"]),
             "collabs": sum(1 for it in items if it["collaborator"]), "search_phrases": plan["phrases"]}
 
@@ -326,12 +349,14 @@ def _plan_footage(plan: dict) -> None:
             st.mixkit_per_query = max(st.mixkit_per_query, BATCH_DEPTH)
         slot = datetime.fromisoformat(item["slot"])
         project = _load(work)
-        review = review_with(project, work, base | used)
+        extra = 0 if item.get("kind") == "comment" else 2  # one shot: no spare clips for a longer voice
+        review = {**review_with(project, work, base | used), "extra": extra}
         picks = ap.assign_clips([review], banned=base | used)[0]
-        if len(picks) < int(review.get("rest_shots") or 4) + 1:
+        rest = review.get("rest_shots")
+        if len(picks) < (4 if rest is None else int(rest)) + 1:
             # the stock sites ran out of fresh clips: reuse ones from reels far away in time
             near = {k for k, slots in when.items() if any(abs((slot - t).total_seconds()) < NEAR_HOURS * 3600 for t in slots)}
-            review = review_with(project, work, base | near)
+            review = {**review_with(project, work, base | near), "extra": extra}
             picks = ap.assign_clips([review], banned=base | near)[0]
         item["openings"] = [c for c in ap.spare_openings([review], [picks])[0] if c["key"] not in used]
         used |= {p["key"] for p in picks}
@@ -341,6 +366,9 @@ def _plan_footage(plan: dict) -> None:
         config.save_project(project, work / "project.json")
         script = parse_script(project.script, project.auto_emphasis)
         item["picks"] = len(picks)
+        if item.get("kind") == "comment":  # no voice
+            item.pop("voice_request", None)
+            continue
         item["voice_request"] = voiceover.higgsfield_request(
             script, project.voice.higgsfield_preset,
             project.voice.voice_id or Settings.from_env().higgsfield_voice_id,
@@ -363,18 +391,20 @@ def autopilot_footage(plan_path: Path) -> dict:
 
 
 def autopilot_render(plan_path: Path, voices_path: Path, jobs: int = 2) -> dict:
-    """Render every reel of the plan that has a voice, ``jobs`` at a time
-    (each lane with its own cache), check each one -> results.json."""
+    """Render every reel of the plan that has a voice (comment videos need
+    none), ``jobs`` at a time (each lane with its own cache), check each one
+    -> results.json."""
     import os
     from concurrent.futures import ThreadPoolExecutor
 
     from . import autopilot as ap
 
     plan = _read(plan_path)
-    voices = _read(voices_path)
+    voices = _read(voices_path) if Path(voices_path).exists() else {}
     out = plan_path.parent / "results.json"
     results = _read(out) if out.exists() else {}
-    todo = [it for it in plan["items"] if voices.get(it["id"]) and not (results.get(it["id"]) or {}).get("ok")]
+    todo = [it for it in plan["items"] if (voices.get(it["id"]) or it.get("kind") == "comment")
+            and not (results.get(it["id"]) or {}).get("ok")]
     lock = threading.Lock()
 
     def one(n_item):
@@ -383,8 +413,9 @@ def autopilot_render(plan_path: Path, voices_path: Path, jobs: int = 2) -> dict:
         env = {**os.environ, "REELFORGE_CACHE": str(plan_path.parent / f".cache-{n % max(1, jobs)}"),
                "REELFORGE_MIXKIT_PER_QUERY": str(BATCH_DEPTH),
                "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
-        subprocess.run([sys.executable, "-m", "reelforge.panelrun", "render", "--work", str(work),
-                        "--voiceover", voices[item["id"]]], env=env, capture_output=True, text=True)
+        voice = [] if item.get("kind") == "comment" else ["--voiceover", voices[item["id"]]]
+        subprocess.run([sys.executable, "-m", "reelforge.panelrun", "render", "--work", str(work), *voice],
+                       env=env, capture_output=True, text=True)
         try:
             res = json.loads((work / "result.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -394,7 +425,12 @@ def autopilot_render(plan_path: Path, voices_path: Path, jobs: int = 2) -> dict:
         except (OSError, ValueError):
             used = []
         r = res.get("result") or {}
-        entry = {"ok": bool(res.get("ok")), "problems": ap.quality_problems(res, used),
+        try:
+            wide_ok = bool(_load(work).footage.allow_landscape)
+        except (OSError, ValueError):
+            wide_ok = False
+        entry = {"ok": bool(res.get("ok")),
+                 "problems": ap.quality_problems(res, used, kind=item.get("kind", "watch"), wide_ok=wide_ok),
                  "video": str(work / r["video"]) if r.get("video") else None,
                  "cover": str(work / r["cover"]) if r.get("cover") else None,
                  "cover_ms": int(float(r.get("cover_time") or 0) * 1000) if res.get("ok") else None,
@@ -548,7 +584,8 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
             status = "failed" if post.get("error") else "ready"
         else:
             status = "review" if review else "scheduled"
-        ad = {"slot": item["slot"], "tz": item["tz"], "status": status, "project_id": item["project_id"],
+        ad = {"account": item.get("account") or plan.get("account") or "main", "kind": item.get("kind", "watch"),
+              "slot": item["slot"], "tz": item["tz"], "status": status, "project_id": item["project_id"],
               "title": item["title"], "script": item["script"], "caption": item["caption"],
               "hashtags": item["hashtags"], "youtube_title": item["youtube_title"],
               "platforms": plan["settings"]["platforms"], "song": Path(item["song"]).name if item.get("song") else None,
@@ -585,16 +622,22 @@ def _reel_docs(folder: Path) -> list[dict]:
 
 
 def autopilot_insights(inp: Path, out: Path, now=None) -> dict:
-    """How the reels did (insights.py) -> OUT/insights.json, the panel's
-    ``insights/latest``, and OUT/reposts.json, the createScheduledPost
-    arguments for the Trial Reels to post again as normal reels."""
+    """How one account's reels did (insights.py; ``account`` in IN, default
+    every reel given) -> OUT/insights.json, the account's insights document
+    (``autopilot.insights_doc``), and OUT/reposts.json, the
+    createScheduledPost arguments for the Trial Reels to post again as
+    normal reels."""
     from datetime import datetime, timezone
 
     from . import insights
 
+    from . import autopilot as ap
+
     data = _read(inp)
     brand = data.get("brand") or {}
     reels = data.get("reels") or (_reel_docs(Path(data["reels_dir"])) if data.get("reels_dir") else [])
+    if data.get("account"):  # one account's reels: the brand's numbers are only theirs
+        reels = [r for r in reels if ap.account_of(r) == ap.account_key(data["account"])]
     now = now or (datetime.fromisoformat(data["now"].replace("Z", "")) if data.get("now")
                   else datetime.now(timezone.utc).replace(tzinfo=None))
     followers = {net: insights.followers_of(ans) for net, ans in (data.get("followers") or {}).items()}

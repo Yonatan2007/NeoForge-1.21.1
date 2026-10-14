@@ -350,6 +350,7 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
     assert (doc["status"], doc["cover"], doc["master_url"], doc["master_media_id"]) == ("scheduled", "cov0", "https://cdn/0.mp4", "m0")
     assert doc["metricool"] == {"id": 1, "uuid": "u1", "plannerUrl": "https://m"} and doc["clips"] == ["m_0"]
     assert writes[0]["doc_id"] == items[0]["id"] and doc["slot"] == items[0]["slot"]
+    assert (doc["account"], doc["kind"]) == ("main", "watch")
     assert doc["song"] == items[0]["song"].split("/")[-1]  # next runs avoid songs heard lately
     assert (doc["first_comment"], doc["reply_to"], doc["trial"], doc["metricool_tiktok"]) == \
         ("Which line hit hardest?", "r1", False, None)
@@ -428,3 +429,147 @@ def test_a_bad_opening_is_swapped_and_the_reel_made_again(tmp_path):
     out = panelrun.autopilot_swap(plan, [], {"ap-2": clip("m_1"), "ap-0": clip("m_1")})
     assert out["swapped"] == {"ap-0": "m_1", "ap-2": None}  # ap-1 has m_1 3 days away; ap-0 has it 6 h from ap-2
     assert [x["key"] for x in config.load_project(tmp_path / "ap-0" / "project.json").footage.picks][0] == "m_1"
+
+
+# --------------------------------------------------------------------------- accounts and comment videos
+
+def test_accounts_have_their_own_documents_and_ids():
+    assert (ap.settings_doc(None), ap.settings_doc("main"), ap.settings_doc("Space!")) == ("autopilot", "autopilot", "autopilot-space")
+    assert (ap.insights_doc(""), ap.insights_doc("dilemmas")) == ("latest", "dilemmas")
+    assert ap.account_of({}) == "main" and ap.account_of({"account": "psychology"}) == "psychology"
+    dt = datetime(2026, 10, 20, 19, 0)
+    assert ap.slot_id(dt) == "ap-20261020-1900" and ap.slot_id(dt, "space") == "ap-space-20261020-1900"
+    s = ap.settings_of({"niche": "space", "brand_id": 123, "mix": "half", "name": " Space "})
+    assert (s["niche"], s["brand_id"], s["mix"], s["name"]) == ("space", "123", "half", "Space")
+    d = ap.settings_of({"niche": "cooking", "mix": "all", "brand_id": ""})
+    assert (d["niche"], d["mix"], d["brand_id"]) == ("philosophy", "watch", None)
+
+
+def test_kinds_mix_comment_videos_in():
+    assert ap.kinds_for(3, "watch") == ["watch"] * 3
+    assert ap.kinds_for(4, "half") == ["comment", "watch", "comment", "watch"]
+    assert ap.kinds_for(6, "comments") == ["comment", "watch", "comment", "comment", "watch", "comment"]
+
+
+def test_a_niche_sets_the_footage_and_a_comment_video_holds_its_line():
+    from reelforge import timing
+    from reelforge.assemble import plan_shots
+    from reelforge.pipeline import _hook_display_end, split_hook
+    from reelforge.script import parse_script
+
+    space = ap.build_project(template_project(), "The sun is a star.", "Sun", niche="space")
+    fs = space["footage"]
+    assert (fs["palette"], fs["hook_query"], fs["allow_landscape"]) == ("space", "night sky", True)
+    assert fs["hook_searches"][0] == "milky way" and space["style"]["look"]["match"] == "off"
+    plain = ap.build_project(template_project(), "Hook.", "T")
+    assert plain["footage"]["allow_landscape"] is False and plain["footage"].get("hook_searches") is None
+    line = "Would you rather know the date you die, or how?"
+    c = ap.build_comment_project(template_project(), line, "Date or how", music=None, niche="dilemmas")
+    assert c["script"] == line and c["voice"]["source"] == "none" and c["voice"]["file"] is None
+    assert c["duration"]["target"] == ap.comment_seconds(line) == 8.5 and c["duration"]["max_intro"] == 0
+    assert (c["style"]["hook"]["mode"], c["style"]["hook"]["hold"]) == ("terrain", 60.0)
+    assert c["style"]["video"]["fade_out"] == 0 and c["music"]["file"] is None
+    assert ap.comment_seconds("Why?") == 7.0 and ap.comment_seconds("word " * 40) == 10.0
+    # one shot, the whole line up within the first seconds and on screen to the last frame
+    proj = config.from_dict(Project, c)
+    script = parse_script(proj.script, proj.auto_emphasis)
+    speech = timing.reading_seconds(script.words, proj.voice.words_per_second)
+    plan = timing.fit_duration(speech, proj.duration, proj.style.video.voice_delay, proj.style.video.tail)
+    timing.synthetic_timings(script.words, plan.intro, plan.total - plan.outro)
+    hook, body = split_hook(script, proj)
+    shots = plan_shots(script.words, plan.total, proj.style.video, keep_until=hook[-1].end)
+    assert plan.total == 8.5 and len(shots) == 1 and not body and plan.intro < 0.2 and hook[-1].end < 3.5
+    assert _hook_display_end(hook, body, proj, shots[0][1]) == plan.total
+
+
+def test_space_and_people_footage_follow_the_script():
+    from reelforge.script import footage_queries, parse_script
+
+    qs = footage_queries(parse_script("If the sun vanished, the planets would drift into the dark galaxy."), 5, palette="space")
+    assert qs[0] == "sun" and "planet" in qs and "nebula" in qs
+    ps = footage_queries(parse_script("You check your phone before you think."), 4, palette="people")
+    assert ps[0] == "texting" and "thinking" in ps
+
+
+def test_quality_gate_knows_comment_videos_and_wide_skies():
+    short = {"ok": True, "result": {"duration": 8.5, "warnings": []}}
+    assert ap.quality_problems(short, [clip("a_1")], kind="comment") == []
+    assert ap.quality_problems(short, [clip("a_1")])  # too short for a longer reel
+    long = {"ok": True, "result": {"duration": 30, "warnings": []}}
+    wide = [clip("s_1", 1920, 1080)]
+    assert ap.quality_problems(long, wide) and ap.quality_problems(long, wide, wide_ok=True) == []
+
+
+def test_prepare_mixes_comment_videos_for_an_account(tmp_path, monkeypatch):
+    from reelforge import pipeline
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "abc123.mp3").write_bytes(b"ID3 song")
+    template = {"id": "tpl-1", "data": {"project": template_project(),
+                                       "files": [{"name": "song.mp3", "store": {"type": "raw", "ids": ["abc123"]}}]}}
+    inp = tmp_path / "in.json"
+    inp.write_text(json.dumps({
+        "account": "dilemmas",
+        "settings": {"per_day": 2, "days": 2, "platforms": ["instagram", "tiktok"], "niche": "dilemmas", "mix": "half",
+                     "music": "template", "brand_id": "999"},
+        "brand": {"id": "999", "timezone": "Asia/Jerusalem"}, "template": template,
+        "best": {"instagram": grid({19: 100, 12: 90})}, "now": "2026-10-12T08:00",
+        "replies": [{"id": "r1", "comment": "Which would you pick?", "account": "dilemmas"}]}))
+    seen = {"watch": [], "lines": [], "search": []}
+
+    def writer(**kw):
+        seen["watch"].append(kw)
+        return {"model": "g", "ideas": [{"title": f"W{len(seen['watch'])}-{i}", "script": "Would you trade it? More words.",
+                                         "why": "", "caption": "C", "hashtags": [], "youtube_title": "Y"} for i in range(kw["count"])]}
+
+    def line_writer(**kw):
+        seen["lines"].append(kw)
+        return {"model": "g", "ideas": [{"kind": "comment", "title": f"L{i}", "script": "Would you rather know when, or how?",
+                                         "why": "", "caption": "Be honest.", "hashtags": [], "youtube_title": "When or how?",
+                                         "first_comment": "How."} for i in range(kw["count"])]}
+
+    def searcher(topic, seeds=None):
+        seen["search"].append(seeds)
+        return ["would you rather questions"]
+
+    monkeypatch.setattr(pipeline, "review_footage", lambda project, work, settings, out: {
+        "opening": [clip(f"m_{work.name}")], "pool": [clip(f"p_{work.name}x{i}") for i in range(4)],
+        "rest_shots": 0 if project.voice.source == "none" else 2})
+    out = panelrun.autopilot_prepare(inp, assets, tmp_path / "run", writer=writer, searcher=searcher, line_writer=line_writer)
+    assert out["ok"] and out["account"] == "dilemmas" and out["slots"] == 4 and out["comment_videos"] == 2
+    items = json.loads((tmp_path / "run" / "plan.json").read_text())["items"]
+    assert [it["kind"] for it in items] == ["comment", "watch", "comment", "watch"]
+    assert all(it["id"].startswith("ap-dilemmas-") and it["account"] == "dilemmas" for it in items)
+    assert seen["search"][0][0] == "would you rather"  # the niche's searches
+    assert seen["watch"][0]["niche"] == "dilemmas" and seen["watch"][0]["replies"][0]["id"] == "r1"
+    assert seen["lines"][0]["count"] == 2 and seen["lines"][0]["niche"] == "dilemmas" and "examples" not in seen["lines"][0]
+    assert [it["reply_to"] for it in items] == [None, "r1", None, None]  # a video reply is a longer video
+    for it in items:
+        p = json.loads((tmp_path / "run" / it["id"] / "project.json").read_text())
+        if it["kind"] == "comment":
+            assert "voice_request" not in it and p["voice"]["source"] == "none" and len(p["footage"]["picks"]) == 1
+            assert it["first_comment"] == "How." and it["title"].startswith("L")
+        else:
+            assert it["voice_request"]["params"]["prompt"].startswith("Would you trade it?")
+            assert len(p["footage"]["picks"]) == 5
+
+
+def test_comment_videos_render_without_a_voice(tmp_path, monkeypatch):
+    work = tmp_path / "ap-space-1"
+    work.mkdir()
+    p = config.from_dict(Project, ap.build_comment_project(template_project(), "What is out there?", "T", niche="space"))
+    config.save_project(p, work / "project.json")
+    (tmp_path / "plan.json").write_text(json.dumps({"items": [{"id": "ap-space-1", "work": str(work), "kind": "comment"}]}))
+    cmds = []
+
+    def fake_run(cmd, env=None, **kw):
+        cmds.append(cmd)
+        (work / "output").mkdir()
+        (work / "result.json").write_text(json.dumps({"ok": True, "result": {
+            "video": "output/v.mp4", "duration": 8.0, "warnings": [], "cover_time": 3}}))
+        (work / "output" / "credits.json").write_text(json.dumps([{"provider": "mixkit", "id": "7", "width": 1920, "height": 1080}]))
+
+    monkeypatch.setattr(panelrun.subprocess, "run", fake_run)
+    out = panelrun.autopilot_render(tmp_path / "plan.json", tmp_path / "no-voices.json")
+    assert out["passed"] == 1 and "--voiceover" not in cmds[0]  # and a cropped starfield is fine for space

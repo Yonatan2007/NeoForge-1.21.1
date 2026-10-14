@@ -269,8 +269,12 @@ class FootageSettings:
     stock: bool = True                     # fill shots without user footage from stock sites
     sources: list[str] = field(default_factory=lambda: ["mixkit", "pexels", "pixabay"])
     palette: str = "bright"                # bright (sunny nature, the reference) | moody (night, rain)
+                                           # | people (everyday life) | space (stars, galaxies)
     queries: list[str] | None = None       # override searches, one per shot in order
     hook_query: str | None = "mountains"   # search for the hook shot (needs a skyline)
+    hook_searches: list[str] | None = None # more searches tried for it (None: mountains, hills ...)
+    theme: list[str] | None = None         # words a clip's name should mention (a space account's: stars, galaxy
+                                           # ...); clips that mention none rank far lower
     reference_matching: bool = True        # rank stock clips by similarity to reference uploads
     allow_landscape: bool = True           # crop landscape clips when vertical ones run out
     picks: list[dict] = field(default_factory=list)  # stock clips chosen in the review, in shot order

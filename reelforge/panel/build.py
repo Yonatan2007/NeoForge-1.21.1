@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
-from reelforge import __version__, config, schema, voiceover  # noqa: E402
+from reelforge import __version__, autopilot, config, niches, schema, voiceover  # noqa: E402
 from reelforge.config import FootageItem, Project  # noqa: E402
 
 STATIC = ROOT / "reelforge" / "ui" / "static"
@@ -96,6 +96,7 @@ def build(out: Path, session: str, artifact: str, repo: str = "", branch: str = 
         "footage-item.json": config.to_dict(FootageItem(path="")),
         "factory.json": factory,
         "voice.json": {"presets": voiceover.VOICE_PRESETS, "default_voice_id": voiceover.DEFAULT_VOICE_ID},
+        "niches.json": {"niches": niches.catalog(), "accounts": list(autopilot.ACCOUNTS)},
         "config.json": {"session_id": session, "artifact": artifact,
                         "connector": "Claude Code Remote", "tool": "send_message",
                         "repo": repo, "branch": branch},

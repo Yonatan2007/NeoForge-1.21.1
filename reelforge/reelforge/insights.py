@@ -212,7 +212,8 @@ def entries(found: dict[str, dict[str, dict]], others: list[dict], reels: list[d
         hook = _hook(reel["script"]) if reel and reel.get("script") else _hook(first.get("text"))
         times = {net: round((posts[net]["views"] + 1) / (base[net]["views"] + 1), 2)
                  for net in sorted(scored, key=scored.get, reverse=True)}
-        return {"id": reel["id"] if reel else None, "title": (reel or {}).get("title") or hook[:60], "hook": hook,
+        return {"id": reel["id"] if reel else None, "kind": (reel or {}).get("kind") or "watch",
+                "title": (reel or {}).get("title") or hook[:60], "hook": hook,
                 "slot": (reel or {}).get("slot"), "duration": (reel or {}).get("duration") or first.get("duration"),
                 "score": round(scored[best], 3),
                 "best": {"network": best, "views": posts[best]["views"], "times": times[best]},
@@ -266,7 +267,8 @@ def _line(kind: str, e: dict) -> str:
 
 def learnings(ranked: list[dict], posts: list[dict], tz: str, top: int = 3) -> list[str]:
     """Plain lines for Gemini's brief and the panel: the best and weakest
-    reels, how long people watch, and which lengths and hours did better."""
+    reels, how long people watch, whether comment videos or longer ones did
+    better, and which lengths and hours did better."""
     lines = [_line("Did best", e) for e in ranked[:top]]
     if len(ranked) > top:
         lines += [_line("Did least", e) for e in ranked[-top:][::-1] if e not in ranked[:top]]
@@ -280,7 +282,13 @@ def learnings(ranked: list[dict], posts: list[dict], tz: str, top: int = 3) -> l
     tt = [p["full_rate"] for p in posts if p["network"] == "tiktok" and p.get("full_rate") is not None]
     if len(tt) >= 3:
         lines.append(f"On TikTok {statistics.median(tt):.0f} % of viewers watch to the end.")
-    timed = [e for e in ranked if e.get("duration")]
+    comments = [e["score"] for e in ranked if e.get("kind") == "comment"]
+    longer_videos = [e["score"] for e in ranked if e.get("id") and e.get("kind") != "comment"]
+    if len(comments) >= 3 and len(longer_videos) >= 3:
+        gap = statistics.median(comments) - statistics.median(longer_videos)
+        lines.append(f"Comment videos did {_times(2 ** abs(gap))} {'better' if gap > 0 else 'worse'} than the longer "
+                     "ones." if abs(gap) >= 0.5 else "Comment videos and the longer ones did about the same.")
+    timed = [e for e in ranked if e.get("duration") and e.get("kind") != "comment"]
     short = [e["score"] for e in timed if e["duration"] < 35]
     longer = [e["score"] for e in timed if e["duration"] >= 35]
     if len(short) >= 3 and len(longer) >= 3:

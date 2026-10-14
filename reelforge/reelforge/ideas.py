@@ -16,6 +16,8 @@ import re
 
 import requests
 
+from . import niches
+
 API = "https://generativelanguage.googleapis.com/v1beta"
 
 
@@ -89,6 +91,15 @@ SCHEMA = {
 POST_FIELDS = {"caption": {"type": "STRING"}, "youtube_title": {"type": "STRING"}}
 TAGS_FIELD = {"hashtags": {"type": "ARRAY", "items": {"type": "STRING"}}}
 COMMENT_FIELD = {"first_comment": {"type": "STRING"}}
+LINE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"ideas": {"type": "ARRAY", "items": {
+        "type": "OBJECT",
+        "properties": {"line": {"type": "STRING"}, "title": {"type": "STRING"}, "caption": {"type": "STRING"},
+                       "youtube_title": {"type": "STRING"}},
+        "required": ["line", "title", "caption", "youtube_title"]}}},
+    "required": ["ideas"],
+}
 SEARCH_FIELD = {"search_phrase": {"type": "STRING"}}
 # words per script and how long that reads (the narrator speaks ~2.9 words a second)
 LENGTHS = {"short": (60, 85, "about 20 to 30 seconds"), "medium": (85, 115, "about 30 to 40 seconds"),
@@ -112,25 +123,27 @@ def schema(post: bool = False, comment: bool = False, search: bool = False, hash
 def prompt(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | None = None,
            examples: list[str] | None = None, post: bool = False, *, length: str = "long",
            comment: bool = False, search: bool = False, phrases: list[str] | None = None,
-           learnings: list[str] | None = None, replies: list[dict] | None = None, hashtags: bool = False) -> str:
+           learnings: list[str] | None = None, replies: list[dict] | None = None, hashtags: bool = False,
+           niche: str | None = None) -> str:
     """The brief. ``length``: a ``LENGTHS`` key. ``comment`` / ``search`` /
     ``hashtags`` ask for a first comment / a search phrase / hashtags per post
     (``phrases``: real searches to pick from). ``learnings``: how the account's reels did, best first.
     ``replies``: viewers' comments ({comment, platform, note}) to answer, one
-    script each, first and in this order."""
+    script each, first and in this order. ``niche``: what the account is
+    about and how its scripts are shaped (``niches.NICHES``)."""
     lo, hi, spoken = LENGTHS.get(length, LENGTHS["long"])
+    n = niches.get(niche)
     lines = [
         f"Write {count} new scripts for vertical short videos (Instagram Reels, YouTube Shorts, TikTok) on an account "
-        "of late-night philosophical thoughts about love, loss, self-worth and becoming who you are.",
-        "Each script is read by a calm narrator over moody stock footage, with one word on screen at a time.",
+        f"of {n.about}.",
+        "Each script is read by a calm narrator over stock footage, with one word on screen at a time.",
         "Rules for every script:",
         f"- {lo} to {hi} words ({spoken} read aloud), in the second person, plain spoken English, no lists, "
         "no emojis, no hashtags.",
         "- The first sentence is the hook: under 14 words, a question or a sharp claim that stops the scroll. "
         "It is shown along the skyline, so keep it short. Its first five words must work on their own: most "
         "people decide in the first two seconds whether to keep watching.",
-        "- Build from the hook to an uncomfortable truth, then turn to something hopeful and end on a line "
-        "that echoes the hook.",
+        *(f"- {rule}" for rule in n.arc),
         "- Mark the 2 to 4 strongest words with *asterisks* (one word each).",
         "- Every script takes a different angle; none may repeat an idea below.",
         "Also give each a short title (under 8 words) and one sentence on why it should do well.",
@@ -164,6 +177,12 @@ def prompt(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | N
         for r in replies:
             note = f" (idea: {r['note'].strip()[:300]})" if (r.get("note") or "").strip() else ""
             lines.append(f'- {r.get("platform") or "a"} viewer wrote: """{str(r.get("comment", "")).strip()[:500]}"""{note}')
+    return "\n".join(lines + _context(learnings, topic, tone, examples, avoid))
+
+
+def _context(learnings, topic, tone, examples, avoid) -> list[str]:
+    """The brief's closing lines: what did well, the user's topic and tone, ideas already used."""
+    lines = []
     if learnings:
         lines.append("How this account's recent reels did, best first. Write more like the top ones (their kind of "
                      "hook, angle and feeling, never their exact ideas) and less like the bottom ones:")
@@ -178,7 +197,48 @@ def prompt(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | N
     if avoid:
         lines.append("Ideas already used (do not repeat them):")
         lines += [f"- {a.strip()[:200]}" for a in avoid[:40] if a.strip()]
-    return "\n".join(lines)
+    return lines
+
+
+def line_prompt(count: int = 5, *, niche: str | None = None, topic: str = "", tone: str = "",
+                avoid: list[str] | None = None, comment: bool = False, search: bool = False,
+                phrases: list[str] | None = None, learnings: list[str] | None = None, hashtags: bool = False) -> str:
+    """The brief for comment videos: one line on screen for 7-10 s, no voice,
+    whose only job is to get answers in the comments (``niches``)."""
+    n = niches.get(niche)
+    lines = [
+        f"Write {count} new lines for 8-second vertical videos (Instagram Reels, YouTube Shorts, TikTok) on an account "
+        f"of {n.about}.",
+        "Each video is one stock clip with the line on screen, music and no voice. Its only job is to make people "
+        "answer in the comments; the short video loops while they read the answers.",
+        "Rules for every line:",
+        "- Under 14 words, plain spoken English, no emojis, no hashtags.",
+        "- An unfinished sentence that ends with a colon, or a direct question, that anyone can answer from their "
+        "own life or opinion in a few words. Prefer what people answer in their own words over a plain yes or no.",
+        "- Never ask for comments, likes or tags (\"comment below\", \"like if\", \"tag someone\").",
+        "- Nothing hateful, sexual or political, and never a group of people as the target.",
+        *(f"- {rule}" for rule in n.lines),
+        "- Every line is different; none may repeat an idea below.",
+        "Lines of the kind wanted (never reuse them):",
+        *(f"- {x}" for x in n.examples),
+        "For each line also write:",
+        "- title: under 8 words.",
+        "- caption: one short line (at most 150 characters) that nudges people to answer, like \"Be honest.\"; "
+        "no hashtags.",
+        "- youtube_title: the line itself, or close to it, at most 90 characters, no hashtags.",
+    ]
+    if comment:
+        lines.append("- first_comment: the account's own short answer to the line, posted as the first comment to "
+                     "start the conversation, under 140 characters.")
+    if search:
+        lines.append("- search_phrase: what someone would type into TikTok or YouTube search to find this video, "
+                     "2 to 6 words in lower case. Put it word for word in the caption.")
+        if phrases:
+            lines.append("Real searches people make on YouTube (use one word for word when it fits):")
+            lines += [f"- {p}" for p in phrases[:60]]
+    if hashtags:
+        lines.append("- hashtags: 5 to 8 that fit the video, without the # sign, mixing broad and niche ones.")
+    return "\n".join(lines + _context(learnings, topic, tone, None, avoid))
 
 
 def caption_lines(text: str) -> str:
@@ -195,34 +255,48 @@ def clean_tags(raw) -> list[str]:
     return list(dict.fromkeys(t for t in tags if t))[:30]
 
 
-def generate(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | None = None,
-             examples: list[str] | None = None, session: requests.Session | None = None,
-             post: bool = False, *, length: str = "long", comment: bool = False, search: bool = False,
-             phrases: list[str] | None = None, learnings: list[str] | None = None,
-             replies: list[dict] | None = None, hashtags: bool = False) -> dict:
-    """{model, ideas: [{title, script, why}]} from Gemini; with ``post`` each
-    idea also has caption, hashtags (empty unless asked for) and youtube_title
-    (and first_comment / search_phrase when asked for, see ``prompt``)."""
-    count = max(1, min(int(count or 5), 10))
+def _ask(brief: str, response_schema: dict, session: requests.Session | None) -> tuple[str, list[dict]]:
+    """(model, the answer's "ideas") for ``brief``."""
     headers = _headers()
     session = session or requests.Session()
     model = _model(session, headers)
-    brief = prompt(topic, count, tone, avoid, examples, post, length=length, comment=comment, search=search,
-                   phrases=phrases, learnings=learnings, replies=replies, hashtags=hashtags)
     body = {
         "contents": [{"role": "user", "parts": [{"text": brief}]}],
         "generationConfig": {"temperature": 1.0, "responseMimeType": "application/json",
-                             "responseSchema": schema(post, comment and post, search and post, hashtags and post)},
+                             "responseSchema": response_schema},
     }
     r = session.post(f"{API}/models/{model}:generateContent", headers=headers, json=body, timeout=180)
     _raise(r)
     data = r.json()
     try:
         text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
-        ideas = json.loads(text)["ideas"]
+        return model, json.loads(text)["ideas"]
     except (KeyError, IndexError, ValueError, TypeError) as exc:
         reason = (data.get("promptFeedback") or {}).get("blockReason") or (data.get("candidates") or [{}])[0].get("finishReason")
         raise IdeasError(f"Gemini's answer couldn't be read ({reason or exc}). Try again.") from exc
+
+
+def _extras(item: dict, raw: dict, *, comment: bool, search: bool, hashtags: bool) -> None:
+    """The post's first comment, search phrase and hashtags, cleaned, into ``item``."""
+    item["hashtags"] = clean_tags(raw.get("hashtags")) if hashtags else []
+    if comment:
+        item["first_comment"] = re.sub(r"\s+", " ", str(raw.get("first_comment") or "")).strip().strip('"“”')
+    if search:
+        item["search_phrase"] = re.sub(r"[^\w' -]", "", str(raw.get("search_phrase") or "")).strip().lower()[:80]
+
+
+def generate(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] | None = None,
+             examples: list[str] | None = None, session: requests.Session | None = None,
+             post: bool = False, *, length: str = "long", comment: bool = False, search: bool = False,
+             phrases: list[str] | None = None, learnings: list[str] | None = None,
+             replies: list[dict] | None = None, hashtags: bool = False, niche: str | None = None) -> dict:
+    """{model, ideas: [{title, script, why}]} from Gemini; with ``post`` each
+    idea also has caption, hashtags (empty unless asked for) and youtube_title
+    (and first_comment / search_phrase when asked for, see ``prompt``)."""
+    count = max(1, min(int(count or 5), 10))
+    brief = prompt(topic, count, tone, avoid, examples, post, length=length, comment=comment, search=search,
+                   phrases=phrases, learnings=learnings, replies=replies, hashtags=hashtags, niche=niche)
+    model, ideas = _ask(brief, schema(post, comment and post, search and post, hashtags and post), session)
     clean = []
     for i in ideas:
         script = re.sub(r"\s+", " ", str(i.get("script", ""))).strip()
@@ -231,15 +305,45 @@ def generate(topic: str = "", count: int = 5, tone: str = "", avoid: list[str] |
         idea = {"title": str(i.get("title", "")).strip()[:80] or script.split(".")[0][:60],
                 "script": script, "why": str(i.get("why", "")).strip()[:300]}
         if post:
-            title = str(i.get("youtube_title") or idea["title"]).strip().strip('"“”')
             idea.update(caption=caption_lines(i.get("caption"))[:2200],
-                        hashtags=clean_tags(i.get("hashtags")) if hashtags else [],
-                        youtube_title=title if len(title) <= 100 else f"{title[:99].rstrip()}…")
-            if comment:
-                idea["first_comment"] = re.sub(r"\s+", " ", str(i.get("first_comment") or "")).strip().strip('"“”')
-            if search:
-                idea["search_phrase"] = re.sub(r"[^\w' -]", "", str(i.get("search_phrase") or "")).strip().lower()[:80]
+                        youtube_title=_title(i.get("youtube_title") or idea["title"]))
+            _extras(idea, i, comment=comment, search=search, hashtags=hashtags)
         clean.append(idea)
     if not clean:
         raise IdeasError("Gemini returned no scripts. Try again.")
+    return {"model": model, "ideas": clean[:count]}
+
+
+def _title(raw) -> str:
+    title = str(raw or "").strip().strip('"“”')
+    return title if len(title) <= 100 else f"{title[:99].rstrip()}…"
+
+
+def generate_lines(count: int = 5, *, niche: str | None = None, topic: str = "", tone: str = "",
+                   avoid: list[str] | None = None, session: requests.Session | None = None, comment: bool = False,
+                   search: bool = False, phrases: list[str] | None = None, learnings: list[str] | None = None,
+                   hashtags: bool = False, **_ignored) -> dict:
+    """{model, ideas: [{kind: "comment", title, script (the line), caption,
+    youtube_title, hashtags, ...}]} for comment videos (``line_prompt``)."""
+    count = max(1, min(int(count or 5), 10))
+    brief = line_prompt(count, niche=niche, topic=topic, tone=tone, avoid=avoid, comment=comment, search=search,
+                        phrases=phrases, learnings=learnings, hashtags=hashtags)
+    fields = {**(TAGS_FIELD if hashtags else {}), **(COMMENT_FIELD if comment else {}),
+              **(SEARCH_FIELD if search else {})}
+    item = LINE_SCHEMA["properties"]["ideas"]["items"]
+    response_schema = {**LINE_SCHEMA, "properties": {"ideas": {"type": "ARRAY", "items": {
+        **item, "properties": {**item["properties"], **fields}, "required": [*item["required"], *fields]}}}}
+    model, ideas = _ask(brief, response_schema, session)
+    clean = []
+    for i in ideas:
+        line = re.sub(r"\s+", " ", str(i.get("line", ""))).strip().strip('"“”')
+        if not line:
+            continue
+        idea = {"kind": "comment", "title": str(i.get("title", "")).strip()[:80] or line[:60], "script": line, "why": "",
+                "caption": re.sub(r"\s+", " ", str(i.get("caption") or "")).strip()[:300] or line,
+                "youtube_title": _title(i.get("youtube_title") or line)}
+        _extras(idea, i, comment=comment, search=search, hashtags=hashtags)
+        clean.append(idea)
+    if not clean:
+        raise IdeasError("Gemini returned no lines. Try again.")
     return {"model": model, "ideas": clean[:count]}

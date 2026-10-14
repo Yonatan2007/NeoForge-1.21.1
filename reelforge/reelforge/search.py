@@ -36,10 +36,11 @@ def suggestions(query: str, session: requests.Session | None = None, timeout: fl
     return [str(x).strip() for x in (data[1] if isinstance(data, list) and len(data) > 1 else []) if str(x).strip()]
 
 
-def seeds_for(topic: str = "") -> list[str]:
-    """The searches to ask about: the user's topics first ("letting go, self-worth"), then the defaults."""
+def seeds_for(topic: str = "", base: tuple[str, ...] | list[str] | None = None) -> list[str]:
+    """The searches to ask about: the user's topics first ("letting go, self-worth"), then the
+    account's niche ones (``base``, default this module's ``SEEDS``)."""
     own = [t.strip().lower() for t in re.split(r"[,;\n]+", topic or "") if 2 < len(t.strip()) < 60]
-    return list(dict.fromkeys([*own, *SEEDS]))
+    return list(dict.fromkeys([*own, *(SEEDS if base is None else base)]))
 
 
 def phrases(topic: str = "", session: requests.Session | None = None, limit: int = 60,

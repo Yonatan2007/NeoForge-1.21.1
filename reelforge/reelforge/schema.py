@@ -113,7 +113,9 @@ ALIGN: Options = (("auto", "Automatic (Whisper if installed)"), ("whisper", "Whi
 STOCK_SOURCES: Options = (("mixkit", "Mixkit (free, no key needed)"), ("pexels", "Pexels (needs an API key)"),
                           ("pixabay", "Pixabay (needs an API key)"))
 PALETTES: Options = (("bright", "Bright (sunny nature)"),
-                     ("moody", "Moody (night, rain)"))
+                     ("moody", "Moody (night, rain)"),
+                     ("people", "People (everyday life, the city)"),
+                     ("space", "Space (stars, galaxies)"))
 ROLES: Options = (("footage", "Use in the video"), ("reference", "Reference only (steers stock and colour)"))
 KINDS: Options = (("auto", "Detect automatically"), ("image", "Picture"), ("video", "Video"))
 MOTIONS: Options = (("auto", "Automatic"), ("zoom-in", "Slow zoom in"), ("zoom-out", "Slow zoom out"),
@@ -338,6 +340,12 @@ FOOTAGE = Section("footage", "Footage", "Your own pictures and videos, and free 
           "empty to search automatically from the script.", "lines", nullable=True),
     _text("footage.hook_query", "Search for the opening shot", "The first shot needs a clear skyline for "
           "the hook text, e.g. mountains. Empty = use the normal searches.", nullable=True),
+    Field("footage.hook_searches", "More searches for the opening shot", "Also tried for the first shot, "
+          "one per line; the clearest skyline wins. Empty = mountains, hills, hiking, snow mountains.", "lines",
+          nullable=True, advanced=True),
+    Field("footage.theme", "Keep clips on these subjects", "Words a stock clip's name should mention, one per "
+          "line (e.g. stars, galaxy); clips that mention none are only used when nothing else is left.", "lines",
+          nullable=True, advanced=True),
     _bool("footage.reference_matching", "Prefer clips like my references", "Rank stock clips by how much "
           "they look like your reference pictures."),
     _bool("footage.allow_landscape", "Allow landscape clips", "Crop landscape clips to fit when there "

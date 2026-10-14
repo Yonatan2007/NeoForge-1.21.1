@@ -86,19 +86,73 @@ export async function metricool(tool, input, { text = false } = {}) {
   return payload;
 }
 
-let brandPromise = null;
-/** The Metricool brand the panel posts through: {id, label, timezone, networks}. */
-export function metricoolBrand() {
-  brandPromise ||= metricool("getBrandSettings", {}).then((p) => {
-    const list = (p && p.data) || [];
-    const b = list.find((x) => x.networksData && (x.networksData.instagramData || x.networksData.youtubeData)) || list[0];
-    if (!b) throw Object.assign(new Error("Your Metricool account has no brand yet."), { code: "no_brand" });
-    return { id: String(b.id), label: b.label || "", timezone: b.timezone || viewerTz(), networks: b.networksData || {} };
+let brandsPromise = null;
+/** Every brand of the viewer's Metricool: [{id, label, timezone, networks}]. Each autopilot account posts to one. */
+export function metricoolBrands({ fresh = false } = {}) {
+  if (fresh) brandsPromise = null;
+  brandsPromise ||= metricool("getBrandSettings", {}).then((p) => {
+    const list = ((p && p.data) || []).map((b) => ({ id: String(b.id), label: b.label || "", timezone: b.timezone || viewerTz(),
+                                                     networks: b.networksData || {} }));
+    if (!list.length) throw Object.assign(new Error("Your Metricool account has no brand yet."), { code: "no_brand" });
+    return list;
   }).catch((err) => {
-    brandPromise = null;
+    brandsPromise = null;
     throw err;
   });
-  return brandPromise;
+  return brandsPromise;
+}
+
+const BRAND_KEY = "reelforge.metricoolBrand"; // the brand chosen on Calendar and Stats, in this browser
+const viewerBrand = () => { try { return localStorage.getItem(BRAND_KEY) || null; } catch { return null; } };
+const setViewerBrand = (id) => { try { localStorage.setItem(BRAND_KEY, id); } catch { /* not kept: fine */ } };
+let mainBrandId;
+async function mainBrand() { // the main autopilot account's brand (settings/autopilot.brand_id)
+  if (mainBrandId === undefined) {
+    try {
+      const s = await P().db.doc("settings/autopilot").get();
+      mainBrandId = (s.exists && s.data().brand_id) || null;
+    } catch {
+      return null;
+    }
+  }
+  return mainBrandId;
+}
+
+/**
+ * A Metricool brand: {id, label, timezone, networks}. With `id`, that brand
+ * (an autopilot account's); without, the one chosen on Calendar and Stats,
+ * else the main account's, else the first with Instagram or YouTube.
+ */
+export async function metricoolBrand(id) {
+  const list = await metricoolBrands();
+  if (id) {
+    const b = list.find((x) => x.id === String(id));
+    if (!b) throw Object.assign(new Error("That Metricool brand isn't in your Metricool any more."), { code: "brand_missing" });
+    return b;
+  }
+  const want = viewerBrand() || await mainBrand();
+  return (want && list.find((x) => x.id === String(want)))
+    || list.find((x) => x.networks.instagramData || x.networks.youtubeData) || list[0];
+}
+
+/** Which networks a brand has linked, in words: "Instagram, YouTube, TikTok". */
+export const brandNetworks = (b) => [["instagramData", "Instagram"], ["youtubeData", "YouTube"], ["tiktokData", "TikTok"]]
+  .filter(([k]) => b && b.networks && b.networks[k]).map(([, l]) => l).join(", ");
+
+/** A brand picker for Calendar and Stats, shown when the viewer has more than one brand; `onChange` reloads. */
+export function brandSwitcher(onChange) {
+  const sel = h("select", { class: "input select brand-switch", "aria-label": "Metricool brand" });
+  const wrap = h("div", { class: "brand-switch-wrap", hidden: true }, sel);
+  Promise.all([metricoolBrands(), metricoolBrand()]).then(([list, current]) => {
+    if (list.length < 2) return;
+    sel.replaceChildren(...list.map((b) => h("option", { value: b.id, selected: b.id === current.id }, b.label || `Brand ${b.id}`)));
+    wrap.hidden = false;
+  }).catch(() => {});
+  sel.addEventListener("change", () => {
+    setViewerBrand(sel.value);
+    onChange();
+  });
+  return wrap;
 }
 
 const NETWORK_DATA = ["twitter", "facebook", "instagram", "linkedin", "pinterest", "youtube", "tiktok", "bluesky", "threads", "gmb"];
@@ -123,6 +177,7 @@ const MCP_PROBLEMS = {
   blocked_by_policy: "Your organization doesn't let the panel use Metricool.",
   no_mcp: "Connectors can't be used in this view.",
   no_brand: "Your Metricool account has no brand yet.",
+  brand_missing: "This account's Metricool brand isn't in your Metricool any more: choose it again on the Autopilot page.",
 };
 
 export function metricoolProblem(err) {
@@ -426,7 +481,7 @@ export function renderCalendar(container, { findVideo } = {}) {
       h("a", { class: "btn btn-secondary", href: "#/x/publish", html: `${icon("upload", { size: 18 })}<span class="btn-label">New post</span>` })),
     h("div", { class: "stack-lg" },
       h("section", { class: "card cal-card" },
-        h("div", { class: "cal-bar" }, title, h("div", { class: "row" }, today, prev, next, refresh)),
+        h("div", { class: "cal-bar" }, title, h("div", { class: "row row-wrap" }, brandSwitcher(() => paint()), today, prev, next, refresh)),
         h("div", { class: "cal-week", "aria-hidden": "true" }, DAY_NAMES.map((d) => h("span", {}, d))),
         grid, note),
       agenda));
@@ -552,7 +607,7 @@ export function renderStats(container, { findVideo } = {}) {
   container.append(
     head("Stats", "How your reels are doing on Instagram and YouTube, from Metricool."),
     h("div", { class: "stack-lg" },
-      h("div", { class: "stat-bar" }, tabs, h("div", { class: "row row-wrap" }, range, sorter, refresh)),
+      h("div", { class: "stat-bar" }, tabs, h("div", { class: "row row-wrap" }, brandSwitcher(() => load()), range, sorter, refresh)),
       note, tiles, chart,
       h("section", { class: "card card-flush" }, list)));
 

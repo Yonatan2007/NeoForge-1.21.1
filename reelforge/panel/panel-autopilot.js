@@ -2,14 +2,21 @@
  * Autopilot: Claude writes, voices, renders and schedules reels by itself,
  * a few a day at the audience's busiest hours (reelforge/autopilot.py).
  *
- *   settings/autopilot   the settings on this page (the same keys as autopilot.DEFAULTS)
+ * One autopilot per account (#/x/autopilot/<account>): the main account and
+ * one per niche (panel-data/niches.json, reelforge/niches.py), each posting
+ * through its own Metricool brand with its own settings, queue and numbers.
+ *
+ *   settings/autopilot   the main account's settings (the same keys as autopilot.DEFAULTS);
+ *                        settings/autopilot-<account> another account's
  *   music/<id>           the music library (the Music page): "random" music deals from it
- *   autopilot/<slot id>  one reel of the queue: {slot, tz, status, title, caption, cover,
- *                        master_url, platforms, metricool: {id, uuid, plannerUrl}, problems,
- *                        first_comment, trial, collaborator, reply_to, tiktok_sound, metricool_tiktok}
- *   insights/latest      how the reels did (reelforge/insights.py): learnings, followers, per-reel
- *                        numbers, Trial Reel decisions; Claude refreshes it each morning
- *   tasks/<id>           kind "autopilot" {days, per_day}: fill the coming days; Claude runs it
+ *   autopilot/<slot id>  one reel of the queue: {account, kind ("watch" | "comment"), slot, tz, status,
+ *                        title, script, caption, cover, master_url, platforms,
+ *                        metricool: {id, uuid, plannerUrl}, problems, first_comment, trial,
+ *                        collaborator, reply_to, tiktok_sound, metricool_tiktok}
+ *   insights/latest      how the main account's reels did (reelforge/insights.py): learnings,
+ *                        followers, per-reel numbers, Trial Reel decisions; insights/<account>
+ *                        another account's. Claude refreshes them each morning
+ *   tasks/<id>           kind "autopilot" {days, per_day, account}: fill the coming days; Claude runs it
  *
  * Approving or holding back a queued reel happens here, through the viewer's
  * own Metricool connector; nothing else needs Claude between runs.
@@ -20,7 +27,7 @@ import { callout } from "./components.js";
 import { button, confirmDialog, debounce, h, relativeTime, toast, toastError } from "./dom.js";
 import { segmented, switchControl } from "./fields.js";
 import { icon } from "./icons.js";
-import { metricool, metricoolBrand, metricoolProblem, isoIn, postInfo } from "./panel-growth.js";
+import { brandNetworks, metricool, metricoolBrand, metricoolBrands, metricoolProblem, isoIn, postInfo } from "./panel-growth.js";
 import { TONES } from "./panel-more.js";
 
 const P = () => api._panel;
@@ -29,8 +36,24 @@ const DEFAULTS = {
   window: ["08:00", "23:30"], min_gap: 3, template: null, format: "template", music: "random",
   topic: "", tone: "", ai_label: false,
   length: "short", first_comment: true, search: true, trial_reels: "some", collaborators: [], collab_every: 7,
-  tiktok_sound: "off", hashtags: false,
+  tiktok_sound: "off", hashtags: false, niche: "philosophy", name: "", brand_id: null, mix: "watch",
 };
+const MAIN = "main";
+/** The accounts (panel-data/niches.json): [{id, niche, name}], the main one first. */
+export const accounts = () => (P().data.niches && P().data.niches.accounts) || [{ id: MAIN, niche: "philosophy", name: "Main account" }];
+const nicheOf = (id) => ((P().data.niches && P().data.niches.niches) || []).find((n) => n.id === id) || null;
+export const accountOf = (doc) => (doc && doc.account) || MAIN;
+export const accountName = (id) => (accounts().find((a) => a.id === id) || { name: id }).name;
+const settingsDoc = (account) => (account === MAIN ? "settings/autopilot" : `settings/autopilot-${account}`);
+const insightsDoc = (account) => (account === MAIN ? "insights/latest" : `insights/${account}`);
+const MIXES = [{ value: "watch", label: "Only longer videos" }, { value: "half", label: "Half and half" },
+               { value: "comments", label: "Mostly comment videos" }];
+const MIX_HELP = {
+  watch: "Every reel is a longer narrated video that keeps its answer for the end.",
+  half: "Every other reel is a comment video: 7–10 s, one line on screen, music and no voice. People answer it in the comments, and the short video loops while they read them.",
+  comments: "Two in three reels are comment videos (7–10 s, one line on screen, no voice); the rest are longer narrated videos.",
+};
+const VOICED = { watch: 1, half: 0.5, comments: 1 / 3 }; // the share of reels with a voiceover
 const NETS = { instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };
 const TRIAL_STATE = {
   running: "Trial Reel: testing on non-followers", shared: "Trial Reel: did well, posted for followers too",
@@ -93,9 +116,19 @@ function numbersLine(stats) {
   return parts.join(" · ");
 }
 
-export function renderAutopilot(container) {
+export function renderAutopilot(container, sub) {
   const { db, retrying, newTask, nowIso, blobUrl, listSongs } = P();
-  let settings = { ...DEFAULTS };
+  const all = accounts();
+  const account = all.find((a) => a.id === sub) || all[0];
+  const main = account.id === MAIN;
+  const niche = nicheOf(account.niche);
+  const sdoc = settingsDoc(account.id);
+  const defaults = { ...DEFAULTS, niche: account.niche, name: account.name,
+                     ...(main ? {} : { mix: "half", platforms: ["instagram", "youtube", "tiktok"] }) };
+  let settings = { ...defaults };
+  let brands = null; // the viewer's Metricool brands, once read
+  let brandProblem = ""; // why they couldn't be read
+  let others = {}; // the other accounts' brands: {account: brand id}
   let items = [];
   let projects = [];
   let library = []; // songs in the shuffle
@@ -106,6 +139,7 @@ export function renderAutopilot(container) {
   let insights = null; // insights/latest
   let pastOpen = false;
   let unsubTask = null;
+  const connect = h("section", { class: "card ap-connect", "aria-labelledby": "ap-connect" });
   const status = h("div", { class: "card ap-status" });
   const learned = h("section", { class: "card", "aria-labelledby": "ap-learned" });
   const form = h("div", { class: "card" });
@@ -119,9 +153,12 @@ export function renderAutopilot(container) {
     head("Autopilot", "Claude writes, voices, renders and schedules your reels by itself, at the hours your audience is most active.",
       h("a", { class: "btn btn-ghost", href: "#/x/replies", html: `${icon("chat", { size: 18 })}<span class="btn-label">Replies</span>` }),
       h("a", { class: "btn btn-ghost", href: "#/x/batch", html: `${icon("render", { size: 18 })}<span class="btn-label">Render several</span>` })),
-    h("div", { class: "stack-lg" }, status, note, learned, form, growth, queue));
+    h("nav", { class: "ap-accounts", "aria-label": "Accounts" }, all.map((a) => h("a", {
+      class: ["ap-account", a.id === account.id && "is-current"], href: a.id === MAIN ? "#/x/autopilot" : `#/x/autopilot/${a.id}`,
+      "aria-current": a.id === account.id ? "page" : null }, a.name))),
+    h("div", { class: "stack-lg" }, connect, status, note, learned, form, growth, queue));
 
-  const save = debounce(() => retrying(() => db.doc("settings/autopilot").set({ ...settings, updated: nowIso() }))
+  const save = debounce(() => retrying(() => db.doc(sdoc).set({ ...settings, updated: nowIso() }))
     .catch((err) => toastError("Could not save the autopilot settings", err)), 500);
   const set = (patch, repaint = false) => {
     settings = { ...settings, ...patch };
@@ -132,6 +169,62 @@ export function renderAutopilot(container) {
       paintGrowth();
     }
   };
+
+  // ---- the account: the Metricool brand its reels go out through
+  const connected = () => main || Boolean(settings.brand_id);
+  // the main account's brand before one was chosen: the first with Instagram or YouTube (never Calendar's pick)
+  const firstBrand = (list) => list.find((b) => b.networks.instagramData || b.networks.youtubeData) || list[0];
+  async function brandFor() {
+    if (settings.brand_id) return metricoolBrand(settings.brand_id);
+    if (main) return firstBrand(await metricoolBrands());
+    throw Object.assign(new Error("Choose this account's Metricool brand first."), { code: "no_account_brand" });
+  }
+  async function loadBrands(fresh = false) {
+    try {
+      brands = await metricoolBrands({ fresh });
+      brandProblem = "";
+      if (main && !settings.brand_id && brands.length) settings.brand_id = firstBrand(brands).id; // shown, saved on a change
+    } catch (err) {
+      brands = brands || [];
+      brandProblem = `Metricool couldn't be read (${metricoolProblem(err)}).`;
+    }
+    paintConnect();
+  }
+  function paintConnect() {
+    const chosen = brands && settings.brand_id ? brands.find((b) => b.id === String(settings.brand_id)) : null;
+    const pick = h("select", { class: "input select", "aria-label": "Metricool brand" },
+      h("option", { value: "" }, brands ? (brands.length ? "Choose the brand" : "No brands in Metricool yet") : "Reading Metricool…"),
+      (brands || []).map((b) => h("option", { value: b.id, selected: b.id === String(settings.brand_id) },
+        `${b.label || `Brand ${b.id}`} · ${brandNetworks(b) || "nothing linked yet"}`)));
+    pick.addEventListener("change", () => {
+      set({ brand_id: pick.value || null }, true);
+      paintConnect();
+      brand = null;
+      brandFor().then((b) => { brand = b; paintForm(); }).catch(() => {});
+      loadLive(true).then(paintQueue);
+    });
+    const again = button("Read Metricool again", { icon: "refresh", size: "sm", variant: "ghost", onClick: () => loadBrands(true) });
+    const shared = chosen ? Object.entries(others).filter(([, id]) => String(id) === chosen.id).map(([a]) => accountName(a)) : [];
+    const missing = brands && brands.length && settings.brand_id && !chosen;
+    connect.replaceChildren(...[
+      h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "ap-connect" }, account.name),
+        h("p", { class: "card-sub" }, niche ? `Reels about ${niche.about}.` : "")),
+      h("div", { class: "field" }, h("span", { class: "field-label" }, "Posts through this Metricool brand"),
+        h("div", { class: "row row-wrap ap-brand" }, pick, again),
+        chosen ? h("p", { class: "field-help" }, brandNetworks(chosen)
+          ? `Linked to it: ${brandNetworks(chosen)}. Reels go to the platforms below that are linked.`
+          : "Nothing is linked to this brand yet: connect the account's profiles to it in Metricool, then read Metricool again.") : null),
+      shared.length ? callout("warn", `${shared.join(" and ")} also post${shared.length === 1 ? "s" : ""} through this brand. Each account needs its own brand, or their reels go to the same profiles.`) : null,
+      missing ? callout("warn", "The brand chosen before isn't in your Metricool any more: choose it again.") : null,
+      chosen || main ? null : h("div", { class: "stack" },
+        h("p", { class: "muted small" }, "To start this account:"),
+        h("ol", { class: "ap-steps" },
+          h("li", {}, "Create its profiles on TikTok, Instagram and YouTube."),
+          h("li", {}, "In Metricool, add a new brand and connect those profiles to it."),
+          h("li", {}, "Choose that brand here, then press “Fill the next days”."))),
+      brandProblem ? callout("info", brandProblem) : null,
+    ].filter(Boolean));
+  }
 
   // ---- what the numbers say (insights/latest, refreshed by Claude each morning)
   function paintLearned() {
@@ -145,11 +238,11 @@ export function renderAutopilot(container) {
     }
     const f = insights.followers || {};
     const fol = Object.entries(f).map(([net, n]) => `${compact.format(n)} on ${NETS[net] || net}`).join(" · ");
-    learned.replaceChildren(headRow,
+    learned.replaceChildren(...[headRow,
       fol ? h("p", { class: "muted small" }, `Followers: ${fol}`) : null,
       (insights.learnings || []).length
         ? h("ul", { class: "ap-learnings" }, insights.learnings.map((line) => h("li", {}, line)))
-        : h("p", { class: "muted empty-inline" }, "Not enough posts a day old yet to compare."));
+        : h("p", { class: "muted empty-inline" }, "Not enough posts a day old yet to compare.")].filter(Boolean));
   }
 
   // ---- status card: how far the queue reaches, the next run, credits
@@ -158,6 +251,7 @@ export function renderAutopilot(container) {
     if (busy(task)) return "Claude is making your reels…";
     if (task && task.status === "error") return `The last run failed: ${task.error || task.message}`;
     if (task && task.status === "done") return `Last run ${relativeTime(task.updated || task.created)}: ${task.message || "done"}.`;
+    if (!connected()) return "Choose this account's Metricool brand above to start.";
     return `${settings.per_day} a day on ${settings.platforms.map((p) => NETS[p]).join(", ")}, ${settings.approval === "review" ? "after you approve each one" : "posted automatically"}.`;
   };
   function paintStatus() {
@@ -165,20 +259,22 @@ export function renderAutopilot(container) {
     const last = upcoming.length ? slotDate(upcoming[upcoming.length - 1]) : null;
     const daysLeft = last ? Math.max(0, Math.ceil((last - new Date()) / 864e5)) : 0;
     const need = settings.per_day * settings.days;
+    const cost = Math.round(Math.ceil(need * (VOICED[settings.mix] || 1)) * CREDITS_PER_REEL);
     const fill = button(`Fill the next ${settings.days} days`, { icon: "wand", variant: "primary" });
-    fill.disabled = !settings.enabled || busy(task);
+    fill.disabled = !settings.enabled || busy(task) || !connected();
     fill.addEventListener("click", async () => {
+      const comments = settings.mix !== "watch";
       const ok = await confirmDialog({
-        title: `Make up to ${need} reels?`,
-        message: `Claude writes them with Gemini, voices them with Higgsfield (about ${Math.round(need * CREDITS_PER_REEL)} credits), renders them and schedules them on ${settings.platforms.map((p) => NETS[p]).join(", ")} at the best times${settings.approval === "review" ? " as drafts for you to approve" : ""}. Days that already have their reels are skipped.`,
+        title: `Make up to ${need} reels for ${account.name}?`,
+        message: `Claude writes them with Gemini, voices ${comments ? "the longer ones" : "them"} with Higgsfield (about ${cost} credits${comments ? "; comment videos need none" : ""}), renders them and schedules them on ${settings.platforms.map((p) => NETS[p]).join(", ")} at the best times${settings.approval === "review" ? " as drafts for you to approve" : ""}. Days that already have their reels are skipped.`,
         confirmLabel: "Make them",
       });
       if (!ok) return;
       fill.classList.add("is-loading");
       try {
-        await retrying(() => db.doc("settings/autopilot").set({ ...settings, updated: nowIso() }));
-        const { id, problem } = await newTask("autopilot", null, { days: settings.days, per_day: settings.per_day });
-        await retrying(() => db.doc("settings/autopilot").update({ last_task: id }));
+        await retrying(() => db.doc(sdoc).set({ ...settings, updated: nowIso() }));
+        const { id, problem } = await newTask("autopilot", null, { days: settings.days, per_day: settings.per_day, account: account.id });
+        await retrying(() => db.doc(sdoc).update({ last_task: id }));
         settings.last_task = id;
         watchTask(id);
         toast(problem ? `Saved. Claude wasn't reached: send “${P().askFor("autopilot")}” in your Claude chat.` : "Sent to Claude: making your reels.",
@@ -203,7 +299,7 @@ export function renderAutopilot(container) {
       upcoming.length && daysLeft <= 2 && !running
         ? callout("warn", `The queue runs out ${daysLeft <= 0 ? "today" : `in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`}. Fill the next days to keep posting.`) : null,
       h("div", { class: "row row-wrap ap-actions" }, fill,
-        h("span", { class: "muted small ap-credits" }, credits ? `Higgsfield credits: ${Math.round(credits)} · about ${Math.round(need * CREDITS_PER_REEL)} per run` : "")),
+        h("span", { class: "muted small ap-credits" }, credits ? `Higgsfield credits: ${Math.round(credits)} · about ${cost} per run` : "")),
       h("p", { class: "muted small" }, "Claude makes the reels when you press the button (send “run autopilot” in your Claude chat if it isn't reached). Metricool posts them on time; you don't need to keep anything open."),
     ].filter(Boolean));
   }
@@ -273,7 +369,8 @@ export function renderAutopilot(container) {
         ? `${library.length} song${library.length === 1 ? "" : "s"} in the shuffle, dealt so none repeats before the others have played. `
         : "Your music library is empty, so reels use that reel's song for now. ",
         h("a", { href: "#/x/music" }, library.length ? "Manage songs" : "Add songs"));
-    const topic = h("textarea", { class: "input textarea", rows: 2, placeholder: "Optional, e.g. letting go, self-worth, loneliness at night" }, settings.topic || "");
+    const topic = h("textarea", { class: "input textarea", rows: 2,
+      placeholder: `Optional, ${(niche && niche.topic_hint) || "e.g. letting go, self-worth, loneliness at night"}` }, settings.topic || "");
     topic.addEventListener("change", () => set({ topic: topic.value.trim() }));
     const tone = h("select", { class: "input select", "aria-label": "Tone" },
       TONES.map(([v, l]) => h("option", { value: v, selected: v === settings.tone }, l)));
@@ -302,6 +399,11 @@ export function renderAutopilot(container) {
   function paintGrowth() {
     const field = (label, control, help) => h("div", { class: "field" },
       h("span", { class: "field-label" }, label), control, help ? h("p", { class: "field-help" }, help) : null);
+    const mixHelp = h("p", { class: "field-help" }, MIX_HELP[settings.mix] || "");
+    const mix = segmented({ label: "Video types", value: settings.mix, options: MIXES, onChange: (v) => {
+      set({ mix: v });
+      mixHelp.textContent = MIX_HELP[v];
+    } });
     const length = segmented({ label: "Video length", value: settings.length,
       options: [{ value: "short", label: "20–30 s" }, { value: "medium", label: "30–40 s" }, { value: "long", label: "40–55 s" }],
       onChange: (v) => set({ length: v }) });
@@ -349,7 +451,8 @@ export function renderAutopilot(container) {
       h("div", { class: "card-head" }, h("h2", { class: "card-title" }, "Growing the account"),
         h("p", { class: "card-sub" }, "What each new batch does to reach more people.")),
       h("div", { class: "form-grid ap-form" },
-        field("Video length", length, "Shorter reels get watched to the end more often, the strongest sign to every platform."),
+        h("div", { class: "field ap-wide" }, h("span", { class: "field-label" }, "Video types"), mix, mixHelp),
+        field("Video length", length, "Of the longer videos. Shorter reels get watched to the end more often, the strongest sign to every platform."),
         h("div", { class: "field field-bool" }, comment,
           h("p", { class: "field-help" }, "A question people answer from their own life, posted with the reel on Instagram and YouTube (TikTok: business accounts). Apps can't pin it: pin it in the app if you like.")),
         h("div", { class: "field field-bool" }, search,
@@ -365,7 +468,7 @@ export function renderAutopilot(container) {
   // ---- queue
   async function act(it, draft, label) {
     try {
-      const b = await metricoolBrand();
+      const b = await brandFor();
       const parts = [it.metricool, it.metricool_tiktok].filter((m) => m && m.uuid);
       let posts = parts.map((m) => live.get(String(m.uuid)));
       if (posts.some((p) => !p)) {
@@ -413,6 +516,7 @@ export function renderAutopilot(container) {
       trial ? h("span", { class: "chip chip-static", title: trial.reason || null }, TRIAL_STATE[trial.status] || "Trial Reel: shown to non-followers first") : null,
       it.collaborator ? h("span", { class: "chip chip-static" }, `Collab invite: @${it.collaborator}`) : null,
       it.reply_to ? h("span", { class: "chip chip-static" }, "Video reply to a comment") : null,
+      it.kind === "comment" ? h("span", { class: "chip chip-static" }, "Comment video") : null,
     ].filter(Boolean);
     const numbers = insights && insights.reels && insights.reels[it.id] ? numbersLine(insights.reels[it.id].stats) : "";
     return h("li", { class: ["ap-item", `is-${st}`] },
@@ -420,7 +524,7 @@ export function renderAutopilot(container) {
       h("div", { class: "ap-main" },
         h("div", { class: "ap-top" }, h("strong", { class: "timecode" }, timeLabel(when)), pill(st),
           h("span", { class: "ap-nets" }, (it.platforms || []).map(dot))),
-        h("p", { class: "ap-title" }, it.title || "Untitled"),
+        h("p", { class: "ap-title" }, it.kind === "comment" && it.script ? `“${it.script}”` : it.title || "Untitled"),
         it.caption ? h("p", { class: "muted small ap-caption" }, String(it.caption).split("\n")[0]) : null,
         it.first_comment ? h("p", { class: "muted small ap-comment" }, `First comment: ${it.first_comment}`) : null,
         tags.length ? h("div", { class: "chips ap-tags" }, tags) : null,
@@ -453,9 +557,9 @@ export function renderAutopilot(container) {
 
   async function loadLive(force = false) {
     const scheduled = items.filter((it) => (it.metricool && it.metricool.uuid) || (it.metricool_tiktok && it.metricool_tiktok.uuid));
-    if (!scheduled.length || (live.size && !force)) return;
+    if (!scheduled.length || (live.size && !force) || !connected()) return;
     try {
-      const b = await metricoolBrand();
+      const b = await brandFor();
       const first = slotDate(scheduled[0]);
       const last = slotDate(scheduled[scheduled.length - 1]);
       const p = await metricool("getScheduledPosts", { brandId: b.id, timezone: b.timezone,
@@ -470,7 +574,8 @@ export function renderAutopilot(container) {
   async function loadQueue() {
     try {
       const snap = await retrying(() => db.collection("autopilot").get());
-      items = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
+      items = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((it) => accountOf(it) === account.id)
+        .sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
     } catch (err) {
       toastError("Could not load the queue", err);
     }
@@ -481,10 +586,15 @@ export function renderAutopilot(container) {
 
   (async () => {
     try {
-      const [s, ps, songs, ins] = await Promise.all([retrying(() => db.doc("settings/autopilot").get()),
+      const [s, ps, songs, ins, sets] = await Promise.all([retrying(() => db.doc(sdoc).get()),
         retrying(() => db.collection("projects").get()), listSongs(),
-        retrying(() => db.doc("insights/latest").get()).catch(() => null)]);
-      if (s.exists) settings = { ...DEFAULTS, ...s.data() };
+        retrying(() => db.doc(insightsDoc(account.id)).get()).catch(() => null),
+        retrying(() => db.collection("settings").get()).catch(() => null)]);
+      if (s.exists) settings = { ...defaults, ...s.data() };
+      for (const d of (sets && sets.docs) || []) { // which brands the other accounts post through
+        const other = d.id === "autopilot" ? MAIN : d.id.startsWith("autopilot-") ? d.id.slice(10) : null;
+        if (other && other !== account.id && d.data().brand_id) others[other] = d.data().brand_id;
+      }
       if (settings.music === "rotate") settings.music = "random";
       projects = ps.docs.map((d) => ({ id: d.id, ...d.data() }));
       library = songs.filter((song) => song.enabled !== false);
@@ -492,12 +602,13 @@ export function renderAutopilot(container) {
     } catch (err) {
       toastError("Could not load the autopilot", err);
     }
+    paintConnect();
     paintStatus();
     paintLearned();
     paintForm();
     paintGrowth();
     paintQueue();
-    metricoolBrand().then((b) => { brand = b; paintForm(); }).catch(() => {});
+    loadBrands().then(() => brandFor()).then((b) => { brand = b; paintForm(); }).catch(() => {});
     if (P().mcp) P().mcp.callTool("higgsfield", "balance", {}).then((r) => {
       credits = Number((r && r.payload && r.payload.credits) || 0) || null;
       paintStatus();

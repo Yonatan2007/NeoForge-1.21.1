@@ -23,14 +23,22 @@ account; some invite a collaborator; and TikTok can wait for the user to add
 a trending sound at volume 0 over the reel's own music (TikTok only lets the
 account owner attach a sound, in its own app), reminded by Metricool's app.
 
-Panel documents:
-    settings/autopilot   the user's settings (``DEFAULTS``)
+Accounts: the main account and one per niche the user added (``niches``),
+each posting to its own Metricool brand with its own settings, queue and
+numbers. A batch mixes two kinds of video (``kinds_for``): longer "watch"
+reels with a voice, and 7-10 s "comment" videos, one line on screen and no
+voice, that ask something people answer in the comments
+(``build_comment_project``).
+
+Panel documents (``settings_doc``, ``insights_doc``):
+    settings/autopilot   the main account's settings (``DEFAULTS``); settings/autopilot-<account> another's
     music/<id>           the music library: {name, store, start (seconds into the song), enabled, ...}
-    autopilot/<slot id>  one reel: {slot, tz, status, project_id, title, script, caption, hashtags,
+    autopilot/<slot id>  one reel (``slot_id``): {account, kind, slot, tz, status, project_id, title, script, caption, hashtags,
                          youtube_title, first_comment, search_phrase, trial, collaborator, tiktok_sound,
                          reply_to, platforms, song, master_url, master_media_id, cover, cover_ms,
                          metricool: {id, uuid, plannerUrl}, metricool_tiktok, clips, problems, created, updated}
-    insights/latest      how the reels did and what the next batch learns (``insights.py``)
+    insights/latest      how the main account's reels did and what its next batch learns (``insights.py``);
+                         insights/<account> another account's
     replies/<id>         a viewer's comment with reply drafts; status "idea" makes it a video reply
 """
 from __future__ import annotations
@@ -42,6 +50,8 @@ import random
 import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
+
+from . import niches
 
 DEFAULTS = {
     "enabled": True,
@@ -65,7 +75,19 @@ DEFAULTS = {
     "collab_every": 7,              # ... on one reel in this many
     "tiktok_sound": "off",          # "remind": TikTok waits for a trending sound added at volume 0 (by the user)
     "hashtags": False,              # hashtags under the caption; off: posts carry none (the user's choice)
+    "niche": niches.DEFAULT,        # what the account is about (niches.NICHES)
+    "name": "",                     # the account's name in the panel
+    "brand_id": None,               # the Metricool brand it posts to
+    "mix": "watch",                 # "watch" (longer videos only) | "half" | "comments" (2 in 3 comment videos)
 }
+MAIN = "main"                       # the first account: settings/autopilot, insights/latest, ids "ap-<slot>"
+# The accounts the panel offers, each posting through its own Metricool brand: the main one and one per niche
+ACCOUNTS = ({"id": MAIN, "niche": "philosophy", "name": "Main account"},
+            {"id": "dilemmas", "niche": "dilemmas", "name": "Would you rather"},
+            {"id": "psychology", "niche": "psychology", "name": "Everyday psychology"},
+            {"id": "space", "niche": "space", "name": "Space and science"})
+MIXES = ("watch", "half", "comments")
+COMMENT_SECONDS = (7.0, 10.0)       # a comment video's length range
 PLATFORMS = ("instagram", "youtube", "tiktok")
 LENGTHS = ("short", "medium", "long")
 TRIAL_EVERY = 3           # "some" trial reels: one in this many Instagram posts
@@ -118,7 +140,47 @@ def settings_of(raw: dict | None) -> dict:
         s["collab_every"] = 7
     s["tiktok_sound"] = "remind" if s["tiktok_sound"] == "remind" else "off"
     s["hashtags"] = bool(s["hashtags"])
+    s["niche"] = s["niche"] if s["niche"] in niches.NICHES else niches.DEFAULT
+    s["name"] = str(s["name"] or "").strip()[:60]
+    s["brand_id"] = str(s["brand_id"]).strip() if s["brand_id"] not in (None, "") else None
+    s["mix"] = s["mix"] if s["mix"] in MIXES else "watch"
     return s
+
+
+# --------------------------------------------------------------------------- accounts
+
+def account_key(account: str | None) -> str:
+    """A safe account id ("" and None mean the main account)."""
+    key = re.sub(r"[^a-z0-9-]", "", str(account or "").lower())[:30]
+    return key or MAIN
+
+
+def settings_doc(account: str | None = None) -> str:
+    """The account's settings document id in the "settings" collection."""
+    key = account_key(account)
+    return "autopilot" if key == MAIN else f"autopilot-{key}"
+
+
+def insights_doc(account: str | None = None) -> str:
+    """The account's document id in the "insights" collection."""
+    key = account_key(account)
+    return "latest" if key == MAIN else key
+
+
+def account_of(doc: dict | None) -> str:
+    """The account a queue, reply or task document belongs to (none: the main account)."""
+    return account_key((doc or {}).get("account"))
+
+
+def kinds_for(count: int, mix: str) -> list[str]:
+    """The kind of each of ``count`` reels in posting order: "watch" (a longer
+    narrated video) or "comment" (one line on screen). "half" alternates,
+    starting with a comment video; "comments" makes two in three of them."""
+    if mix == "half":
+        return ["comment" if i % 2 == 0 else "watch" for i in range(count)]
+    if mix == "comments":
+        return ["watch" if i % 3 == 1 else "comment" for i in range(count)]
+    return ["watch"] * count
 
 
 def usernames(raw) -> list[str]:
@@ -212,8 +274,9 @@ def pick_slots(grid: dict[int, dict[int, float]], today: date, days: int, per_da
     return sorted(picked)
 
 
-def slot_id(dt: datetime) -> str:
-    return f"ap-{dt:%Y%m%d-%H%M}"
+def slot_id(dt: datetime, account: str | None = None) -> str:
+    key = account_key(account)
+    return f"ap-{dt:%Y%m%d-%H%M}" if key == MAIN else f"ap-{key}-{dt:%Y%m%d-%H%M}"
 
 
 def now_in(tz: str) -> datetime:
@@ -244,14 +307,21 @@ def taken_slots(posts: list[dict], tz: str) -> list[datetime]:
 
 # --------------------------------------------------------------------------- what to post
 
+def _merge(base: dict, extra: dict) -> dict:
+    for k, v in extra.items():
+        base[k] = _merge(dict(base.get(k) or {}), v) if isinstance(v, dict) else copy.deepcopy(v)
+    return base
+
+
 def build_project(template: dict, script: str, title: str, *, music: str | dict | bool | None = True,
-                  banned: list[str] | set[str] = (), fmt: str = "template") -> dict:
+                  banned: list[str] | set[str] = (), fmt: str = "template", niche: str | None = None) -> dict:
     """A new reel from the template's settings: the same look, voice and
     searches with a new script. ``music`` True keeps the template's song, a
     library pick (``pick_songs``) or a string upload path uses that song, None
     means no music. The template's own clips
     stay with it (only its reference pictures carry over), and landscape clips
-    are left out: in a tall frame they look zoomed in."""
+    are left out: in a tall frame they look zoomed in. ``niche`` sets the
+    footage the reel searches for and its grade (``niches``)."""
     p = copy.deepcopy(template)
     p["name"], p["script"] = title, script
     fs = p.setdefault("footage", {})
@@ -274,6 +344,34 @@ def build_project(template: dict, script: str, title: str, *, music: str | dict 
         m.update(file=music["file"], source_in=float(music.get("start") or 0), source_out=None)
     elif isinstance(music, str) and music != m.get("file"):
         m.update(file=music, source_in=0, source_out=None)
+    if niche and niche != niches.DEFAULT:
+        n = niches.get(niche)
+        _merge(fs, n.footage)
+        _merge(p.setdefault("style", {}), n.style)
+    return p
+
+
+def comment_seconds(line: str) -> float:
+    """A comment video's length: time to read its line twice, within ``COMMENT_SECONDS``."""
+    lo, hi = COMMENT_SECONDS
+    return round(min(hi, max(lo, 5.5 + 0.3 * len(str(line).split()))), 1)
+
+
+def build_comment_project(template: dict, line: str, title: str, *, music: str | dict | bool | None = True,
+                          banned: list[str] | set[str] = (), fmt: str = "template", niche: str | None = None) -> dict:
+    """A comment video: one clip with ``line`` laid along its skyline from
+    the first moments to the last frame, the music and no voice, 7-10 s
+    (``comment_seconds``), cut so it loops cleanly."""
+    p = build_project(template, line, title, music=music, banned=banned, fmt=fmt, niche=niche)
+    seconds = comment_seconds(line)
+    p["voice"].update(source="none", file=None, words_per_second=4.5)  # the words appear quickly
+    p.setdefault("duration", {}).update(target=seconds, max_intro=0.0)
+    style = p.setdefault("style", {})
+    style.setdefault("hook", {}).update(mode="terrain", sentences=3, hold=60.0,  # the whole line, to the end
+                                        size=68, small_scale=0.9, big_scale=1.6)  # read, not glanced at
+    style.setdefault("video", {}).update(max_shot=seconds + 0.5, fade_in=0.0, fade_out=0.0)  # one shot
+    p.setdefault("music", {}).update(fade_in=0.0, fade_out=0.3, duck=False, volume_db=-12.0)
+    p.setdefault("footage", {})["queries"] = None
     return p
 
 
@@ -330,7 +428,7 @@ def assign_clips(reviews: list[dict], banned: set[str] | list[str] = ()) -> list
         if opening is not None:
             picks.append({**_pick(opening), "slot": "opening"})
             used.add(opening["key"])
-        need = int(rv.get("rest_shots") or 0) + 2  # the real voiceover can add a shot
+        need = int(rv.get("rest_shots") or 0) + int(rv.get("extra", 2))  # the real voiceover can add a shot
         for c in rv.get("pool") or []:
             if need <= 0:
                 break
@@ -374,8 +472,12 @@ def post_text(caption: str, hashtags: list[str]) -> str:
     return text[:2200]
 
 
-def quality_problems(result: dict, used_clips: list[dict], min_s: float = 15, max_s: float = 90) -> list[str]:
-    """Why a finished reel shouldn't be posted on its own (empty list = fine)."""
+def quality_problems(result: dict, used_clips: list[dict], min_s: float | None = None, max_s: float | None = None,
+                     kind: str = "watch", wide_ok: bool = False) -> list[str]:
+    """Why a finished reel shouldn't be posted on its own (empty list = fine).
+    ``wide_ok``: the reel may crop wide clips (starfields, see ``niches``)."""
+    lo, hi = (5, 15) if kind == "comment" else (15, 90)
+    min_s, max_s = lo if min_s is None else min_s, hi if max_s is None else max_s
     if not result.get("ok"):
         return [f"The render failed: {result.get('error') or 'unknown error'}"]
     r = result.get("result") or {}
@@ -386,7 +488,7 @@ def quality_problems(result: dict, used_clips: list[dict], min_s: float = 15, ma
     if any("repeat" in str(w) for w in r.get("warnings") or []):
         problems.append("Some clips repeat.")
     wide = [c for c in used_clips if int(c.get("width") or 0) > int(c.get("height") or 0)]
-    if wide:
+    if wide and not wide_ok:
         problems.append(f"{len(wide)} wide clip(s) would look zoomed in.")
     return problems
 

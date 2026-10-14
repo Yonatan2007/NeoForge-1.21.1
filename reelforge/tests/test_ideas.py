@@ -122,3 +122,30 @@ def test_errors_are_readable(monkeypatch, tmp_path):
     g = Gemini([], Resp(400, {"error": {"message": "API key not valid."}}))
     with pytest.raises(ideas.IdeasError, match="API key not valid"):
         ideas.generate(session=g)
+
+
+def test_a_niche_shapes_the_brief_and_comment_lines(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    space = ideas.prompt(count=2, post=True, niche="space")
+    assert "space and science" in space and "keep the most surprising part for the end" in space
+    assert "late-night philosophical" not in space
+    main = ideas.prompt(count=2)
+    assert "late-night philosophical" in main and "uncomfortable truth" in main
+    text = json.dumps({"ideas": [{"line": ' "Would you rather know the date you die, or how?" ', "title": "Date or how",
+                                  "caption": "Be honest.", "youtube_title": "Would you rather know when or how?",
+                                  "first_comment": "How. Knowing the date would ruin every birthday.",
+                                  "search_phrase": "Would You Rather!"},
+                                 {"line": "  ", "title": "x", "caption": "", "youtube_title": ""}]})
+    g = Gemini([], Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}))
+    out = ideas.generate_lines(count=2, niche="dilemmas", session=g, comment=True, search=True,
+                               phrases=["would you rather questions"])
+    assert out["ideas"] == [{"kind": "comment", "title": "Date or how", "script": "Would you rather know the date you die, or how?",
+                             "why": "", "caption": "Be honest.", "youtube_title": "Would you rather know when or how?",
+                             "hashtags": [], "first_comment": "How. Knowing the date would ruin every birthday.",
+                             "search_phrase": "would you rather"}]
+    body = g.posts[0][1]
+    brief = body["contents"][0]["parts"][0]["text"]
+    assert "moral dilemmas" in brief and "no voice" in brief and "Never ask for comments" in brief
+    assert "first_comment" in brief and "- would you rather questions" in brief and "- hashtags:" not in brief
+    item = body["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]
+    assert {"line", "caption", "first_comment", "search_phrase"} <= set(item["required"]) and "hashtags" not in item["properties"]

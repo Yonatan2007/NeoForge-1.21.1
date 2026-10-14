@@ -6,7 +6,9 @@
   palette, the reference look) map script vocabulary to sunny nature and
   adventure searches, and fill the remaining shots.
 * ``VISUAL_CONCEPTS`` / ``ATMOSPHERE`` are the "moody" palette (night, rain).
-* ``PALETTES`` names both.
+* ``PEOPLE_*`` (people in daily life) and ``SPACE_*`` (stars, galaxies) serve
+  the psychology and space accounts (``niches``).
+* ``PALETTES`` names them all.
 
 Edit freely: these lists are the "taste" of the generator.
 """
@@ -203,7 +205,93 @@ BRIGHT_ATMOSPHERE: list[str] = [
     "sunset",
 ]
 
+# The "people" palette (everyday psychology): people in daily life. Checked
+# on Mixkit's vertical listing (2026-10-14): phone, eyes, hands, office,
+# conversation, laptop, mirror, smile 24+; city street 23; friends talking 14;
+# subway 13; bed 13; thinking 12; coffee shop 10; people walking 9; texting 8;
+# couple talking 7; woman window 7; walking city night 4.
+PEOPLE_CONCEPTS: list[tuple[frozenset[str], list[str]]] = [
+    (frozenset("trust friend friends friendship talk talking conversation said say words".split()),
+     ["friends talking", "conversation"]),
+    (frozenset("phone text texting message messages scroll scrolling screen online social notification".split()),
+     ["texting", "phone"]),
+    (frozenset("eyes eye look looking stare staring face faces contact".split()),
+     ["eyes", "woman window"]),
+    (frozenset("think thinking thought thoughts overthink overthinking mind brain memory memories replay".split()),
+     ["thinking", "woman window"]),
+    (frozenset("sleep night bed tired dream dreams awake".split()),
+     ["bed", "walking city night"]),
+    (frozenset("work job boss money office busy productive procrastinate procrastination".split()),
+     ["office", "laptop"]),
+    (frozenset("love partner relationship date couple crush".split()),
+     ["couple talking", "friends talking"]),
+    (frozenset("alone lonely loneliness quiet silence introvert introverts".split()),
+     ["woman window", "walking city night"]),
+    (frozenset("people crowd strangers stranger everyone others group".split()),
+     ["people walking", "city street"]),
+    (frozenset("smile smiling laugh laughing happy happiness".split()),
+     ["smile", "friends laughing"]),
+    (frozenset("mirror yourself self confidence image".split()),
+     ["mirror", "eyes"]),
+    (frozenset("habit habits routine morning coffee".split()),
+     ["coffee shop", "cafe"]),
+    (frozenset("anxiety anxious stress stressed fear nervous worry worried".split()),
+     ["hands", "thinking"]),
+    (frozenset("decision decisions choose choice choices".split()),
+     ["city street", "subway"]),
+]
+
+PEOPLE_ATMOSPHERE: list[str] = [
+    "city street",
+    "people walking",
+    "thinking",
+    "subway",
+    "coffee shop",
+    "conversation",
+    "hands",
+    "phone",
+    "walking city night",
+]
+
+# The "space" palette: stars, galaxies and planets. Mixkit's vertical listing
+# (2026-10-14) is thin here (stars 24, universe 24, planet 23, galaxy 12,
+# nebula 5, night sky 4, moon 4), so space reels may crop wide clips too.
+SPACE_CONCEPTS: list[tuple[frozenset[str], list[str]]] = [
+    (frozenset("galaxy galaxies milky universe cosmos cosmic".split()),
+     ["galaxy", "universe"]),
+    (frozenset("star stars starlight constellation constellations".split()),
+     ["stars", "night sky"]),
+    (frozenset("planet planets earth world mars jupiter saturn venus orbit".split()),
+     ["planet", "space"]),
+    (frozenset("moon moons lunar".split()),
+     ["moon", "night sky"]),
+    (frozenset("sun suns solar light heat burn burning".split()),
+     ["sun", "stars"]),
+    (frozenset("black hole holes gravity dark darkness collapse".split()),
+     ["nebula", "space"]),
+    (frozenset("explode explosion exploded supernova die dies dying".split()),
+     ["galaxy", "nebula"]),
+    (frozenset("time years billion million age ancient future".split()),
+     ["universe", "stars"]),
+    (frozenset("astronaut astronauts human humans rocket travel".split()),
+     ["astronaut", "planet"]),
+]
+
+SPACE_ATMOSPHERE: list[str] = [
+    "stars",
+    "galaxy",
+    "universe",
+    "nebula",
+    "planet",
+    "space",
+    "night sky",
+    "milky way",
+    "moon",
+]
+
 PALETTES: dict[str, tuple[list[tuple[frozenset[str], list[str]]], list[str]]] = {
     "bright": (BRIGHT_CONCEPTS, BRIGHT_ATMOSPHERE),
     "moody": (VISUAL_CONCEPTS, ATMOSPHERE),
+    "people": (PEOPLE_CONCEPTS, PEOPLE_ATMOSPHERE),
+    "space": (SPACE_CONCEPTS, SPACE_ATMOSPHERE),
 }

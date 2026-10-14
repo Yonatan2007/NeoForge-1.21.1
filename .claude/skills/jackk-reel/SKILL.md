@@ -178,6 +178,8 @@ time in time zone `tz`; YouTube `title`) and accounts in `accounts/<id>`
    reuse the Higgsfield-hosted URL from step 2 (or `media_upload` it there).
    Time: `when` "now" = a few minutes from now; "best" =
    `getBestTimeToPostByNetwork`; "at" = `at` in time zone `tz`.
+   Use the main account's brand (`settings/autopilot.brand_id`, 7327885)
+   unless the post's accounts belong to another brand of `getBrandSettings`.
    Instagram: a Reel (`share_to_feed`), caption + hashtags. YouTube: a Short
    with `title`, description (caption + tags), `privacy`, `made_for_kids`.
    Cover: when the post has `cover: {ms}`, pass `videoCoverMilliseconds: ms`.
@@ -209,33 +211,50 @@ the viewer's Higgsfield connector: none of them sends you a task.
 
 The Autopilot page fills the coming days with reels that Claude writes,
 voices, renders and schedules; Metricool then posts them at their times.
-Settings are in `settings/autopilot` (keys and defaults: `DEFAULTS` in
-`reelforge/autopilot.py`); the queue is `autopilot/<slot id>`. The button
-press (or the user's message) is the go-ahead to make and schedule the reels.
-R = a run folder in the scratchpad, A = the asset folder; run Python from
-`reelforge/` with the Gemini key available (see **ideas** above).
+There is one autopilot per **account** (`ACCOUNTS` in
+`reelforge/autopilot.py`): "main" (the late-night philosophy account) and
+one per niche ("dilemmas", "psychology", "space", see `reelforge/niches.py`),
+each posting through its own Metricool brand. An account's settings are in
+`settings/autopilot` (main) or `settings/autopilot-<account>` (keys and
+defaults: `DEFAULTS`; missing: the defaults with the account's `niche`);
+its queue documents are `autopilot/<slot id>` with `account` (none: main)
+and its numbers `insights/latest` (main) or `insights/<account>`. A batch
+mixes two kinds of reel by the settings' `mix`: longer "watch" reels with a
+voice, and 7-10 s "comment" videos (one line on screen, music, no voice).
+The button press (or the user's message) is the go-ahead to make and
+schedule the reels. R = a run folder in the scratchpad, A = the asset
+folder; run Python from `reelforge/` with the Gemini key available (see
+**ideas** above).
 
-1. Read the task and set it `running` ("Writing the scripts…"). If several
-   autopilot tasks are queued, run the newest and finish the others with
-   "Replaced by a newer run". Read `settings/autopilot` (missing: defaults;
-   the task's `days` / `per_day` win). `enabled: false`: finish the task
-   with "Autopilot is off" and stop.
+1. Read the task and set it `running` ("Writing the scripts…"). Its
+   `account` (none: "main") picks the account. If several autopilot tasks
+   of one account are queued, run the newest and finish the others with
+   "Replaced by a newer run"; run the accounts one after another. Read the
+   account's settings (the task's `days` / `per_day` win). `enabled: false`:
+   finish the task with "Autopilot is off" and stop. No `brand_id` on an
+   account other than main: finish with "Choose this account's Metricool
+   brand on the Autopilot page first" and stop (main without one: the
+   brand with Instagram or YouTube, 7327885).
 2. The template: `settings.template`, or the most recently `updated` project
    that has a script. `ArtifactData get projects/<id>` with `out_dir`.
-3. Metricool, read only: `getBrandSettings` (brand id, timezone, and whether
-   TikTok is linked: drop `tiktok` from the platforms if not);
+3. Metricool, read only, all for the account's brand: `getBrandSettings`
+   (its timezone, and which networks it links: drop the platforms it
+   doesn't link; none at all: finish with "Link this account's profiles to
+   its Metricool brand first");
    `getBestTimeToPostByNetwork` per chosen platform for the next 7 days;
    `getScheduledPosts` from today to today + days + 1.
-4. `ArtifactData list autopilot`: `history` = the latest 40, oldest first,
-   as `{title, clips, song, collaborator, reply_to}` (collaborators take
-   turns from it). `avoid` = the first sentence of every reel's script and
-   every autopilot title; `examples` = the scripts of the 3 latest reels.
+4. `ArtifactData list autopilot`, this account's documents only:
+   `history` = the latest 40, oldest first, as `{title, clips, song,
+   collaborator, reply_to}` (collaborators take turns from it). `avoid` =
+   the first sentence of every reel's script and every autopilot title;
+   `examples` = the scripts of the 3 latest longer reels.
    `ArtifactData list music` → `library` (the songs of the Music page, as
    saved: `{name, store, start, enabled}`); with `music: "random"` each reel
    gets one of them, dealt like cards (none repeats before the others).
-   `ArtifactData get insights/latest` → `insights` (missing: `{}`): its
+   The account's insights document → `insights` (missing: `{}`): its
    `learnings` steer the scripts, its `trial_eligible` lets Trial Reels in.
-   `ArtifactData query replies` where `status == "idea"` → `replies` as
+   `ArtifactData query replies` where `status == "idea"` and the reply's
+   `account` is this one (none: main) → `replies` as
    `{id, comment, platform, note}` (note: the saved `video.hook` and
    `video.angle`): the batch's first reels answer them, one each; one that
    a reel already answers (`reply_to` in the history) is left out.
@@ -244,10 +263,10 @@ R = a run folder in the scratchpad, A = the asset folder; run Python from
    `tiktok_music_trending` with `genre` `LO-FI` and `CHILL_BEATS`, limit 10
    each → `sounds`: the tracks as `{name, artist, song_clip_id, preview_url,
    genre}`, the two lists interleaved. Each TikTok of the batch gets one.
-5. Write R/in.json: `{settings, brand: {id, timezone}, template: <the saved
-   doc>, best: {<platform>: {"1": [24 hourly values from midnight], …, "7":
-   […]}}, scheduled: <getScheduledPosts data>, history, avoid, examples,
-   library, insights, replies, sounds}`
+5. Write R/in.json: `{account, settings, brand: {id, timezone}, template:
+   <the saved doc>, best: {<platform>: {"1": [24 hourly values from
+   midnight], …, "7": […]}}, scheduled: <getScheduledPosts data>, history,
+   avoid, examples, library, insights, replies, sounds}`
    (best times in this short form: day of week with Monday = 1, values as
    Metricool gave them). With `search: true` the command reads YouTube's
    search suggestions itself; if it can't reach them, add `search_phrases`
@@ -255,18 +274,24 @@ R = a run folder in the scratchpad, A = the asset folder; run Python from
    reelforge.panelrun autopilot-prepare R/in.json --assets A --out R/run`
    (fetch any `need` ids like a stage does: the template's files and the
    songs picked for this run). `"slots": 0`: finish with "The next <days>
-   days are already full". Its answer counts the video replies, Trial
-   Reels, collab invites and search phrases of the batch.
-6. Voices: `generate_audio_batch` with each item's `voice_request.params`
+   days are already full". Its answer counts the comment videos, video
+   replies, Trial Reels, collab invites and search phrases of the batch.
+   Gemini writes for the account's niche: its script shape, its comment
+   lines and its audience's searches; the footage follows the niche too.
+6. Voices, for the items that have a `voice_request` (comment videos have
+   none): `generate_audio_batch` with each one's `voice_request.params`
    unchanged (up to 12 a call; 2.4 credits each), `jobs_wait` until all are
    done, then R/voices.json = `{<item id>: <result_url>}`. Never resubmit a
-   job whose outcome is unknown; a reel without a voice is left out.
+   job whose outcome is unknown; a longer reel without a voice is left out.
 7. `panelrun autopilot-render --plan R/run/plan.json --voices R/voices.json`
-   in the background (two at a time, a few minutes a reel); update the task
-   message as `results.json` fills ("Made 5 of 21 reels…").
+   in the background (two at a time, a few minutes a reel; comment videos
+   need no voice and take under a minute); update the task message as
+   `results.json` fills ("Made 5 of 21 reels…").
 8. Look at R/run/covers.jpg (each reel's opening with its hook, numbered in
-   plan order). Reels whose words cross a person or object, whose opening
-   is a road, town or building, or whose words are hard to read:
+   plan order; a comment video's cover is its last frame, with the whole
+   line). Reels whose words cross a person or object, whose opening is a
+   road, town or building, whose opening is off the account's subject (a
+   space reel on a pumpkin), or whose words are hard to read:
    `panelrun autopilot-swap --plan R/run/plan.json --ids <id,id>`, then run
    autopilot-render again (it only redoes those). Two rounds at most.
 9. Masters of the reels that passed: `media_upload` with `files` (up to 20),
@@ -292,40 +317,45 @@ R = a run folder in the scratchpad, A = the asset folder; run Python from
     line or two. In "ask me first" mode the posts are Metricool drafts: the
     Autopilot page approves or holds them itself.
 
-### Daily review (`insights/latest`, each morning or "review the reels")
+### Daily review (`insights/<account>`, each morning or "review the reels")
 
 How the reels did, what the next batch learns, and the Trial Reels'
 outcome. Read only from Metricool, except posting the Trial Reels that won
-again for followers. R = a review folder in the scratchpad.
+again for followers. Do it for every account of `autopilot.ACCOUNTS` whose
+settings have a `brand_id` (main: 7327885 without one), one after another,
+each with that brand's numbers. R = a review folder in the scratchpad.
 
 1. `panelrun autopilot-insights --codes` → the metric ids. For each network
    in it with a linked account: `getAnalyticsDataByMetrics` with the
    `posts` ids, `from` 30 days ago to now → `stats.<network>` (the answer
    as given; its rows follow the ids' order). Then the `followers` ids for
    the last 3 days → `followers.<network>`.
-2. `getBrandSettings` (id, timezone), `getScheduledPosts` from 9 days ago
-   to 3 days ahead → `scheduled` (a refused trial shows there as ERROR, and
-   the hours ahead are taken); `ArtifactData query autopilot` ordered by
-   `slot` descending, limit 120, with `out_dir` R/db (the reels of about
-   the last 40 days, with their `trial` and `slot`); `ArtifactData get
-   insights/latest` → `previous` (missing: null); `settings/autopilot` →
-   `settings`.
-3. R/in.json = `{brand: {id, timezone}, settings, stats, followers,
-   reels_dir: "R/db/autopilot", scheduled, previous}` and run `panelrun
+2. `getBrandSettings` (the brand's timezone), `getScheduledPosts` from 9
+   days ago to 3 days ahead → `scheduled` (a refused trial shows there as
+   ERROR, and the hours ahead are taken); `ArtifactData query autopilot`
+   ordered by `slot` descending, limit 200, with `out_dir` R/db (the reels
+   of about the last weeks, with their `trial`, `kind` and `slot`); the
+   account's insights document → `previous` (missing: null); its settings
+   → `settings`.
+3. R/in.json = `{account, brand: {id, timezone}, settings, stats,
+   followers, reels_dir: "R/db/autopilot", scheduled, previous}` (the
+   command keeps that account's reels) and run `panelrun
    autopilot-insights R/in.json --out R/out`. It matches posts to reels by
    time and text, scores each reel against the account's usual numbers
    (a reel needs a day to settle), writes the learnings and decides the
    Trial Reels: after two days, one that beat the usual views by half is
    posted again for followers, and one Instagram refused as a trial goes
-   out as a normal reel.
+   out as a normal reel. With both kinds of reel posted, it says whether
+   comment videos or the longer ones did better.
 4. Each entry of R/out/reposts.json: `createScheduledPost` with its
    `blogId`, `date` and `info` exactly as given (a normal Instagram reel at
    the next free hour).
-5. `ArtifactData set insights/latest` with R/out/insights.json (pass
-   `if_version` when it exists). The Autopilot page shows it under "What's
-   working", and the next autopilot run reads its learnings. Tell the user
-   only what changed: a reel that took off, a trial that won, followers
-   passing 1,000 on Instagram (Trial Reels start then).
+5. `ArtifactData set` the account's insights document (`insights/latest`
+   or `insights/<account>`) with R/out/insights.json (pass `if_version`
+   when it exists). The account's Autopilot page shows it under "What's
+   working", and its next run reads the learnings. Tell the user only what
+   changed: a reel that took off, a trial that won, an account passing
+   1,000 Instagram followers (Trial Reels start then).
 
 ### Profile requests (`kind: "profile"`)
 
