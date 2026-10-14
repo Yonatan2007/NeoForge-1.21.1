@@ -56,6 +56,10 @@ HOOK_TERRAIN = {"mountain", "peak", "ridge", "summit", "hill", "cliff", "range",
 HOOK_PEOPLE_PENALTY, HOOK_BUILT_PENALTY, HOOK_TERRAIN_BONUS = SKYLINE_WEIGHT, 4.0, 2.0
 REFERENCE_WEIGHT = 5.0    # similarity to the reference look steers every other pick
 THEME_BONUS, THEME_PENALTY = 2.0, SKYLINE_WEIGHT  # a clip named for the account's subject, or not (footage.theme)
+# The best few hook-shot candidates get a trial layout of the hook on their
+# thumbnail: one the words would not read on (squeezed under a tree crown,
+# standing on end up a pole) loses up to LAYOUT_PENALTY.
+LAYOUT_TRIALS, LAYOUT_PENALTY = 8, SKYLINE_WEIGHT / 2
 
 
 class Cancelled(RuntimeError):
@@ -395,6 +399,35 @@ def _rankers(ref_sigs: list, theme: list[str] | None = None, gentle: bool = Fals
     return likeness, skyline
 
 
+def _readable_first(ranked: list, providers: list, words: list[Word], project: Project,
+                    settings: Settings) -> list:
+    """``ranked`` hook-shot candidates ((score, candidate), best first) with
+    the first ``LAYOUT_TRIALS`` scored again by a trial layout of the hook
+    ``words`` on their thumbnails (``hook.layout_score``), best first again."""
+    from . import hook as hookmod
+
+    if not words or not ranked:
+        return ranked
+    hs, vs = project.style.hook, project.style.video
+    try:
+        font = fonts.resolve(hs.font, hs.font_weight, settings.cache_dir)
+    except Exception as exc:  # the skyline ranking alone still works
+        log.warning("hook font unavailable for the layout check: %s", exc)
+        return ranked
+    by_name = {p.name: p for p in providers}
+    out = []
+    for i, (total, c) in enumerate(ranked):
+        site = by_name.get(c.provider)
+        img = (footage.thumbnail_image(c.thumbnail, site.session, site.thumb_dir)
+               if i < LAYOUT_TRIALS and site is not None else None)
+        if img is not None:
+            fit = hookmod.layout_score(img, words, hs, font, (vs.width, vs.height), project.style.caption.case)
+            total -= LAYOUT_PENALTY * (1.0 - fit)
+        out.append((total, c))
+    out.sort(key=lambda item: item[0], reverse=True)
+    return out
+
+
 def _stock_common(project: Project) -> dict:
     vs = project.style.video
     wide = vs.aspect == "16:9"
@@ -445,9 +478,11 @@ def choose_stock(project: Project, script: Script, sources: list[ShotSource], ho
         hook_pick = footage.fetch_pick(opening, providers, settings.cache_dir) if opening else None
         if hook_pick is None:
             report("footage", 0.05, "choosing a first shot with a clear skyline")
+            hook_words = split_hook(script, project)[0]
             hook_pick = footage.best_of(
                 [search_terms(fs.hook_query), *(fs.hook_searches or HOOK_SEARCHES)], providers, settings.cache_dir,
-                rank=skyline, exclude=banned, **common)
+                rank=skyline, exclude=banned,
+                rerank=lambda ranked: _readable_first(ranked, providers, hook_words, project, settings), **common)
         if hook_pick is not None:
             picks.append(hook_pick)
             stock_paths[0] = hook_pick[1]
@@ -518,10 +553,11 @@ def review_footage(project: Project, project_dir: Path, settings: Settings, out_
     rest = list(stock_slots)
     opening: list = []
     if _hook_slot(project, hook_terrain, stock_slots):
-        opening = [c for _, c in footage.ranked_best(
+        ranked = footage.ranked_best(
             [search_terms(project.footage.hook_query), *(project.footage.hook_searches or HOOK_SEARCHES)],
             providers, rank=skyline,
-            exclude=banned, limit=6, **common)]
+            exclude=banned, limit=max(6, LAYOUT_TRIALS), **common)
+        opening = [c for _, c in _readable_first(ranked, providers, hook_words, project, settings)[:6]]
         rest.remove(0)
     pool: list = []
     if rest:

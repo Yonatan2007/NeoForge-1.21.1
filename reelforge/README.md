@@ -64,7 +64,7 @@ each has a `project.json`, `uploads/` and `output/`.
 | | |
 |---|---|
 | Format | 9:16, 1080×1920, 30 fps (also 4:5, 1:1 — the reference reel itself is square — and 16:9) |
-| Footage | sunny nature/adventure searches; the first shot is chosen for a clear skyline |
+| Footage | sunny nature/adventure searches; the first shot is chosen for a clear skyline the opening sentence reads well on |
 | Look | each clip is colour-matched to the reference reel (warm teal film look), slight black lift and grain |
 | Hook | opening sentence along the skyline, near-black on bright sky (white on dark), first/stressed/last words big |
 | Captions | Inter Bold, lowercase, white, one word at a time, centred, soft shadow |
@@ -173,7 +173,11 @@ from the top rows) meets terrain; the curve is smoothed and offset above the
 ridge, then the words are laid along its arc length — each glyph rotated to
 the local tangent where the curve bends sharply. The first, stressed and last
 words are larger; the last word drops below the line end. With no usable
-skyline the text follows a gentle diagonal instead.
+skyline the text follows a gentle diagonal instead. The hook shot is ranked
+by its skyline, then the best few candidates get a trial layout of the
+opening sentence on their thumbnails: a clip where the words would have to
+shrink below one line's size, stand nearly on end (climbing a palm trunk or
+a pole) or fall back to the diagonal ranks lower.
 
 **Colour match.** Each clip's mean and spread in CIE Lab are mapped onto the
 reference look (L' = (L − μs)·σt/σs + μt per channel, clamped and blended by

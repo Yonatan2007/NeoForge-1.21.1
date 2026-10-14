@@ -530,14 +530,19 @@ def best_of(queries: list[str], providers: list[_Provider], cache_dir: Path, min
             rank: ExtraScore, allow_landscape: bool = True, shortlist: int = 8,
             portrait_weight: float = 3.0, palette: str = "bright",
             wide: bool = False, avoid: set[str] | None = None,
-            exclude: set[str] | None = None, frame: tuple[int, int] | None = None) -> tuple[Candidate, Path] | None:
+            exclude: set[str] | None = None, frame: tuple[int, int] | None = None,
+            rerank: Callable[[list[tuple[float, Candidate]]], list[tuple[float, Candidate]]] | None = None,
+            ) -> tuple[Candidate, Path] | None:
     """The single best clip across several searches, judged mostly by
     ``rank(candidate, thumbnail)`` (e.g. how clear a skyline is for the hook
-    shot). Unlike ``fetch_footage`` it compares candidates of every query
-    before choosing. None when nothing could be found or downloaded."""
+    shot), then by ``rerank`` of the ranked list when given. Unlike
+    ``fetch_footage`` it compares candidates of every query before choosing.
+    None when nothing could be found or downloaded."""
     by_name = {p.name: p for p in providers}
     ranked = ranked_best(queries, providers, min_duration, rank, allow_landscape, shortlist,
                          portrait_weight, palette, wide, avoid, exclude, frame=frame)
+    if rerank is not None:
+        ranked = rerank(ranked)
     for total, c in ranked:
         try:
             path = _download(c, by_name[c.provider], Path(cache_dir) / "footage" / f"{c.key}.mp4")

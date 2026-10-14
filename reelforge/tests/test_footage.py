@@ -407,6 +407,15 @@ def test_ranked_best_skips_excluded_clips(tmp_path):
     assert [c.id for _, c in ranked] == ["b", "c"]  # each clip once, across both searches
 
 
+def test_best_of_takes_the_reranked_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(footage, "download", lambda url, dst, **kw: Path(dst))
+    p = FakeProvider(tmp_path, [cand("a"), cand("b")])
+    rank = {"a": 2.0, "b": 1.0}
+    assert footage.best_of(["x"], [p], tmp_path, 5, rank=lambda c, img: rank[c.id])[0].id == "a"
+    best = footage.best_of(["x"], [p], tmp_path, 5, rank=lambda c, img: rank[c.id], rerank=lambda r: r[::-1])
+    assert best[0].id == "b"
+
+
 def test_a_pick_round_trips_and_downloads(tmp_path, monkeypatch):
     monkeypatch.setattr(footage, "download", lambda url, dst, **kw: Path(dst))
     c = cand(7, page_url="https://x/7", alt_urls=["alt"], author="Ann")

@@ -453,6 +453,48 @@ def skyline_score(image, gentle: bool = False) -> float:
         return 0.0
 
 
+ON_END = math.radians(62)   # layout_score: a letter leaning more than this stands nearly on end
+SQUEEZED = 0.58             # ... text this much smaller than its size has no room at all
+NO_SKYLINE = 0.6            # ... and words on the fixed pattern follow nothing in the picture
+
+
+def layout_score(image, words: list[Word], style: HookStyle, font: fonts.FontSpec | str,
+                 frame: tuple[int, int] = (1080, 1920), case: str = "lower", width: int = 540) -> float:
+    """0..1: how well ``words`` would read as the hook laid on ``image`` (a
+    candidate opening shot's thumbnail): a trial layout on the picture cut to
+    the reel's shape ``frame``, ``width`` px wide. Words that follow a ridge
+    may lean and a craggy one may shrink them to one small line; the score
+    falls when the text must shrink further (a tree crown or a peak near the
+    top leaves no room), when many letters stand nearly on end (words
+    climbing a pole, a trunk or a lighthouse) or when no skyline leaves room
+    for the words and they fall back to the fixed pattern. 1.0 without
+    words, 0.5 when the trial fails. Never raises."""
+    if not words:
+        return 1.0
+    try:
+        rgb = _as_rgb(image)
+        h, w = rgb.shape[:2]
+        fw, fh = frame
+        if w * fh > h * fw:  # the clips are cut to the frame from the middle
+            cw = max(1, round(h * fw / fh))
+            rgb = rgb[:, (w - cw) // 2:(w - cw) // 2 + cw]
+        else:
+            ch = max(1, round(w * fh / fw))
+            rgb = rgb[(h - ch) // 2:(h - ch) // 2 + ch]
+        trial = np.asarray(Image.fromarray(rgb).resize((width, max(1, round(width * fh / fw))), Image.BILINEAR))
+        r = HookRenderer(words, style, font, trial, end=max(wd.end for wd in words) + 1.0, case=case)
+        sizes = np.array([p.size for p in r._items for _ in p.glyphs], dtype=np.float64)
+        tilts = np.array([abs(g.angle) for p in r._items for g in p.glyphs], dtype=np.float64)
+        if not sizes.size:
+            return 0.5
+        on_end = float(sizes[tilts > ON_END].sum() / sizes.sum())
+        follows = NO_SKYLINE if r.contour.kind in FALLBACKS else 1.0
+        return _ramp(r.scale, SQUEEZED, ONE_LINE_SCALE) * (1.0 - _ramp(on_end, 0.12, 0.35)) * follows
+    except Exception as exc:  # a scoring helper must never break footage search
+        log.debug("layout_score failed: %s", exc)
+        return 0.5
+
+
 # =========================================================================== layout geometry
 
 def _dilate_up(y: np.ndarray, r: float) -> np.ndarray:

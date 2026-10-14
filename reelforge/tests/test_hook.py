@@ -187,3 +187,17 @@ def test_a_gentle_hook_prefers_rolling_hills_to_tree_tops():
     smooth, _ = mountains(w, h, ridge=hills)
     spiky, _ = mountains(w, h, ridge=trees)
     assert hook.skyline_score(smooth, gentle=True) > hook.skyline_score(spiky, gentle=True)
+
+
+def test_a_trial_layout_rejects_words_that_would_climb_a_pole():
+    font = _font()
+    y = np.linspace(0, 1, 960)[:, None, None]
+    pole = np.broadcast_to(np.array([90, 150, 225]) * (1 - y) + np.array([200, 225, 250]) * y, (960, 540, 3)).copy()
+    pole[595:] = (60, 70, 50)              # flat ground ...
+    pole[76:, 253:286] = (25, 25, 30)      # ... and a pole rising almost to the top
+    ridge, _ = mountains()
+    assert hook.layout_score(ridge, timed(), HookStyle(), font) > 0.8
+    assert hook.layout_score(pole, timed(), HookStyle(), font) < 0.3  # the words would stand on end
+    assert hook.layout_score(pole, timed(), HookStyle(curve="gentle"), font) > 0.8  # a soft arc clears it
+    assert hook.layout_score(ridge, [], HookStyle(), font) == 1.0
+    assert hook.layout_score(None, timed(), HookStyle(), font) == 0.5  # never raises

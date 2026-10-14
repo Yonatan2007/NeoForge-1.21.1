@@ -153,6 +153,25 @@ def test_review_lists_opening_and_pool_clips(tmp_path, monkeypatch):
     assert (tmp_path / "review" / "review.jpg").is_file() and out["tile"]["w"] == 180
 
 
+def test_hook_shots_the_words_would_not_read_on_drop(tmp_path, monkeypatch):
+    from reelforge import footage, hook, pipeline
+    from reelforge.config import Settings
+    clips = _Clips(tmp_path, range(10))
+    for c in clips.cands:
+        c.thumbnail = f"t{c.id}"
+    monkeypatch.setattr(pipeline.fonts, "resolve", lambda *a, **kw: "font")
+    monkeypatch.setattr(footage, "thumbnail_image", lambda url, session, cache: url)
+    fits = {"t0": 0.0, "t9": 0.0}  # trial layouts: no room on 0 and 9, fine elsewhere
+    monkeypatch.setattr(hook, "layout_score", lambda img, words, *a: fits.get(img, 1.0))
+    ranked = [(10.0 - 0.5 * i, c) for i, c in enumerate(clips.cands)]
+    words = parse_script("Would you rather?").words
+    out = pipeline._readable_first(ranked, [clips], words, _stock_project(), Settings(cache_dir=tmp_path))
+    # 0 drops below the rest; 9 is past the LAYOUT_TRIALS best, so it gets no trial
+    assert [c.id for _, c in out] == ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+    assert out[-1][0] == 10.0 - pipeline.LAYOUT_PENALTY
+    assert pipeline._readable_first(ranked, [clips], [], _stock_project(), Settings()) == ranked
+
+
 def test_render_uses_reviewed_picks_first_and_never_banned_clips(tmp_path, monkeypatch):
     from reelforge import footage, pipeline
     from reelforge.config import Settings

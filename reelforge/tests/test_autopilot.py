@@ -464,7 +464,9 @@ def test_a_niche_sets_the_footage_and_a_comment_video_holds_its_line():
     dilemmas = ap.build_project(template_project(), "Would you rather?", "T", niche="dilemmas")
     assert (dilemmas["footage"]["palette"], dilemmas["footage"]["hook_query"]) == ("choices", "sun over hills")
     assert "chess" in dilemmas["footage"]["theme"] and dilemmas["style"]["look"]["match"] == "off"
-    assert dilemmas["style"]["hook"]["curve"] == "gentle" and dilemmas["style"]["hook"].get("reveal", "words") == "words"
+    # its longer reels follow the skyline closely, word by word, like the main account's
+    assert dilemmas["style"].get("hook", {}).get("curve", "terrain") == "terrain"
+    assert dilemmas["style"].get("hook", {}).get("reveal", "words") == "words"
     plain = ap.build_project(template_project(), "Hook.", "T")
     assert plain["footage"]["allow_landscape"] is False and plain["footage"].get("hook_searches") is None
     line = "Would you rather know the date you die, or how?"
