@@ -72,7 +72,8 @@ NICHES: dict[str, Niche] = {
                            "night", "couple", "lighthouse", "photographs", "camera", "storm", "fog", "road",
                            "tracks", "sea", "beach", "desert"]},
         style={"look": {"match": "off", "contrast": 1.08, "saturation": 0.88, "lift": 0.02,
-                        "vignette": "PI/5", "grain": 4}},
+                        "vignette": "PI/5", "grain": 4},
+               "hook": {"curve": "gentle"}},  # horizons, not peaks: the opening line bends only a little
     ),
     "psychology": Niche(
         label="Everyday psychology",
