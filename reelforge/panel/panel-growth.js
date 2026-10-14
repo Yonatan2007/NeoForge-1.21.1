@@ -101,6 +101,20 @@ export function metricoolBrand() {
   return brandPromise;
 }
 
+const NETWORK_DATA = ["twitter", "facebook", "instagram", "linkedin", "pinterest", "youtube", "tiktok", "bluesky", "threads", "gmb"];
+/**
+ * A listed post (getScheduledPosts) as updateScheduledPost takes it back, with
+ * `patch` applied: Metricool lists an empty block for networks the post
+ * doesn't go to (twitterData) but refuses one on an update.
+ */
+export function postInfo(raw, patch = {}) {
+  const info = { ...raw, ...patch };
+  const nets = new Set((info.providers || []).map((p) => p.network));
+  for (const net of NETWORK_DATA) if (!nets.has(net)) delete info[`${net}Data`];
+  for (const key of ["creatorUserMail", "creatorUserId", "plannerUrl"]) delete info[key];
+  return JSON.stringify(info);
+}
+
 const MCP_PROBLEMS = {
   server_not_connected: "Metricool isn't connected to your Claude account.",
   needs_reauth: "Metricool needs to be reconnected in your Claude settings.",
@@ -308,10 +322,10 @@ function postView(raw) {
 }
 
 async function changeTime(post, brand, { draft = false, at = null } = {}) {
-  const info = { ...post.raw, draft };
-  if (at) info.publicationDate = { dateTime: isoIn(at, post.tz).slice(0, 19), timezone: post.tz };
+  const patch = { draft };
+  if (at) patch.publicationDate = { dateTime: isoIn(at, post.tz).slice(0, 19), timezone: post.tz };
   return metricool("updateScheduledPost", { id: String(post.raw.id), uuid: String(post.raw.uuid), blogId: brand.id,
-                                            info: JSON.stringify(info) }, { text: true });
+                                            info: postInfo(post.raw, patch) }, { text: true });
 }
 
 async function askTime(post, title) {

@@ -20,7 +20,7 @@ import { callout } from "./components.js";
 import { button, confirmDialog, debounce, h, relativeTime, toast, toastError } from "./dom.js";
 import { segmented, switchControl } from "./fields.js";
 import { icon } from "./icons.js";
-import { metricool, metricoolBrand, metricoolProblem, isoIn } from "./panel-growth.js";
+import { metricool, metricoolBrand, metricoolProblem, isoIn, postInfo } from "./panel-growth.js";
 import { TONES } from "./panel-more.js";
 
 const P = () => api._panel;
@@ -372,7 +372,7 @@ export function renderAutopilot(container) {
       if (!draft && slotDate(it) < new Date(Date.now() + 2 * 60000)) throw new Error("Its time has passed. Pick a new time in Calendar.");
       for (const post of posts) { // the reel's post, and its TikTok post that waits for a sound
         await metricool("updateScheduledPost", { id: String(post.id), uuid: String(post.uuid), blogId: b.id,
-                                                 info: JSON.stringify({ ...post, draft }) }, { text: true });
+                                                 info: postInfo(post, { draft }) }, { text: true });
       }
       await retrying(() => db.doc(`autopilot/${it.id}`).update({ status: draft ? "skipped" : "scheduled", updated: nowIso() }));
       toast(label, { kind: "success", timeout: 2500 });

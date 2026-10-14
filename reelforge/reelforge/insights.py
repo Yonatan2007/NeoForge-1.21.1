@@ -247,14 +247,19 @@ def _times(x: float) -> str:
     return f"{x:.0f}×" if x >= 10 else f"{x:.1f}×"
 
 
+def _many(n, word: str) -> str:
+    """'1 save', '3 saves'."""
+    return f"{_count(n)} {word[:-1] if n == 1 else word}"
+
+
 def _line(kind: str, e: dict) -> str:
     """'Did best: "<hook>" — TikTok 87,191 views (181× the usual; 18,822 likes, ...), Instagram 166 views (1.2×).'"""
     parts = []
     for n, (net, x) in enumerate(e["times"].items()):
         st = e["stats"][net]
-        extra = ", ".join(f"{_count(st[k])} {k}" for k in ("likes", "shares", "saves", "comments") if st.get(k))
+        extra = ", ".join(_many(st[k], k) for k in ("likes", "shares", "saves", "comments") if st.get(k))
         usual_word = " the usual" if n == 0 or x < 0.1 else ""
-        parts.append(f"{LABEL[net]} {_count(st.get('views'))} views ({_times(x)}{usual_word}"
+        parts.append(f"{LABEL[net]} {_many(st.get('views'), 'views')} ({_times(x)}{usual_word}"
                      f"{'; ' + extra if extra and n == 0 else ''})")
     return f'{kind}: "{e["hook"]}" — {", ".join(parts)}.'
 

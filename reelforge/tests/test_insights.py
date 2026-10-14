@@ -138,3 +138,9 @@ def test_panelrun_insights_reads_the_saved_documents(tmp_path):
     assert json.loads((tmp_path / "out" / "reposts.json").read_text()) == []
     codes = panelrun.insights_codes()
     assert codes["posts"]["instagram"][0] == "IGRE02" and codes["followers"]["instagram"] == ["IGEV01"]
+
+
+def test_counts_of_one_read_singular():
+    assert insights._many(1, "saves") == "1 save"
+    assert insights._many(1.0, "views") == "1 view"
+    assert insights._many(18822, "likes") == "18,822 likes"
