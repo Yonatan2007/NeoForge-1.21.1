@@ -33,6 +33,12 @@ Autopilot (reels made and scheduled in batches, see autopilot.py):
     python -m reelforge.panelrun autopilot-docs --plan PLAN --results RES --media MEDIA.json
                                                --covers COVERS.json --metricool MC.json
         The panel's queue documents (autopilot/<slot id>) as an ArtifactData batch.
+    python -m reelforge.panelrun autopilot-insights --codes
+        The Metricool metric ids to read for the next command.
+    python -m reelforge.panelrun autopilot-insights IN.json --out DIR
+        How the reels did and what the next batch learns -> DIR/insights.json
+        (the panel's insights/latest) and DIR/reposts.json (Trial Reels to
+        post again as normal reels).
     python -m reelforge.panelrun render --work DIR [--voiceover URL]
         Renders; DIR/progress.json follows it, a DIR/cancel file stops it,
         DIR/result.json holds the result (or the error).
@@ -179,14 +185,18 @@ def _write(path: Path, data) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
+def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=None) -> dict:
     """Plan a batch: slots, scripts with their posts, a work folder per reel
-    (project.json and uploads) with its stock clips assigned."""
+    (project.json and uploads) with its stock clips assigned. Gemini learns
+    from ``insights`` (the panel's insights/latest), answers the viewers'
+    comments in ``replies`` first, and builds the posts around real searches
+    (``search_phrases``, or YouTube's suggestions); each reel then gets its
+    extras (trial, collaborator, TikTok sound from ``sounds``)."""
     import random
     import secrets
     from datetime import datetime, timedelta
 
-    from . import autopilot as ap, ideas
+    from . import autopilot as ap, ideas, search
     from .pipeline import slugify
 
     data = _read(inp)
@@ -226,10 +236,23 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
     avoid = [*(data.get("avoid") or []), *(h.get("title", "") for h in history)]
     written = list(data.get("ideas") or [])
     writer = writer or ideas.generate
+    insights = data.get("insights") or {}
+    phrases = data.get("search_phrases")
+    if phrases is None and settings["search"]:
+        phrases = (searcher or search.phrases)(settings["topic"])
+    answered = {h.get("reply_to") for h in history if h.get("reply_to")}
+    replies = [r for r in data.get("replies") or [] if r.get("id") and r.get("comment") and r["id"] not in answered]
+    replies = replies[:max(0, len(slots) - len(written))]
+    brief = dict(topic=settings["topic"], tone=settings["tone"], examples=data.get("examples") or [], post=True,
+                 length=settings["length"], comment=settings["first_comment"], search=settings["search"],
+                 phrases=phrases or [], learnings=insights.get("learnings") or [])
+    if replies:  # video replies to viewers' comments come first, one script each
+        got = writer(count=len(replies), avoid=[*avoid, *(w["title"] for w in written)], replies=replies, **brief)
+        plan["model"] = got.get("model")
+        for r, idea in zip(replies, got.get("ideas") or []):
+            written.append({**idea, "reply_to": r["id"]})
     while len(written) < len(slots):
-        got = writer(topic=settings["topic"], count=min(8, len(slots) - len(written)), tone=settings["tone"],
-                     avoid=[*avoid, *(w["title"] for w in written)], examples=data.get("examples") or [],
-                     post=True)
+        got = writer(count=min(8, len(slots) - len(written)), avoid=[*avoid, *(w["title"] for w in written)], **brief)
         plan["model"] = got.get("model")
         if not got.get("ideas"):
             raise ideas.IdeasError("Gemini returned no scripts.")
@@ -252,13 +275,21 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None) -> dict:
             "id": sid, "slot": slot.strftime("%Y-%m-%dT%H:%M"), "tz": tz, "title": idea["title"],
             "script": idea["script"], "why": idea.get("why", ""), "caption": idea.get("caption") or idea["title"],
             "hashtags": idea.get("hashtags") or [], "youtube_title": idea.get("youtube_title") or idea["title"],
+            "first_comment": ap.first_comment(idea.get("first_comment")), "search_phrase": idea.get("search_phrase"),
+            "reply_to": idea.get("reply_to"),
             "work": str(work), "project_id": f"{slugify(idea['title'], 5)}-{secrets.token_hex(3)}",
             "song": project["music"].get("file")})
+    ap.plan_extras(plan["items"], settings, trial_ok=bool(insights.get("trial_eligible")), history=history,
+                   sounds=data.get("sounds") or [])
+    plan["phrases"] = len(phrases or [])
 
     _plan_footage(plan)
     _write(out / "plan.json", plan)
-    return {"ok": True, "slots": len(plan["items"]), "plan": str(out / "plan.json"),
-            "first": plan["items"][0]["slot"], "last": plan["items"][-1]["slot"], "model": plan["model"]}
+    items = plan["items"]
+    return {"ok": True, "slots": len(items), "plan": str(out / "plan.json"),
+            "first": items[0]["slot"], "last": items[-1]["slot"], "model": plan["model"],
+            "replies": sum(1 for it in items if it.get("reply_to")), "trials": sum(1 for it in items if it["trial"]),
+            "collabs": sum(1 for it in items if it["collaborator"]), "search_phrases": plan["phrases"]}
 
 
 def _plan_footage(plan: dict) -> None:
@@ -468,7 +499,9 @@ def autopilot_swap(plan_path: Path, ids: list[str], choices: dict[str, dict] | N
 
 def autopilot_posts(plan_path: Path, results_path: Path, media_path: Path, now=None) -> dict:
     """createScheduledPost arguments for the reels that passed, leaving out
-    slots too close to schedule (under 15 minutes away)."""
+    slots too close to schedule (under 15 minutes away). A reel can have two
+    posts (``part`` "main" and, when TikTok waits for its sound, "tiktok");
+    record each answer under ``<slot_id>`` or ``<slot_id>/tiktok``."""
     from datetime import datetime, timedelta
 
     from . import autopilot as ap
@@ -482,7 +515,7 @@ def autopilot_posts(plan_path: Path, results_path: Path, media_path: Path, now=N
         if datetime.fromisoformat(item["slot"]) < soon:
             late.append(item["id"])
             continue
-        posts.append(ap.metricool_post(item, plan["settings"], plan["brand_id"], m["url"], res.get("cover_ms")))
+        posts += ap.metricool_posts(item, ap.settings_of(plan["settings"]), plan["brand_id"], m["url"], res.get("cover_ms"))
     _write(plan_path.parent / "posts.json", posts)
     return {"ok": True, "posts": len(posts), "late": late, "file": str(plan_path.parent / "posts.json")}
 
@@ -503,7 +536,8 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
     for item in plan["items"]:
         res = results.get(item["id"]) or {}
         m = media.get(item["id"]) or {}
-        post = mc.get(item["id"]) or {}
+        tiktok = mc.get(f"{item['id']}/tiktok") or {}
+        post = mc.get(item["id"]) or tiktok
         if not res:  # no voice or no render by the end of the run
             status, res = "failed", {"problems": ["It wasn't made: its voiceover or render didn't finish."]}
         elif not res.get("ok"):
@@ -523,6 +557,11 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
               "cover_ms": res.get("cover_ms"), "duration": res.get("duration"), "clips": res.get("clips") or [],
               "problems": res.get("problems") or ([post["error"]] if post.get("error") else []),
               "metricool": {k: post.get(k) for k in ("id", "uuid", "plannerUrl") if post.get(k)} or None,
+              "metricool_tiktok": ({k: tiktok.get(k) for k in ("id", "uuid", "plannerUrl") if tiktok.get(k)} or None)
+                                  if tiktok is not post else None,
+              "first_comment": item.get("first_comment") or None, "search_phrase": item.get("search_phrase") or None,
+              "trial": bool(item.get("trial")), "collaborator": item.get("collaborator"),
+              "tiktok_sound": item.get("tiktok_sound"), "reply_to": item.get("reply_to"),
               "created": now, "updated": now}
         _write(folder / f"autopilot-{item['id']}.json", ad)
         writes.append({"op": "set", "collection": "autopilot", "doc_id": item["id"],
@@ -533,6 +572,48 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
         st = _read(w["file_path"])["status"]
         counts[st] = counts.get(st, 0) + 1
     return {"ok": True, "writes": len(writes), "file": str(folder / "writes.json"), "statuses": counts}
+
+
+def _reel_docs(folder: Path) -> list[dict]:
+    """The autopilot documents ArtifactData saved in ``folder`` (``<id>.json`` each), with their ids."""
+    out = []
+    for f in sorted(Path(folder).glob("*.json")):
+        doc = _read(f)
+        body = doc["data"] if isinstance(doc.get("data"), dict) and "slot" in doc["data"] else doc
+        out.append({**body, "id": body.get("id") or f.stem})
+    return out
+
+
+def autopilot_insights(inp: Path, out: Path, now=None) -> dict:
+    """How the reels did (insights.py) -> OUT/insights.json, the panel's
+    ``insights/latest``, and OUT/reposts.json, the createScheduledPost
+    arguments for the Trial Reels to post again as normal reels."""
+    from datetime import datetime, timezone
+
+    from . import insights
+
+    data = _read(inp)
+    brand = data.get("brand") or {}
+    reels = data.get("reels") or (_reel_docs(Path(data["reels_dir"])) if data.get("reels_dir") else [])
+    now = now or (datetime.fromisoformat(data["now"].replace("Z", "")) if data.get("now")
+                  else datetime.now(timezone.utc).replace(tzinfo=None))
+    followers = {net: insights.followers_of(ans) for net, ans in (data.get("followers") or {}).items()}
+    doc, again = insights.build(data.get("stats") or {}, reels, tz=brand.get("timezone") or "UTC", now=now,
+                                followers=followers, live=data.get("scheduled") or [],
+                                prior=data.get("previous"), settings=data.get("settings"),
+                                brand_id=str(brand.get("id") or ""))
+    _write(out / "insights.json", doc)
+    _write(out / "reposts.json", again)
+    return {"ok": True, "file": str(out / "insights.json"), "reposts": str(out / "reposts.json"),
+            "judged": doc["judged"], "trial_eligible": doc["trial_eligible"], "followers": doc["followers"],
+            "best": [e["hook"] for e in doc["top"]], "learnings": doc["learnings"], "posts_again": len(again)}
+
+
+def insights_codes() -> dict:
+    """The getAnalyticsDataByMetrics requests autopilot-insights reads."""
+    from . import insights
+    return {"posts": {net: insights.codes(net) for net in insights.METRICS},
+            "followers": {net: [code] for net, code in insights.FOLLOWERS.items()}}
 
 
 class _FileFlag(threading.Event):
@@ -667,6 +748,10 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("autopilot-docs")
     for flag in ("--plan", "--results", "--media", "--covers", "--metricool"):
         a.add_argument(flag, required=True)
+    a = sub.add_parser("autopilot-insights")
+    a.add_argument("input", nargs="?")
+    a.add_argument("--out")
+    a.add_argument("--codes", action="store_true", help="print the Metricool metric ids to request")
     r = sub.add_parser("render")
     r.add_argument("--work", required=True)
     r.add_argument("--voiceover")
@@ -694,6 +779,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "autopilot-docs":
         out = autopilot_docs(Path(args.plan), Path(args.results), Path(args.media), Path(args.covers),
                              Path(args.metricool))
+    elif args.cmd == "autopilot-insights":
+        if args.codes or not args.input:
+            out = insights_codes()
+        else:
+            out = autopilot_insights(Path(args.input), Path(args.out or Path(args.input).parent).resolve())
     elif args.cmd == "render":
         out = render(work, args.voiceover)
     elif args.cmd == "status":

@@ -42,11 +42,22 @@ so the whole app can be used from the Claude app on any device:
   looks over their openings and schedules them in Metricool at the
   audience's busiest hours, see `reelforge/autopilot.py`) and the queue,
   `autopilot/<slot id>`, where a waiting reel is approved or held back with
-  the viewer's Metricool connector.
+  the viewer's Metricool connector. "Growing the account" holds the growth
+  settings: video length, a question as the first comment, posts built
+  around real searches, Instagram Trial Reels, collab invites, and a
+  reminder to add a trending TikTok sound at volume 0. "What's working"
+  shows `insights/latest`, which Claude writes each morning from the
+  Metricool numbers (`reelforge/insights.py`); the queue shows each reel's
+  first comment, Trial Reel state, collab invite, sound and numbers.
+* `panel-replies.js` adds Replies: a comment pasted from a reel gets three
+  replies drafted by Claude in the account's voice (`sample`) to copy into
+  the app, and a comment worth a whole video becomes a video reply that the
+  next autopilot run writes (`replies/<id>`, status "idea").
 * `panel-music.js` adds Music, the music library (`music/<id>`): songs added
   once and kept in the panel, each with where it starts and whether it is in
   the shuffle. Autopilot deals them at random to its reels, and every reel's
-  Music tab can take one ("Random song", or choose).
+  Music tab can take one ("Random song", or choose). It also lists TikTok's
+  trending sounds this week (the viewer's Higgsfield connector).
 * The panel reaches Claude through the Routine in `settings/claude.trigger_id`
   (`fire_trigger`) or a direct `send_message`; when neither is allowed it says
   what to type in the chat.

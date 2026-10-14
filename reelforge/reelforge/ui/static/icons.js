@@ -45,6 +45,7 @@ const PATHS = {
   chart: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m7 15 4-5 3.5 3L20 6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   wand: '<path d="m15 4 5 5L9 20l-5-5z"/><path d="m13 6 5 5"/><path d="M5 3v4M3 5h4M19 15v4M17 17h4"/>',
+  chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/><path d="M8.5 11h7M8.5 14h4"/>',
 };
 
 /**

@@ -71,6 +71,30 @@ def test_post_copy_comes_with_each_script(monkeypatch):
     assert ideas.caption_lines("Line one.\n\n\n\nLine two.") == "Line one.\n\nLine two."
 
 
+def test_growth_brief_length_comment_search_learnings_and_replies(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    text = json.dumps({"ideas": [{"title": "T", "script": "Hook? More.", "why": "", "caption": "C", "hashtags": ["a"],
+                                  "youtube_title": "Y", "first_comment": ' "What are you waiting for?" ',
+                                  "search_phrase": "How To Stop Overthinking!"}]})
+    g = Gemini([], Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}))
+    idea = ideas.generate(count=1, session=g, post=True, length="short", comment=True, search=True,
+                          phrases=["how to stop overthinking"], learnings=['Did best: "X" — TikTok 9 views'],
+                          replies=[{"id": "r1", "comment": "How do I let go?", "platform": "tiktok", "note": "be gentle"}])["ideas"][0]
+    assert idea["first_comment"] == "What are you waiting for?" and idea["search_phrase"] == "how to stop overthinking"
+    body = g.posts[0][1]
+    brief = body["contents"][0]["parts"][0]["text"]
+    assert "60 to 85 words" in brief and "first two seconds" in brief
+    assert "first_comment" in brief and "search_phrase" in brief and "- how to stop overthinking" in brief
+    assert 'Did best: "X"' in brief and "How do I let go?" in brief and "be gentle" in brief
+    assert brief.index("How do I let go?") < brief.index('Did best: "X"')
+    item = body["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]
+    assert {"first_comment", "search_phrase"} <= set(item["required"])
+    # the Ideas page keeps its long scripts and asks for neither
+    plain = ideas.prompt(count=2)
+    assert "110 to 160 words" in plain and "first_comment" not in plain and "search_phrase" not in plain
+    assert "first_comment" not in ideas.schema(post=True)["properties"]["ideas"]["items"]["properties"]
+
+
 def test_errors_are_readable(monkeypatch, tmp_path):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)

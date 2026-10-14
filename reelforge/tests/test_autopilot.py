@@ -154,6 +154,83 @@ def test_quality_gate():
     assert len(problems) == 3
 
 
+def test_growth_settings_are_kept_in_range():
+    s = ap.settings_of({"length": "epic", "first_comment": 0, "search": 1, "trial_reels": "sometimes",
+                        "collaborators": "@Night.Thoughts, other_page;@x y z", "collab_every": "0", "tiktok_sound": "yes"})
+    assert (s["length"], s["first_comment"], s["search"], s["trial_reels"]) == ("short", False, True, "some")
+    assert s["collaborators"] == ["night.thoughts", "other_page", "x"]  # three at most, without "@"
+    assert s["collab_every"] == 1 and s["tiktok_sound"] == "off"
+    d = ap.settings_of(None)
+    assert (d["length"], d["first_comment"], d["trial_reels"], d["collaborators"], d["tiktok_sound"]) == \
+        ("short", True, "some", [], "off")
+    assert ap.settings_of({"tiktok_sound": "remind", "collab_every": "x"})["collab_every"] == 7
+
+
+def test_first_comment_fits_tiktok():
+    assert ap.first_comment(' "What are you still waiting to feel ready for?" ') == "What are you still waiting to feel ready for?"
+    long = ap.first_comment("word " * 60)
+    assert len(long) <= 150 and long.endswith("…") and "  " not in long
+
+
+def items_for(n):
+    return [{"id": f"ap-{i}", "slot": f"2026-10-15T{10 + i:02d}:00", "tz": "Asia/Jerusalem", "title": f"T{i}",
+             "caption": "Cap", "hashtags": [], "youtube_title": "YT"} for i in range(n)]
+
+
+def test_extras_share_out_trials_collaborators_and_sounds():
+    s = ap.settings_of({"platforms": ["instagram", "youtube", "tiktok"], "collaborators": ["a", "b"],
+                        "collab_every": 3, "tiktok_sound": "remind"})
+    items = items_for(7)
+    # "a" was invited last time, two reels ago: "b" is next and the third reel is due
+    history = [{"title": "x"}, {"title": "y", "collaborator": "a"}, {"title": "z"}]
+    sounds = [{"name": "Lo-fi one", "artist": "A", "song_clip_id": "1", "genre": "LO-FI", "rank": 1}, {"name": "Two", "song_clip_id": "2"}]
+    ap.plan_extras(items, s, trial_ok=True, history=history, sounds=sounds)
+    assert [it["collaborator"] for it in items] == [None, "b", None, None, "a", None, None]
+    trials = [it["trial"] for it in items]
+    assert not any(it["trial"] for it in items if it["collaborator"])  # Instagram doesn't allow both
+    assert trials.count(True) == 2 and trials[2] is True  # one in three of the others
+    assert [it["tiktok_sound"]["song_clip_id"] for it in items] == ["1", "2", "1", "2", "1", "2", "1"]
+    assert "rank" not in items[0]["tiktok_sound"]
+
+    not_yet = items_for(3)
+    ap.plan_extras(not_yet, ap.settings_of({"trial_reels": "all"}), trial_ok=False)
+    assert not any(it["trial"] for it in not_yet) and not any(it["collaborator"] for it in not_yet)
+    every = items_for(3)
+    ap.plan_extras(every, ap.settings_of({"trial_reels": "all"}), trial_ok=True)
+    assert all(it["trial"] for it in every) and all(it["tiktok_sound"] is None for it in every)
+    first = items_for(2)
+    ap.plan_extras(first, ap.settings_of({"collaborators": ["a"], "collab_every": 5}))
+    assert first[0]["collaborator"] == "a"  # never invited before: the first reel does it
+
+
+def test_metricool_post_carries_comment_trial_and_collaborator():
+    s = ap.settings_of({"platforms": ["instagram", "youtube", "tiktok"]})
+    item = {**items_for(1)[0], "first_comment": "Which line hit hardest?", "trial": True}
+    info = json.loads(ap.metricool_post(item, s, "1", "https://cdn/x.mp4", None)["info"])
+    assert info["firstCommentText"] == "Which line hit hardest?" and info["instagramData"]["type"] == "TRIAL_REEL"
+    assert "showReelOnFeed" not in info["instagramData"] and info["autoPublish"] is True
+    collab = {**item, "collaborator": "night.thoughts"}
+    ig = json.loads(ap.metricool_post(collab, s, "1", "u", None)["info"])["instagramData"]
+    assert ig["type"] == "REEL" and ig["collaborators"] == [{"username": "night.thoughts", "deleted": False}]
+    off = json.loads(ap.metricool_post(item, ap.settings_of({"first_comment": False}), "1", "u", None)["info"])
+    assert off["firstCommentText"] == ""
+
+
+def test_tiktok_waits_for_its_sound_in_remind_mode():
+    s = ap.settings_of({"platforms": ["instagram", "youtube", "tiktok"], "tiktok_sound": "remind"})
+    posts = ap.metricool_posts(items_for(1)[0], s, "1", "https://cdn/x.mp4", 1200)
+    assert [p["part"] for p in posts] == ["main", "tiktok"]
+    main, tt = (json.loads(p["info"]) for p in posts)
+    assert [p["network"] for p in main["providers"]] == ["instagram", "youtube"] and "tiktokData" not in main
+    assert main["autoPublish"] is True
+    assert [p["network"] for p in tt["providers"]] == ["tiktok"] and tt["autoPublish"] is False  # Metricool's app reminds
+    assert tt["tiktokData"]["title"] == "YT" and tt["media"] == ["https://cdn/x.mp4"]
+    only = ap.metricool_posts(items_for(1)[0], ap.settings_of({"platforms": ["tiktok"], "tiktok_sound": "remind"}), "1", "u", None)
+    assert [p["part"] for p in only] == ["tiktok"]
+    plain = ap.metricool_posts(items_for(1)[0], ap.settings_of({"platforms": ["instagram", "tiktok"]}), "1", "u", None)
+    assert [p["part"] for p in plain] == ["main"]
+
+
 def test_metricool_post_reaches_every_platform_and_drafts_in_review_mode():
     item = {"id": "ap-20261012-1900", "slot": "2026-10-12T19:00", "tz": "Asia/Jerusalem", "title": "T",
             "caption": "Hook line", "hashtags": ["a"], "youtube_title": "YT title"}
@@ -184,15 +261,19 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
         "brand": {"id": "7327885", "timezone": "Asia/Jerusalem"},
         "template": template, "best": {"instagram": grid({19: 100, 12: 90})},
         "scheduled": [{"publicationDate": {"dateTime": "2026-10-12T19:00:00", "timezone": "Asia/Jerusalem"}}],
-        "history": [{"title": "Old one", "clips": ["p_9"]}], "now": "2026-10-12T08:00",
-        "library": [song("lib1.mp3", start=3), song("lib2.mp3")]}))
+        "history": [{"title": "Old one", "clips": ["p_9"], "reply_to": "r0"}], "now": "2026-10-12T08:00",
+        "library": [song("lib1.mp3", start=3), song("lib2.mp3")],
+        "search_phrases": ["how to stop overthinking"],
+        "insights": {"learnings": ['Did best: "Hook" — TikTok 9 views'], "trial_eligible": True},
+        "replies": [{"id": "r0", "comment": "Already answered"}, {"id": "r1", "comment": "How do I stop waiting?", "platform": "tiktok"}]}))
     calls = []
 
     def writer(**kw):
         calls.append(kw)
         n = kw["count"]
         return {"model": "gemini-test", "ideas": [{"title": f"Idea {len(calls)}-{i}", "script": "Hook here? Then more words.",
-                                                  "why": "", "caption": "Cap", "hashtags": ["x"], "youtube_title": "YT"}
+                                                  "why": "", "caption": "Cap", "hashtags": ["x"], "youtube_title": "YT",
+                                                  "first_comment": "Which line hit hardest?", "search_phrase": "how to stop overthinking"}
                                                  for i in range(n)]}
 
     need = panelrun.autopilot_prepare(inp, assets, tmp_path / "run", writer=writer)
@@ -206,7 +287,18 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
     assert out["ok"] and out["slots"] == 3  # 2 days x 2, minus the one already taken on day one
     plan = json.loads((tmp_path / "run" / "plan.json").read_text())
     assert calls[0]["post"] is True and "Old one" in calls[0]["avoid"]
+    # the viewer's comment is answered first (the one already answered isn't), then the rest
+    assert calls[0]["replies"] == [{"id": "r1", "comment": "How do I stop waiting?", "platform": "tiktok"}]
+    assert calls[0]["count"] == 1 and calls[1]["count"] == 2 and "replies" not in calls[1]
+    for kw in calls:
+        assert (kw["length"], kw["comment"], kw["search"]) == ("short", True, True)
+        assert kw["phrases"] == ["how to stop overthinking"] and kw["learnings"] == ['Did best: "Hook" — TikTok 9 views']
     items = plan["items"]
+    assert [it["reply_to"] for it in items] == ["r1", None, None]
+    assert all(it["first_comment"] == "Which line hit hardest?" and it["search_phrase"] == "how to stop overthinking"
+               for it in items)
+    assert [it["trial"] for it in items] == [False, True, False] and not any(it["collaborator"] for it in items)
+    assert out["replies"] == 1 and out["trials"] == 1 and out["search_phrases"] == 1
     assert [i["slot"] for i in items] == ["2026-10-12T12:00", "2026-10-13T12:00", "2026-10-13T19:00"]
     keys = []
     for it in items:
@@ -247,6 +339,16 @@ def test_prepare_render_posts_and_docs(tmp_path, monkeypatch):
     assert doc["metricool"] == {"id": 1, "uuid": "u1", "plannerUrl": "https://m"} and doc["clips"] == ["m_0"]
     assert writes[0]["doc_id"] == items[0]["id"] and doc["slot"] == items[0]["slot"]
     assert doc["song"] == items[0]["song"].split("/")[-1]  # next runs avoid songs heard lately
+    assert (doc["first_comment"], doc["reply_to"], doc["trial"], doc["metricool_tiktok"]) == \
+        ("Which line hit hardest?", "r1", False, None)
+    assert json.loads(json.loads(open(posts["file"]).read())[0]["info"])["firstCommentText"] == "Which line hit hardest?"
+    # a TikTok post that waits for its sound is kept next to the main one
+    (tmp_path / "mc2.json").write_text(json.dumps({items[0]["id"]: {"id": 1, "uuid": "u1"},
+                                                   f"{items[0]['id']}/tiktok": {"id": 2, "uuid": "u2"}}))
+    docs2 = panelrun.autopilot_docs(tmp_path / "run" / "plan.json", tmp_path / "run" / "results.json",
+                                    tmp_path / "media.json", tmp_path / "covers.json", tmp_path / "mc2.json")
+    doc2 = json.loads(open(json.loads(open(docs2["file"]).read())[0]["file_path"]).read())
+    assert doc2["metricool"] == {"id": 1, "uuid": "u1"} and doc2["metricool_tiktok"] == {"id": 2, "uuid": "u2"}
 
 
 def test_render_runs_each_reel_once_and_checks_it(tmp_path, monkeypatch):

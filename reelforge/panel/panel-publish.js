@@ -30,6 +30,7 @@ import { icon } from "./icons.js";
 import { bestTimePicker, canWrite, renderCalendar, renderStats, sampleProblem, viewerTz, writePost } from "./panel-growth.js";
 import { renderAutopilot } from "./panel-autopilot.js";
 import { renderMusic } from "./panel-music.js";
+import { renderReplies } from "./panel-replies.js";
 import { checkTiktok, coverCard, markTiktokPosted, renderBatch, renderIdeas, viralityCard } from "./panel-more.js";
 import { footageReview } from "./panel-review.js";
 
@@ -1245,7 +1246,7 @@ async function videoLookup() {
 
 export const extras = {
   nav: [{ id: "autopilot", label: "Autopilot", icon: "wand" }, { id: "music", label: "Music", icon: "music" },
-        { id: "ideas", label: "Ideas", icon: "sparkle" },
+        { id: "replies", label: "Replies", icon: "chat" }, { id: "ideas", label: "Ideas", icon: "sparkle" },
         { id: "publish", label: "Publish", icon: "upload" }, { id: "calendar", label: "Calendar", icon: "calendar" },
         { id: "stats", label: "Stats", icon: "chart" }, { id: "accounts", label: "Accounts", icon: "link" }],
   homeActions: [{ label: "Autopilot", icon: "wand", href: "#/x/autopilot" }, { label: "Script ideas", icon: "sparkle", href: "#/x/ideas" }],
@@ -1264,6 +1265,7 @@ export const extras = {
     if (id === "ideas") return renderIdeas(container);
     if (id === "autopilot") return renderAutopilot(container);
     if (id === "music") return renderMusic(container);
+    if (id === "replies") return renderReplies(container);
     if (id === "batch") return renderBatch(container);
     if (id === "stats") return renderStats(container, { findVideo: videoLookup });
     if (id === "publish" && sub) {

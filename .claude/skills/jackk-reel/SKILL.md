@@ -223,20 +223,37 @@ R = a run folder in the scratchpad, A = the asset folder; run Python from
    TikTok is linked: drop `tiktok` from the platforms if not);
    `getBestTimeToPostByNetwork` per chosen platform for the next 7 days;
    `getScheduledPosts` from today to today + days + 1.
-4. `ArtifactData list autopilot`: `history` = the latest 40 as `{title,
-   clips, song}`. `avoid` = the first sentence of every reel's script and
+4. `ArtifactData list autopilot`: `history` = the latest 40, oldest first,
+   as `{title, clips, song, collaborator, reply_to}` (collaborators take
+   turns from it). `avoid` = the first sentence of every reel's script and
    every autopilot title; `examples` = the scripts of the 3 latest reels.
    `ArtifactData list music` → `library` (the songs of the Music page, as
    saved: `{name, store, start, enabled}`); with `music: "random"` each reel
    gets one of them, dealt like cards (none repeats before the others).
+   `ArtifactData get insights/latest` → `insights` (missing: `{}`): its
+   `learnings` steer the scripts, its `trial_eligible` lets Trial Reels in.
+   `ArtifactData query replies` where `status == "idea"` → `replies` as
+   `{id, comment, platform, note}` (note: the saved `video.hook` and
+   `video.angle`): the batch's first reels answer them, one each; one that
+   a reel already answers (`reply_to` in the history) is left out.
+   With `tiktok_sound: "remind"` and TikTok among the platforms: Higgsfield
+   `tiktok_accounts` (the active account's `connector_id`), then
+   `tiktok_music_trending` with `genre` `LO-FI` and `CHILL_BEATS`, limit 10
+   each → `sounds`: the tracks as `{name, artist, song_clip_id, preview_url,
+   genre}`, the two lists interleaved. Each TikTok of the batch gets one.
 5. Write R/in.json: `{settings, brand: {id, timezone}, template: <the saved
    doc>, best: {<platform>: {"1": [24 hourly values from midnight], …, "7":
    […]}}, scheduled: <getScheduledPosts data>, history, avoid, examples,
-   library}`
+   library, insights, replies, sounds}`
    (best times in this short form: day of week with Monday = 1, values as
-   Metricool gave them). Run `python -m reelforge.panelrun autopilot-prepare
-   R/in.json --assets A --out R/run` (fetch any `need` ids like a stage
-   does: the template's files and the songs picked for this run). `"slots": 0`: finish with "The next <days> days are already full".
+   Metricool gave them). With `search: true` the command reads YouTube's
+   search suggestions itself; if it can't reach them, add `search_phrases`
+   (a list of real searches) or leave the reels without. Run `python -m
+   reelforge.panelrun autopilot-prepare R/in.json --assets A --out R/run`
+   (fetch any `need` ids like a stage does: the template's files and the
+   songs picked for this run). `"slots": 0`: finish with "The next <days>
+   days are already full". Its answer counts the video replies, Trial
+   Reels, collab invites and search phrases of the batch.
 6. Voices: `generate_audio_batch` with each item's `voice_request.params`
    unchanged (up to 12 a call; 2.4 credits each), `jobs_wait` until all are
    done, then R/voices.json = `{<item id>: <result_url>}`. Never resubmit a
@@ -257,8 +274,13 @@ R = a run folder in the scratchpad, A = the asset folder; run Python from
 10. `panelrun autopilot-posts --plan … --results … --media R/media.json` →
     posts.json. For each post `createScheduledPost` with its `blogId`,
     `date` and `info` exactly as given; R/metricool.json = `{<slot_id>: {id,
-    uuid, plannerUrl}}` from the answers, or `{error}`. Reels listed as
-    `late` are left unscheduled.
+    uuid, plannerUrl}}` from the answers, or `{error}`. A reel can have two
+    posts: `part` "main", and in "remind" mode a "tiktok" one (Metricool's
+    app reminds the user to post it with its sound): record that one under
+    `<slot_id>/tiktok`. Reels listed as `late` are left unscheduled. If
+    Instagram refuses a Trial Reel or a collaborator, post it again without
+    (`instagramData.type` "REEL", no `collaborators`) and note it in the
+    task message.
 11. `panelrun autopilot-docs --plan … --results … --media … --covers …
     --metricool R/metricool.json`, then `ArtifactData batch` with its
     writes.json (50 writes a batch).
@@ -266,6 +288,41 @@ R = a run folder in the scratchpad, A = the asset folder; run Python from
     for your OK; 1 held back", result: {statuses}}` and tell the user in a
     line or two. In "ask me first" mode the posts are Metricool drafts: the
     Autopilot page approves or holds them itself.
+
+### Daily review (`insights/latest`, each morning or "review the reels")
+
+How the reels did, what the next batch learns, and the Trial Reels'
+outcome. Read only from Metricool, except posting the Trial Reels that won
+again for followers. R = a review folder in the scratchpad.
+
+1. `panelrun autopilot-insights --codes` → the metric ids. For each network
+   in it with a linked account: `getAnalyticsDataByMetrics` with the
+   `posts` ids, `from` 30 days ago to now → `stats.<network>` (the answer
+   as given; its rows follow the ids' order). Then the `followers` ids for
+   the last 3 days → `followers.<network>`.
+2. `getBrandSettings` (id, timezone), `getScheduledPosts` from 9 days ago
+   to 3 days ahead → `scheduled` (a refused trial shows there as ERROR, and
+   the hours ahead are taken); `ArtifactData query autopilot` ordered by
+   `slot` descending, limit 120, with `out_dir` R/db (the reels of about
+   the last 40 days, with their `trial` and `slot`); `ArtifactData get
+   insights/latest` → `previous` (missing: null); `settings/autopilot` →
+   `settings`.
+3. R/in.json = `{brand: {id, timezone}, settings, stats, followers,
+   reels_dir: "R/db/autopilot", scheduled, previous}` and run `panelrun
+   autopilot-insights R/in.json --out R/out`. It matches posts to reels by
+   time and text, scores each reel against the account's usual numbers
+   (a reel needs a day to settle), writes the learnings and decides the
+   Trial Reels: after two days, one that beat the usual views by half is
+   posted again for followers, and one Instagram refused as a trial goes
+   out as a normal reel.
+4. Each entry of R/out/reposts.json: `createScheduledPost` with its
+   `blogId`, `date` and `info` exactly as given (a normal Instagram reel at
+   the next free hour).
+5. `ArtifactData set insights/latest` with R/out/insights.json (pass
+   `if_version` when it exists). The Autopilot page shows it under "What's
+   working", and the next autopilot run reads its learnings. Tell the user
+   only what changed: a reel that took off, a trial that won, followers
+   passing 1,000 on Instagram (Trial Reels start then).
 
 ### Profile requests (`kind: "profile"`)
 

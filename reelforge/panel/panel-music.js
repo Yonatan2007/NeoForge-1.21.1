@@ -13,6 +13,75 @@ import { icon } from "./icons.js";
 
 const P = () => api._panel;
 const ACCEPT = "audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac";
+const GENRES = [["LO-FI", "Lo-fi"], ["CHILL_BEATS", "Chill"], ["EPIC", "Cinematic"], ["ALL", "Everything"]];
+
+/**
+ * TikTok's trending licensed sounds this week (the viewer's Higgsfield
+ * connector, tiktok_music_trending). With Autopilot's "Remind me to add a
+ * trending sound", each TikTok gets one of these to add at volume 0: TikTok
+ * shows the reel to that sound's listeners while the reel's own music plays.
+ */
+function trendingCard(player) {
+  let genre = "LO-FI";
+  let playing = null;
+  let tracks = [];
+  let connector = null;
+  const list = h("div", {});
+  const pick = h("select", { class: "input select", "aria-label": "Kind of sound" },
+    GENRES.map(([v, l]) => h("option", { value: v, selected: v === genre }, l)));
+  pick.addEventListener("change", () => { genre = pick.value; load(); });
+  player.addEventListener("ended", () => { playing = null; paint(); });
+
+  function paint() {
+    list.replaceChildren(tracks.length ? h("ul", { class: "trend-list" }, tracks.map((t) => {
+      const on = playing === t.song_clip_id;
+      const play = button(on ? `Pause ${t.name}` : `Play ${t.name}`, { icon: on ? "pause" : "play", iconOnly: true, variant: "ghost",
+        onClick: () => {
+          if (on) {
+            player.pause();
+            playing = null;
+            return paint();
+          }
+          player.src = t.preview_url;
+          player.play().then(() => { playing = t.song_clip_id; paint(); })
+            .catch((err) => toastError(`Could not play “${t.name}”`, err));
+        } });
+      return h("li", { class: "trend-row" }, t.thumbnail_url ? h("img", { src: t.thumbnail_url, alt: "" }) : null,
+        h("div", { class: "trend-main" }, h("strong", {}, `${t.rank}. ${t.name}`), h("span", { class: "muted small" }, t.artist || "")),
+        t.preview_url ? play : null);
+    })) : h("p", { class: "muted empty-inline" }, "TikTok has no chart for this kind of sound right now."));
+  }
+
+  async function load() {
+    const mcp = P().mcp;
+    if (!mcp) {
+      list.replaceChildren(h("p", { class: "muted empty-inline" }, "Connectors can't be used in this view."));
+      return;
+    }
+    list.replaceChildren(h("p", { class: "muted" }, "Reading TikTok's chart…"));
+    try {
+      if (!connector) {
+        const acc = await mcp.callTool("higgsfield", "tiktok_accounts", {});
+        const account = ((acc && acc.payload && acc.payload.accounts) || []).find((a) => a.status === "active");
+        if (!account) {
+          list.replaceChildren(h("p", { class: "muted empty-inline" }, "Connect TikTok on the Accounts page to see its trending sounds."));
+          return;
+        }
+        connector = account.connector_id;
+      }
+      const res = await mcp.callTool("higgsfield", "tiktok_music_trending", { connector_id: connector, genre, limit: 10 });
+      tracks = (res && res.payload && res.payload.tracks) || [];
+      paint();
+    } catch (err) {
+      list.replaceChildren(h("p", { class: "muted empty-inline" }, `TikTok's chart couldn't be read (${(err && (err.message || err.code)) || "unknown error"}).`));
+    }
+  }
+  load();
+  return h("section", { class: "card", "aria-labelledby": "music-trending" },
+    h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "music-trending" }, "Trending on TikTok"),
+      h("p", { class: "card-sub" }, "Licensed sounds TikTok is pushing this week. With “Remind me to add a trending sound” on the Autopilot page, each TikTok gets one of these to add at volume 0: TikTok shows the reel to that sound's listeners while your own music plays.")),
+    h("div", { class: "row trend-pick" }, pick), list);
+}
 
 function head(title, lead, ...actions) {
   return h("header", { class: "home-head" },
@@ -26,6 +95,8 @@ export function renderMusic(container) {
   let playing = null; // id of the song playing
   const audio = new Audio();
   audio.preload = "none";
+  const trendAudio = new Audio(); // TikTok's trending sounds, apart from the songs
+  trendAudio.preload = "none";
   const uploads = h("ul", { class: "upload-list" });
   const list = h("div", { class: "card song-card" });
 
@@ -40,7 +111,8 @@ export function renderMusic(container) {
                    iconName: "music", onFiles: add }),
         uploads),
       list,
-      callout("info", "Use songs you're allowed to post: Instagram and YouTube can mute copyrighted music.")));
+      callout("info", "Use songs you're allowed to post: Instagram and YouTube can mute copyrighted music."),
+      trendingCard(trendAudio)));
 
   async function add(files) {
     for (const file of files) {
@@ -163,7 +235,9 @@ export function renderMusic(container) {
 
   load();
   return () => {
-    audio.pause();
-    audio.removeAttribute("src");
+    for (const a of [audio, trendAudio]) {
+      a.pause();
+      a.removeAttribute("src");
+    }
   };
 }

@@ -5,7 +5,10 @@
  *   settings/autopilot   the settings on this page (the same keys as autopilot.DEFAULTS)
  *   music/<id>           the music library (the Music page): "random" music deals from it
  *   autopilot/<slot id>  one reel of the queue: {slot, tz, status, title, caption, cover,
- *                        master_url, platforms, metricool: {id, uuid, plannerUrl}, problems}
+ *                        master_url, platforms, metricool: {id, uuid, plannerUrl}, problems,
+ *                        first_comment, trial, collaborator, reply_to, tiktok_sound, metricool_tiktok}
+ *   insights/latest      how the reels did (reelforge/insights.py): learnings, followers, per-reel
+ *                        numbers, Trial Reel decisions; Claude refreshes it each morning
  *   tasks/<id>           kind "autopilot" {days, per_day}: fill the coming days; Claude runs it
  *
  * Approving or holding back a queued reel happens here, through the viewer's
@@ -25,8 +28,19 @@ const DEFAULTS = {
   enabled: true, per_day: 3, days: 7, platforms: ["instagram", "youtube"], approval: "auto",
   window: ["08:00", "23:30"], min_gap: 3, template: null, format: "template", music: "random",
   topic: "", tone: "", ai_label: false,
+  length: "short", first_comment: true, search: true, trial_reels: "some", collaborators: [], collab_every: 7,
+  tiktok_sound: "off",
 };
 const NETS = { instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };
+const TRIAL_STATE = {
+  running: "Trial Reel: testing on non-followers", shared: "Trial Reel: did well, posted for followers too",
+  kept: "Trial Reel: kept as a test", failed: "Instagram refused the trial: posted as a normal reel",
+};
+const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+
+/** Instagram usernames from "a, @b c": without "@", at most three (as autopilot.usernames). */
+export const usernames = (text) => [...new Set(String(text || "").split(/[\s,;]+/)
+  .map((u) => u.trim().replace(/^@+/, "").toLowerCase().replace(/[^a-z0-9._]/g, "").slice(0, 30)).filter(Boolean))].slice(0, 3);
 const CREDITS_PER_REEL = 2.4; // one Higgsfield voiceover
 const STATUS = {
   planned: ["Being made", "busy"], review: ["Needs your OK", "warn"], scheduled: ["Scheduled", "ok"],
@@ -63,6 +77,22 @@ function liveStatus(it, live) {
   return it.status;
 }
 
+/** The TikTok post that waits for its trending sound: "waiting" for the viewer, "posted", or null. */
+function tiktokState(it, live) {
+  if (!it.metricool_tiktok) return null;
+  const p = ((live && live.providers) || []).find((x) => x.network === "tiktok");
+  if (p && p.status === "PUBLISHED") return "posted";
+  return slotDate(it) < new Date() ? "waiting" : "later";
+}
+
+/** "TikTok 87K views · Instagram 166 views" from insights/latest's numbers for a reel. */
+function numbersLine(stats) {
+  const parts = Object.entries(stats || {}).filter(([, s]) => s && s.views != null)
+    .sort((a, b) => b[1].views - a[1].views)
+    .map(([net, s]) => `${NETS[net] || net} ${compact.format(s.views)} views${s.likes ? `, ${compact.format(s.likes)} likes` : ""}`);
+  return parts.join(" · ");
+}
+
 export function renderAutopilot(container) {
   const { db, retrying, newTask, nowIso, blobUrl, listSongs } = P();
   let settings = { ...DEFAULTS };
@@ -73,17 +103,23 @@ export function renderAutopilot(container) {
   let brand = null;
   let credits = null;
   let task = null; // the latest autopilot run
+  let insights = null; // insights/latest
   let pastOpen = false;
   let unsubTask = null;
   const status = h("div", { class: "card ap-status" });
+  const learned = h("section", { class: "card", "aria-labelledby": "ap-learned" });
   const form = h("div", { class: "card" });
+  const growth = h("div", { class: "card" });
   const queue = h("div", { class: "stack-lg" });
   const note = h("div", {});
+  const player = new Audio();
+  player.preload = "none";
 
   container.append(
     head("Autopilot", "Claude writes, voices, renders and schedules your reels by itself, at the hours your audience is most active.",
+      h("a", { class: "btn btn-ghost", href: "#/x/replies", html: `${icon("chat", { size: 18 })}<span class="btn-label">Replies</span>` }),
       h("a", { class: "btn btn-ghost", href: "#/x/batch", html: `${icon("render", { size: 18 })}<span class="btn-label">Render several</span>` })),
-    h("div", { class: "stack-lg" }, status, note, form, queue));
+    h("div", { class: "stack-lg" }, status, note, learned, form, growth, queue));
 
   const save = debounce(() => retrying(() => db.doc("settings/autopilot").set({ ...settings, updated: nowIso() }))
     .catch((err) => toastError("Could not save the autopilot settings", err)), 500);
@@ -91,8 +127,30 @@ export function renderAutopilot(container) {
     settings = { ...settings, ...patch };
     save();
     paintStatus();
-    if (repaint) paintForm();
+    if (repaint) {
+      paintForm();
+      paintGrowth();
+    }
   };
+
+  // ---- what the numbers say (insights/latest, refreshed by Claude each morning)
+  function paintLearned() {
+    const headRow = h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "ap-learned" }, "What's working"),
+      h("p", { class: "card-sub" }, insights && insights.updated
+        ? `From your Metricool numbers, ${relativeTime(insights.updated)}. Each new batch is written to do more of what worked.`
+        : "Claude reads your numbers from Metricool each morning; each new batch is written to do more of what worked."));
+    if (!insights) {
+      learned.replaceChildren(headRow, h("p", { class: "muted empty-inline" }, "No numbers read yet."));
+      return;
+    }
+    const f = insights.followers || {};
+    const fol = Object.entries(f).map(([net, n]) => `${compact.format(n)} on ${NETS[net] || net}`).join(" · ");
+    learned.replaceChildren(headRow,
+      fol ? h("p", { class: "muted small" }, `Followers: ${fol}`) : null,
+      (insights.learnings || []).length
+        ? h("ul", { class: "ap-learnings" }, insights.learnings.map((line) => h("li", {}, line)))
+        : h("p", { class: "muted empty-inline" }, "Not enough posts a day old yet to compare."));
+  }
 
   // ---- status card: how far the queue reaches, the next run, credits
   const statusLine = () => {
@@ -181,6 +239,7 @@ export function renderAutopilot(container) {
           return toast("Keep at least one platform.", { kind: "error" });
         }
         set({ platforms: next });
+        paintGrowth();
       });
       return [input, h("label", { class: ["chip", off && "is-off"], for: id, title: off ? "Link TikTok in Metricool first" : null },
         h("span", { class: "chip-check", html: icon("check", { size: 14 }) }), dot(p), label, off ? h("span", { class: "chip-note" }, "link in Metricool") : null)];
@@ -239,19 +298,82 @@ export function renderAutopilot(container) {
         h("div", { class: "field field-bool" }, ai)));
   }
 
+  // ---- growing the account
+  function paintGrowth() {
+    const field = (label, control, help) => h("div", { class: "field" },
+      h("span", { class: "field-label" }, label), control, help ? h("p", { class: "field-help" }, help) : null);
+    const length = segmented({ label: "Video length", value: settings.length,
+      options: [{ value: "short", label: "20–30 s" }, { value: "medium", label: "30–40 s" }, { value: "long", label: "40–55 s" }],
+      onChange: (v) => set({ length: v }) });
+    const comment = switchControl({ id: "ap-first-comment", checked: settings.first_comment,
+      label: "Ask a question in the first comment", onChange: (v) => set({ first_comment: v }) });
+    const search = switchControl({ id: "ap-search", checked: settings.search,
+      label: "Build posts around what people search for", onChange: (v) => set({ search: v }) });
+    const trials = segmented({ label: "Trial Reels", value: settings.trial_reels,
+      options: [{ value: "off", label: "Off" }, { value: "some", label: "1 in 3" }, { value: "all", label: "All" }],
+      onChange: (v) => set({ trial_reels: v }) });
+    const ig = (insights && insights.followers && insights.followers.instagram);
+    const trialHelp = insights && insights.trial_eligible
+      ? "Instagram shows them to non-followers first. After two days, the ones that beat your usual views are posted again for your followers."
+      : `Instagram shows them to non-followers first, but only offers them from about ${Number((insights && insights.trial_followers) || 1000).toLocaleString()} followers${ig != null ? ` (you have ${compact.format(ig)})` : ""}. Until then reels go out normally; autopilot starts using them by itself once it can.`;
+    const collabs = h("input", { class: "input", type: "text", value: (settings.collaborators || []).map((u) => `@${u}`).join(", "),
+      placeholder: "@a_page_like_yours", "aria-label": "Instagram accounts to invite as collaborators", autocomplete: "off" });
+    collabs.addEventListener("change", () => {
+      const list = usernames(collabs.value);
+      collabs.value = list.map((u) => `@${u}`).join(", ");
+      set({ collaborators: list });
+    });
+    const every = h("select", { class: "input select", "aria-label": "How often to invite" },
+      [[1, "on every reel"], [3, "on 1 reel in 3"], [5, "on 1 reel in 5"], [7, "on 1 reel in 7"], [14, "on 1 reel in 14"]]
+        .map(([v, l]) => h("option", { value: v, selected: v === Number(settings.collab_every) }, l)));
+    every.addEventListener("change", () => set({ collab_every: Number(every.value) }));
+    const tiktokOn = settings.platforms.includes("tiktok");
+    const soundHelp = h("p", { class: "field-help" });
+    const paintSoundHelp = () => {
+      soundHelp.textContent = !tiktokOn ? "TikTok isn't one of the platforms above."
+        : settings.tiktok_sound === "remind"
+          ? "At each TikTok's time, Metricool's phone app reminds you: open it in TikTok, add the trending sound shown on the reel below, turn that sound's volume to 0 and post. Your music still plays, and TikTok shows the reel to the people who follow that sound. TikTok only lets you add a sound yourself, in its app, so this needs your tap each time (and Metricool's app on your phone)."
+          : "Off: TikTok posts by itself with your music. On: each TikTok also waits for a trending sound you add at volume 0, so TikTok shows it to that sound's listeners while your music plays. TikTok only lets you add sounds yourself, in its app.";
+    };
+    paintSoundHelp();
+    const sound = switchControl({ id: "ap-tiktok-sound", checked: tiktokOn && settings.tiktok_sound === "remind",
+      label: "Remind me to add a trending sound on TikTok", onChange: (v) => {
+        set({ tiktok_sound: v ? "remind" : "off" });
+        paintSoundHelp();
+      } });
+    if (!tiktokOn) sound.querySelector("input").disabled = true;
+
+    growth.replaceChildren(
+      h("div", { class: "card-head" }, h("h2", { class: "card-title" }, "Growing the account"),
+        h("p", { class: "card-sub" }, "What each new batch does to reach more people.")),
+      h("div", { class: "form-grid ap-form" },
+        field("Video length", length, "Shorter reels get watched to the end more often, the strongest sign to every platform."),
+        h("div", { class: "field field-bool" }, comment,
+          h("p", { class: "field-help" }, "A question people answer from their own life, posted with the reel on Instagram and YouTube (TikTok: business accounts). Apps can't pin it: pin it in the app if you like.")),
+        h("div", { class: "field field-bool" }, search,
+          h("p", { class: "field-help" }, "Real searches from YouTube's suggestions go word for word into the caption, the title and a hashtag, so the reel is found in search long after it leaves the feed.")),
+        field("Trial Reels on Instagram", trials, trialHelp),
+        field("Collabs on Instagram", h("div", { class: "row row-wrap ap-collabs" }, collabs, every),
+          "Each account gets an invite; once it accepts, the reel shows on its profile and its followers' feeds too. Pages like yours work best. Never on a Trial Reel."),
+        h("div", { class: "field field-bool" }, sound, soundHelp)));
+  }
+
   // ---- queue
   async function act(it, draft, label) {
     try {
       const b = await metricoolBrand();
-      let post = it.metricool && it.metricool.uuid ? live.get(String(it.metricool.uuid)) : null;
-      if (!post) {
+      const parts = [it.metricool, it.metricool_tiktok].filter((m) => m && m.uuid);
+      let posts = parts.map((m) => live.get(String(m.uuid)));
+      if (posts.some((p) => !p)) {
         await loadLive(true);
-        post = it.metricool && it.metricool.uuid ? live.get(String(it.metricool.uuid)) : null;
+        posts = parts.map((m) => live.get(String(m.uuid)));
       }
-      if (!post) throw new Error("Metricool no longer has this post.");
+      if (!posts.length || posts.some((p) => !p)) throw new Error("Metricool no longer has this post.");
       if (!draft && slotDate(it) < new Date(Date.now() + 2 * 60000)) throw new Error("Its time has passed. Pick a new time in Calendar.");
-      await metricool("updateScheduledPost", { id: String(post.id), uuid: String(post.uuid), blogId: b.id,
-                                               info: JSON.stringify({ ...post, draft }) }, { text: true });
+      for (const post of posts) { // the reel's post, and its TikTok post that waits for a sound
+        await metricool("updateScheduledPost", { id: String(post.id), uuid: String(post.uuid), blogId: b.id,
+                                                 info: JSON.stringify({ ...post, draft }) }, { text: true });
+      }
       await retrying(() => db.doc(`autopilot/${it.id}`).update({ status: draft ? "skipped" : "scheduled", updated: nowIso() }));
       toast(label, { kind: "success", timeout: 2500 });
       await loadQueue();
@@ -260,8 +382,21 @@ export function renderAutopilot(container) {
     }
   }
 
+  function soundLine(it, state) {
+    const s = it.tiktok_sound;
+    if (!s || !s.name) return null;
+    const play = s.preview_url ? button(`Play ${s.name}`, { icon: "play", iconOnly: true, size: "sm", variant: "ghost", onClick: () => {
+      if (!player.paused && player.src === s.preview_url) return player.pause();
+      player.src = s.preview_url;
+      player.play().catch((err) => toastError("Could not play the sound", err));
+    } }) : null;
+    const when = state === "waiting" ? "Waiting for you: post it from Metricool's app with" : state === "posted" ? "Posted on TikTok with" : "On TikTok, add";
+    return h("p", { class: "small ap-sound" }, play, h("span", {}, `${when} “${s.name}”${s.artist ? ` by ${s.artist}` : ""} at volume 0.`));
+  }
+
   function row(it) {
     const st = liveStatus(it, it.metricool && live.get(String(it.metricool.uuid)));
+    const tt = tiktokState(it, it.metricool_tiktok && live.get(String(it.metricool_tiktok.uuid)));
     const when = slotDate(it);
     const actions = [];
     if (it.master_url) actions.push(h("a", { class: "btn btn-ghost btn-sm", href: it.master_url, target: "_blank", rel: "noopener", html: `${icon("play", { size: 14 })}<span class="btn-label">Watch</span>` }));
@@ -269,6 +404,13 @@ export function renderAutopilot(container) {
     if (st === "review" || st === "scheduled") actions.push(button("Don't post", { icon: "pause", size: "sm", variant: "ghost", onClick: () => act(it, true, "Held back: it stays a draft in Metricool.") }));
     if (st === "skipped" && when > new Date()) actions.push(button("Post it after all", { size: "sm", variant: "ghost", onClick: () => act(it, false, "Back on: it posts at its time.") }));
     if (it.metricool && it.metricool.plannerUrl) actions.push(h("a", { class: "btn btn-ghost btn-sm", href: it.metricool.plannerUrl, target: "_blank", rel: "noopener" }, "Metricool"));
+    const trial = it.trial ? ((insights && insights.trials && insights.trials[it.id]) || { status: when > new Date() ? "" : "running" }) : null;
+    const tags = [
+      trial ? h("span", { class: "chip chip-static", title: trial.reason || null }, TRIAL_STATE[trial.status] || "Trial Reel: shown to non-followers first") : null,
+      it.collaborator ? h("span", { class: "chip chip-static" }, `Collab invite: @${it.collaborator}`) : null,
+      it.reply_to ? h("span", { class: "chip chip-static" }, "Video reply to a comment") : null,
+    ].filter(Boolean);
+    const numbers = insights && insights.reels && insights.reels[it.id] ? numbersLine(insights.reels[it.id].stats) : "";
     return h("li", { class: ["ap-item", `is-${st}`] },
       it.cover ? h("img", { class: "mini-thumb", src: blobUrl(it.cover), alt: "" }) : h("span", { class: "mini-thumb is-empty", html: icon("film", { size: 18 }) }),
       h("div", { class: "ap-main" },
@@ -276,6 +418,10 @@ export function renderAutopilot(container) {
           h("span", { class: "ap-nets" }, (it.platforms || []).map(dot))),
         h("p", { class: "ap-title" }, it.title || "Untitled"),
         it.caption ? h("p", { class: "muted small ap-caption" }, String(it.caption).split("\n")[0]) : null,
+        it.first_comment ? h("p", { class: "muted small ap-comment" }, `First comment: ${it.first_comment}`) : null,
+        tags.length ? h("div", { class: "chips ap-tags" }, tags) : null,
+        soundLine(it, tt),
+        numbers ? h("p", { class: "small ap-numbers" }, numbers) : null,
         (it.problems || []).length ? h("ul", { class: "ap-problems" }, it.problems.map((p) => h("li", {}, p))) : null,
         actions.length ? h("div", { class: "row row-wrap" }, actions) : null));
   }
@@ -302,7 +448,7 @@ export function renderAutopilot(container) {
   }
 
   async function loadLive(force = false) {
-    const scheduled = items.filter((it) => it.metricool && it.metricool.uuid);
+    const scheduled = items.filter((it) => (it.metricool && it.metricool.uuid) || (it.metricool_tiktok && it.metricool_tiktok.uuid));
     if (!scheduled.length || (live.size && !force)) return;
     try {
       const b = await metricoolBrand();
@@ -331,17 +477,21 @@ export function renderAutopilot(container) {
 
   (async () => {
     try {
-      const [s, ps, songs] = await Promise.all([retrying(() => db.doc("settings/autopilot").get()),
-        retrying(() => db.collection("projects").get()), listSongs()]);
+      const [s, ps, songs, ins] = await Promise.all([retrying(() => db.doc("settings/autopilot").get()),
+        retrying(() => db.collection("projects").get()), listSongs(),
+        retrying(() => db.doc("insights/latest").get()).catch(() => null)]);
       if (s.exists) settings = { ...DEFAULTS, ...s.data() };
       if (settings.music === "rotate") settings.music = "random";
       projects = ps.docs.map((d) => ({ id: d.id, ...d.data() }));
       library = songs.filter((song) => song.enabled !== false);
+      insights = ins && ins.exists ? ins.data() : null;
     } catch (err) {
       toastError("Could not load the autopilot", err);
     }
     paintStatus();
+    paintLearned();
     paintForm();
+    paintGrowth();
     paintQueue();
     metricoolBrand().then((b) => { brand = b; paintForm(); }).catch(() => {});
     if (P().mcp) P().mcp.callTool("higgsfield", "balance", {}).then((r) => {
@@ -351,5 +501,9 @@ export function renderAutopilot(container) {
     if (settings.last_task) watchTask(settings.last_task);
     loadQueue();
   })();
-  return () => unsubTask && unsubTask();
+  return () => {
+    if (unsubTask) unsubTask();
+    player.pause();
+    player.removeAttribute("src");
+  };
 }

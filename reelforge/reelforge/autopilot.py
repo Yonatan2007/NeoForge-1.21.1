@@ -13,12 +13,24 @@ The steps that need the user's connectors (the Higgsfield voice and upload,
 Metricool's scheduling) are done by Claude in its session; ``panelrun
 autopilot-*`` does the rest (see panelrun.py and the jackk-reel skill).
 
+Growing the account (settings below): every post carries a question as its
+first comment; scripts are kept short, open on their strongest words and are
+built around phrases people really search for; Gemini learns from how the
+earlier reels did (``insights.py``); some Instagram posts go out as Trial
+Reels (shown to non-followers first) once Instagram allows them for the
+account; some invite a collaborator; and TikTok can wait for the user to add
+a trending sound at volume 0 over the reel's own music (TikTok only lets the
+account owner attach a sound, in its own app), reminded by Metricool's app.
+
 Panel documents:
     settings/autopilot   the user's settings (``DEFAULTS``)
     music/<id>           the music library: {name, store, start (seconds into the song), enabled, ...}
     autopilot/<slot id>  one reel: {slot, tz, status, project_id, title, script, caption, hashtags,
-                         youtube_title, platforms, song, master_url, master_media_id, cover, cover_ms,
-                         metricool: {id, uuid, plannerUrl}, clips, problems, created, updated}
+                         youtube_title, first_comment, search_phrase, trial, collaborator, tiktok_sound,
+                         reply_to, platforms, song, master_url, master_media_id, cover, cover_ms,
+                         metricool: {id, uuid, plannerUrl}, metricool_tiktok, clips, problems, created, updated}
+    insights/latest      how the reels did and what the next batch learns (``insights.py``)
+    replies/<id>         a viewer's comment with reply drafts; status "idea" makes it a video reply
 """
 from __future__ import annotations
 
@@ -44,8 +56,20 @@ DEFAULTS = {
     "topic": "",
     "tone": "",
     "ai_label": False,              # label the posts as AI-generated on the platforms
+    "length": "short",              # "short" (~20-30 s) | "medium" (~30-40 s) | "long" (~40-55 s), see ideas.LENGTHS
+    "first_comment": True,          # a question to answer, posted as each post's first comment
+    "search": True,                 # captions and titles around phrases people search for (search.py)
+    "trial_reels": "some",          # Instagram Trial Reels: "off" | "some" (1 in 3) | "all"; only once allowed
+    "collaborators": [],            # Instagram accounts invited as collaborators ...
+    "collab_every": 7,              # ... on one reel in this many
+    "tiktok_sound": "off",          # "remind": TikTok waits for a trending sound added at volume 0 (by the user)
 }
 PLATFORMS = ("instagram", "youtube", "tiktok")
+LENGTHS = ("short", "medium", "long")
+TRIAL_EVERY = 3           # "some" trial reels: one in this many Instagram posts
+TRIAL_FOLLOWERS = 1000    # Instagram offers Trial Reels to accounts about this big
+FIRST_COMMENT_MAX = 150   # TikTok's limit for a first comment (Instagram and YouTube take more)
+MAX_COLLABORATORS = 3
 # hours that do well on short video when Metricool has no data yet, best first
 FALLBACK_HOURS = (19, 12, 21, 9, 17, 15, 22, 11, 20, 13, 18, 10, 14, 16, 23, 8)
 MIN_GAP_FLOOR = 2.0       # two reels are never posted closer than this (hours): a day gets fewer instead
@@ -81,7 +105,24 @@ def settings_of(raw: dict | None) -> dict:
         start, end = 8 * 60, 23 * 60 + 30
     s["window"] = [_hhmm(start), _hhmm(end)]
     s["ai_label"] = bool(s["ai_label"])
+    s["length"] = s["length"] if s["length"] in LENGTHS else "short"
+    s["first_comment"] = bool(s["first_comment"])
+    s["search"] = bool(s["search"])
+    s["trial_reels"] = s["trial_reels"] if s["trial_reels"] in ("off", "some", "all") else "some"
+    s["collaborators"] = usernames(s["collaborators"])
+    try:
+        s["collab_every"] = min(30, max(1, int(s["collab_every"] or 7)))
+    except (TypeError, ValueError):
+        s["collab_every"] = 7
+    s["tiktok_sound"] = "remind" if s["tiktok_sound"] == "remind" else "off"
     return s
+
+
+def usernames(raw) -> list[str]:
+    """Instagram usernames from a list or "a, @b c" text: without "@", at most three."""
+    items = raw if isinstance(raw, list) else re.split(r"[\s,;]+", str(raw or ""))
+    names = [re.sub(r"[^a-z0-9._]", "", str(u).strip().lstrip("@").lower())[:30] for u in items]
+    return list(dict.fromkeys(n for n in names if n))[:MAX_COLLABORATORS]
 
 
 # --------------------------------------------------------------------------- when to post
@@ -338,15 +379,68 @@ def quality_problems(result: dict, used_clips: list[dict], min_s: float = 15, ma
     return problems
 
 
-def metricool_post(item: dict, settings: dict, brand_id: str, media_url: str, cover_ms: int | None) -> dict:
+def first_comment(text: str | None) -> str:
+    """A first comment that fits every platform (TikTok takes 150 characters), cut at a word."""
+    text = re.sub(r"\s+", " ", str(text or "")).strip().strip('"“”')
+    if len(text) <= FIRST_COMMENT_MAX:
+        return text
+    cut = text[:FIRST_COMMENT_MAX - 1].rsplit(" ", 1)[0].rstrip(",;:")
+    return f"{cut}…"
+
+
+def plan_extras(items: list[dict], settings: dict, *, trial_ok: bool = False, history: list[dict] | tuple = (),
+                sounds: list[dict] | tuple = ()) -> None:
+    """Per reel of a batch, in place: whether its Instagram post is a Trial
+    Reel (``trial``), which account it invites as a collaborator
+    (``collaborator``) and, in "remind" mode, the trending TikTok sound the
+    user adds at volume 0 (``tiktok_sound``). Collaborators take turns, the
+    one invited longest ago first (``history``: earlier reels, oldest first),
+    one reel in ``collab_every``; a reel with a collaborator is never a trial
+    (Instagram doesn't allow both). ``trial_ok``: Instagram offers the account
+    Trial Reels (``insights.trial_eligible``)."""
+    nets = settings["platforms"]
+    names = settings["collaborators"] if "instagram" in nets else []
+    every = settings["collab_every"]
+    last_seen = {h["collaborator"]: n for n, h in enumerate(history or []) if h.get("collaborator")}
+    turns = sorted(names, key=lambda u: last_seen.get(u, -1))
+    marked = [n for n, h in enumerate(history or []) if h.get("collaborator")]
+    since = len(history) - 1 - marked[-1] if marked else every - 1
+    trials = trial_ok and "instagram" in nets and settings["trial_reels"] != "off"
+    plain = 0
+    for i, item in enumerate(items):
+        item["collaborator"] = item["trial"] = None
+        since += 1
+        if turns and since >= every:
+            item["collaborator"] = turns[0]
+            turns.append(turns.pop(0))
+            since = 0
+        elif trials:
+            item["trial"] = settings["trial_reels"] == "all" or plain % TRIAL_EVERY == 1
+            plain += 1
+        else:
+            plain += 1
+        item["trial"] = bool(item["trial"])
+        if settings["tiktok_sound"] == "remind" and "tiktok" in nets and sounds:
+            s = sounds[i % len(sounds)]
+            item["tiktok_sound"] = {k: s.get(k) for k in ("name", "artist", "song_clip_id", "preview_url", "genre")}
+        else:
+            item["tiktok_sound"] = None
+
+
+def metricool_post(item: dict, settings: dict, brand_id: str, media_url: str, cover_ms: int | None,
+                   networks: list[str] | None = None, remind: bool = False) -> dict:
     """Arguments for Metricool's createScheduledPost: one post to every chosen
-    platform at the reel's slot (a draft to approve in "review" mode)."""
+    platform (or ``networks``) at the reel's slot (a draft to approve in
+    "review" mode), with its first comment, as a Trial Reel on Instagram when
+    the reel is one, inviting its collaborator. ``remind``: Metricool's app
+    reminds the user at that time to post it themselves (autoPublish off)."""
     tz = item["tz"]
     dt = datetime.fromisoformat(item["slot"])
-    nets = settings["platforms"]
+    nets = networks or settings["platforms"]
+    comment = first_comment(item.get("first_comment")) if settings["first_comment"] else ""
     info: dict = {
-        "autoPublish": True, "descendants": [], "draft": settings["approval"] == "review",
-        "firstCommentText": "", "hasNotReadNotes": False, "media": [media_url], "mediaAltText": [],
+        "autoPublish": not remind, "descendants": [], "draft": settings["approval"] == "review",
+        "firstCommentText": comment, "hasNotReadNotes": False, "media": [media_url], "mediaAltText": [],
         "providers": [{"network": n} for n in nets],
         "publicationDate": {"dateTime": dt.strftime("%Y-%m-%dT%H:%M:00"), "timezone": tz},
         "shortener": False, "smartLinkData": {"ids": []},
@@ -355,7 +449,12 @@ def metricool_post(item: dict, settings: dict, brand_id: str, media_url: str, co
     if cover_ms is not None:
         info["videoCoverMilliseconds"] = int(cover_ms)
     if "instagram" in nets:
-        info["instagramData"] = {"type": "REEL", "showReelOnFeed": True, "isAiGenerated": settings["ai_label"]}
+        ig = {"type": "REEL", "showReelOnFeed": True, "isAiGenerated": settings["ai_label"]}
+        if item.get("trial") and not item.get("collaborator"):
+            ig = {"type": "TRIAL_REEL", "isAiGenerated": settings["ai_label"]}
+        if item.get("collaborator"):
+            ig["collaborators"] = [{"username": item["collaborator"], "deleted": False}]
+        info["instagramData"] = ig
     if "youtube" in nets:
         info["youtubeData"] = {"title": (item.get("youtube_title") or item["title"])[:100], "type": "short",
                                "privacy": "public", "madeForKids": False,
@@ -366,3 +465,17 @@ def metricool_post(item: dict, settings: dict, brand_id: str, media_url: str, co
                               "isAigc": settings["ai_label"], "title": (item.get("youtube_title") or item["title"])[:90]}
     return {"slot_id": item["id"], "blogId": str(brand_id), "date": with_offset(dt, tz),
             "info": json.dumps(info, ensure_ascii=False)}
+
+
+def metricool_posts(item: dict, settings: dict, brand_id: str, media_url: str, cover_ms: int | None) -> list[dict]:
+    """The reel's createScheduledPost arguments: one post, or, in "remind"
+    mode, the other platforms' post and a TikTok post that Metricool's app
+    reminds the user to publish (to add the trending sound at volume 0).
+    Each has ``part``: "main" or "tiktok"."""
+    nets = settings["platforms"]
+    if settings["tiktok_sound"] != "remind" or "tiktok" not in nets:
+        return [{**metricool_post(item, settings, brand_id, media_url, cover_ms), "part": "main"}]
+    rest = [n for n in nets if n != "tiktok"]
+    posts = [{**metricool_post(item, settings, brand_id, media_url, cover_ms, rest), "part": "main"}] if rest else []
+    return posts + [{**metricool_post(item, settings, brand_id, media_url, cover_ms, ["tiktok"], remind=True),
+                     "part": "tiktok"}]

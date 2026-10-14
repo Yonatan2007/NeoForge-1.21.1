@@ -473,6 +473,32 @@ a.cal-day-link:focus-visible { outline: none; box-shadow: var(--ring); }
 .ap-main > .row { margin-top: 4px; gap: 6px 8px; }
 .ap-past > summary { cursor: pointer; width: max-content; font-weight: 650; color: var(--text-2); padding: 4px 0; }
 .ap-past[open] > summary { margin-bottom: 10px; }
+.ap-learnings { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.ap-comment { margin: 0; overflow-wrap: anywhere; }
+.ap-tags { gap: 6px; }
+.chip.chip-static { cursor: default; font-size: 12.5px; padding: 3px 10px; }
+.chip.chip-static:hover { color: var(--text-2); border-color: var(--border-strong); }
+.ap-sound { margin: 0; display: flex; align-items: center; gap: 6px; color: var(--text-2); overflow-wrap: anywhere; }
+.ap-sound .btn { flex: none; }
+.ap-numbers { margin: 0; font-weight: 600; color: var(--text-2); }
+.ap-collabs .input[type="text"] { flex: 1 1 200px; min-width: 0; }
+.ap-collabs .select { width: auto; }
+.reply-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.reply-item { display: grid; gap: 8px; padding: 14px; border-radius: var(--radius-lg); background: var(--surface); border: 1px solid var(--border); min-width: 0; }
+.reply-item.is-idea { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.reply-comment { margin: 0; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
+.reply-drafts { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.reply-drafts li { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: var(--radius); background: var(--surface-2, var(--surface)); border: 1px solid var(--border); }
+.reply-drafts li p { margin: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.45; }
+.reply-video { margin: 0; padding: 10px 12px; border-radius: var(--radius); border: 1px dashed var(--border-strong); display: grid; gap: 6px; }
+.reply-video p { margin: 0; overflow-wrap: anywhere; }
+.form-grid.reply-form { grid-template-columns: minmax(0, 1fr) auto; }
+.trend-pick .select { width: auto; max-width: 100%; flex: 0 1 220px; }
+.trend-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 10px; }
+.trend-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.trend-row img { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; flex: none; }
+.trend-main { display: grid; min-width: 0; flex: 1; }
+.trend-main strong, .trend-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ------------------------------------------------------------------ music library */
 
@@ -513,6 +539,7 @@ a.cal-day-link:focus-visible { outline: none; box-shadow: var(--ring); }
   .account-grid { grid-template-columns: minmax(0, 1fr); }
   .rv-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .idea-form { grid-template-columns: minmax(0, 1fr); }
+  .form-grid.reply-form { grid-template-columns: minmax(0, 1fr); }
   .idea-grid { grid-template-columns: minmax(0, 1fr); }
   .batch-row { padding: 12px 14px; flex-wrap: wrap; }
   .batch-row > .btn { display: none; }
