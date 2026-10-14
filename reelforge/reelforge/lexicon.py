@@ -6,8 +6,9 @@
   palette, the reference look) map script vocabulary to sunny nature and
   adventure searches, and fill the remaining shots.
 * ``VISUAL_CONCEPTS`` / ``ATMOSPHERE`` are the "moody" palette (night, rain).
-* ``PEOPLE_*`` (people in daily life) and ``SPACE_*`` (stars, galaxies) serve
-  the psychology and space accounts (``niches``).
+* ``PEOPLE_*`` (people in daily life), ``SPACE_*`` (stars, galaxies) and
+  ``CHOICES_*`` (chess, clocks, silhouettes) serve the psychology, space and
+  would-you-rather accounts (``niches``).
 * ``PALETTES`` names them all.
 
 Edit freely: these lists are the "taste" of the generator.
@@ -289,9 +290,54 @@ SPACE_ATMOSPHERE: list[str] = [
     "moon",
 ]
 
+# The "choices" palette (would-you-rather dilemmas): the symbols of a hard
+# choice. Checked on Mixkit's vertical listing (2026-10-14): chess, clock,
+# candle, sunset, silhouette 24+ ("mirror" too, but it brings brides and car
+# mirrors); city night 23; man silhouette 13;
+# couple silhouette 11; dark clouds 5; sun over hills 3; coin (a coin toss),
+# hourglass, old photographs 1-2 vertical and more wide ones.
+CHOICES_CONCEPTS: list[tuple[frozenset[str], list[str]]] = [
+    (frozenset("choose choice choices decide decision decisions either rather option options pick".split()),
+     ["chess", "coin"]),
+    (frozenset("time years year date die death dies dying future past forever age days day minutes".split()),
+     ["hourglass", "clock"]),
+    (frozenset("money million millions rich dollars pay price cost wealth".split()),
+     ["coin", "city night"]),
+    (frozenset("love partner heart relationship soulmate marry married".split()),
+     ["couple silhouette", "sunset"]),
+    (frozenset("memory memories remember forget forgot childhood".split()),
+     ["old photographs", "candle"]),
+    (frozenset("truth lie lies secret secrets honest know knowing".split()),
+     ["candle", "dark clouds"]),
+    (frozenset("yourself self face who".split()),
+     ["man silhouette", "candle"]),
+    (frozenset("alone lonely friends friend family people everyone world".split()),
+     ["man silhouette", "city night"]),
+    (frozenset("fear dark darkness pain lose loss".split()),
+     ["dark clouds", "candle"]),
+    (frozenset("win game power control".split()),
+     ["chess", "dark clouds"]),
+    (frozenset("hope light free freedom escape".split()),
+     ["sunset", "sun over hills"]),
+]
+
+CHOICES_ATMOSPHERE: list[str] = [
+    "chess",
+    "hourglass",
+    "silhouette",
+    "sunset",
+    "candle",
+    "clock",
+    "city night",
+    "dark clouds",
+    "coin",
+    "sunset over train tracks",
+]
+
 PALETTES: dict[str, tuple[list[tuple[frozenset[str], list[str]]], list[str]]] = {
     "bright": (BRIGHT_CONCEPTS, BRIGHT_ATMOSPHERE),
     "moody": (VISUAL_CONCEPTS, ATMOSPHERE),
     "people": (PEOPLE_CONCEPTS, PEOPLE_ATMOSPHERE),
     "space": (SPACE_CONCEPTS, SPACE_ATMOSPHERE),
+    "choices": (CHOICES_CONCEPTS, CHOICES_ATMOSPHERE),
 }

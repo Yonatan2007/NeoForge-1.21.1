@@ -461,13 +461,17 @@ def test_a_niche_sets_the_footage_and_a_comment_video_holds_its_line():
     fs = space["footage"]
     assert (fs["palette"], fs["hook_query"], fs["allow_landscape"]) == ("space", "night sky", True)
     assert fs["hook_searches"][0] == "milky way" and space["style"]["look"]["match"] == "off"
+    dilemmas = ap.build_project(template_project(), "Would you rather?", "T", niche="dilemmas")
+    assert (dilemmas["footage"]["palette"], dilemmas["footage"]["hook_query"]) == ("choices", "sun over hills")
+    assert "chess" in dilemmas["footage"]["theme"] and dilemmas["style"]["look"]["match"] == "off"
     plain = ap.build_project(template_project(), "Hook.", "T")
     assert plain["footage"]["allow_landscape"] is False and plain["footage"].get("hook_searches") is None
     line = "Would you rather know the date you die, or how?"
     c = ap.build_comment_project(template_project(), line, "Date or how", music=None, niche="dilemmas")
     assert c["script"] == line and c["voice"]["source"] == "none" and c["voice"]["file"] is None
     assert c["duration"]["target"] == ap.comment_seconds(line) == 8.5 and c["duration"]["max_intro"] == 0
-    assert (c["style"]["hook"]["mode"], c["style"]["hook"]["hold"]) == ("terrain", 60.0)
+    hook_style = c["style"]["hook"]
+    assert (hook_style["mode"], hook_style["hold"], hook_style["reveal"], hook_style["curve"]) == ("terrain", 60.0, "all", "gentle")
     assert c["style"]["video"]["fade_out"] == 0 and c["music"]["file"] is None
     assert ap.comment_seconds("Why?") == 7.0 and ap.comment_seconds("word " * 40) == 10.0
     # one shot, the whole line up within the first seconds and on screen to the last frame
@@ -478,7 +482,7 @@ def test_a_niche_sets_the_footage_and_a_comment_video_holds_its_line():
     timing.synthetic_timings(script.words, plan.intro, plan.total - plan.outro)
     hook, body = split_hook(script, proj)
     shots = plan_shots(script.words, plan.total, proj.style.video, keep_until=hook[-1].end)
-    assert plan.total == 8.5 and len(shots) == 1 and not body and plan.intro < 0.2 and hook[-1].end < 3.5
+    assert plan.total == 8.5 and len(shots) == 1 and not body and plan.intro == 0 and hook[0].start == 0
     assert _hook_display_end(hook, body, proj, shots[0][1]) == plan.total
 
 

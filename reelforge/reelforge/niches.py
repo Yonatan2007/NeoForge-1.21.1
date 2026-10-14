@@ -63,6 +63,16 @@ NICHES: dict[str, Niche] = {
         seeds=("would you rather", "moral dilemma", "what would you do if", "hard choices", "thought experiment",
                "trolley problem", "deep questions to ask", "philosophy questions"),
         topic_hint="e.g. money or love, time, loyalty, the past",
+        # the symbols of a choice (chess, a coin toss, an hourglass, silhouettes), opening on a
+        # sunset horizon, in a darker, more dramatic grade than the main account's sunny one
+        footage={"palette": "choices", "hook_query": "sun over hills",
+                 "hook_searches": ["horizon", "sunset", "hill sunset", "clouds sunset"],
+                 "theme": ["chess", "coin", "hourglass", "clock", "watch", "candle", "silhouette",
+                           "silhouetted", "sunset", "sun", "horizon", "hill", "hills", "clouds", "sky", "city",
+                           "night", "couple", "lighthouse", "photographs", "camera", "storm", "fog", "road",
+                           "tracks", "sea", "beach", "desert"]},
+        style={"look": {"match": "off", "contrast": 1.08, "saturation": 0.88, "lift": 0.02,
+                        "vignette": "PI/5", "grain": 4}},
     ),
     "psychology": Niche(
         label="Everyday psychology",

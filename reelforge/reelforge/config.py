@@ -143,6 +143,8 @@ class HookStyle:
     hold: float = 0.6                      # keep the hook text this long after its last word
     min_confidence: float = 0.35           # weaker skylines use the fallback pattern
     fallback: str = "diagonal"             # diagonal | arc | center
+    curve: str = "terrain"                 # terrain: the words follow the ridge closely | gentle: one soft arc over it
+    reveal: str = "words"                  # words: each appears as it is spoken | all: the whole hook at once
 
 
 @dataclass

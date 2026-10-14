@@ -50,8 +50,8 @@ const MIXES = [{ value: "watch", label: "Only longer videos" }, { value: "half",
                { value: "comments", label: "Mostly comment videos" }];
 const MIX_HELP = {
   watch: "Every reel is a longer narrated video that keeps its answer for the end.",
-  half: "Every other reel is a comment video: 7–10 s, one line on screen, music and no voice. People answer it in the comments, and the short video loops while they read them.",
-  comments: "Two in three reels are comment videos (7–10 s, one line on screen, no voice); the rest are longer narrated videos.",
+  half: "Every other reel is a comment video: 7–10 s, the whole line on screen from the first frame in a soft curve, music and no voice. People answer it in the comments, and the short video loops while they read them.",
+  comments: "Two in three reels are comment videos (7–10 s, the whole line on screen from the first frame, no voice); the rest are longer narrated videos.",
 };
 const VOICED = { watch: 1, half: 0.5, comments: 1 / 3 }; // the share of reels with a voiceover
 const NETS = { instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok" };

@@ -373,7 +373,7 @@ def _references(project: Project, project_dir: Path) -> tuple[list[Path], list, 
     return references, ref_sigs, ref_terms
 
 
-def _rankers(ref_sigs: list, theme: list[str] | None = None):
+def _rankers(ref_sigs: list, theme: list[str] | None = None, gentle: bool = False):
     """(likeness to the references, skyline + likeness for the hook shot) as
     ``extra_score`` functions for the stock search. With a ``theme``, clips
     whose names mention none of its words rank far lower: loose stock
@@ -390,7 +390,7 @@ def _rankers(ref_sigs: list, theme: list[str] | None = None):
     def skyline(c, img) -> float:
         named = (HOOK_TERRAIN_BONUS * footage.describes(c, HOOK_TERRAIN) - HOOK_PEOPLE_PENALTY * footage.describes(c, HOOK_PEOPLE)
                  - HOOK_BUILT_PENALTY * footage.describes(c, HOOK_BUILT))
-        return (SKYLINE_WEIGHT * hookmod.skyline_score(img) if img is not None else 0.0) + likeness(c, img) + named
+        return (SKYLINE_WEIGHT * hookmod.skyline_score(img, gentle) if img is not None else 0.0) + likeness(c, img) + named
 
     return likeness, skyline
 
@@ -433,7 +433,7 @@ def choose_stock(project: Project, script: Script, sources: list[ShotSource], ho
     stock_paths: dict[int, Path] = {}
     providers = _providers(project, settings)
     common = _stock_common(project)
-    likeness, skyline = _rankers(ref_sigs, project.footage.theme)
+    likeness, skyline = _rankers(ref_sigs, project.footage.theme, project.style.hook.curve == "gentle")
     banned = set(fs.banned)
     reviewed = [p for p in fs.picks if isinstance(p, dict) and footage.pick_key(p) not in banned]
     opening = next((p for p in reviewed if p.get("slot") == "opening"), None)
@@ -513,7 +513,7 @@ def review_footage(project: Project, project_dir: Path, settings: Settings, out_
     if not providers:
         raise ValueError("No stock site is turned on.")
     common = _stock_common(project)
-    likeness, skyline = _rankers(ref_sigs, project.footage.theme)
+    likeness, skyline = _rankers(ref_sigs, project.footage.theme, project.style.hook.curve == "gentle")
     banned = set(project.footage.banned)
     rest = list(stock_slots)
     opening: list = []

@@ -359,17 +359,19 @@ def comment_seconds(line: str) -> float:
 
 def build_comment_project(template: dict, line: str, title: str, *, music: str | dict | bool | None = True,
                           banned: list[str] | set[str] = (), fmt: str = "template", niche: str | None = None) -> dict:
-    """A comment video: one clip with ``line`` laid along its skyline from
-    the first moments to the last frame, the music and no voice, 7-10 s
-    (``comment_seconds``), cut so it loops cleanly."""
+    """A comment video: one clip with the whole of ``line`` laid along its
+    skyline in one soft arc from the first frame to the last, the music and
+    no voice, 7-10 s (``comment_seconds``), cut so it loops cleanly."""
     p = build_project(template, line, title, music=music, banned=banned, fmt=fmt, niche=niche)
     seconds = comment_seconds(line)
-    p["voice"].update(source="none", file=None, words_per_second=4.5)  # the words appear quickly
+    p["voice"].update(source="none", file=None, words_per_second=10.0)
     p.setdefault("duration", {}).update(target=seconds, max_intro=0.0)
     style = p.setdefault("style", {})
-    style.setdefault("hook", {}).update(mode="terrain", sentences=3, hold=60.0,  # the whole line, to the end
-                                        size=68, small_scale=0.9, big_scale=1.6)  # read, not glanced at
-    style.setdefault("video", {}).update(max_shot=seconds + 0.5, fade_in=0.0, fade_out=0.0)  # one shot
+    # the whole line at once, from the first frame to the last, on one soft arc (the opening
+    # shot is chosen for a smooth skyline that curves only a little), big enough to read
+    style.setdefault("hook", {}).update(mode="terrain", sentences=3, hold=60.0, reveal="all", curve="gentle",
+                                        fallback="arc", size=68, small_scale=0.9, big_scale=1.6)
+    style.setdefault("video", {}).update(max_shot=seconds + 0.5, fade_in=0.0, fade_out=0.0, voice_delay=0.0)
     p.setdefault("music", {}).update(fade_in=0.0, fade_out=0.3, duck=False, volume_db=-12.0)
     p.setdefault("footage", {})["queries"] = None
     return p

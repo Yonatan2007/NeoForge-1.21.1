@@ -112,10 +112,13 @@ ALIGN: Options = (("auto", "Automatic (Whisper if installed)"), ("whisper", "Whi
                   ("estimate", "Estimate from the audio"))
 STOCK_SOURCES: Options = (("mixkit", "Mixkit (free, no key needed)"), ("pexels", "Pexels (needs an API key)"),
                           ("pixabay", "Pixabay (needs an API key)"))
+HOOK_CURVES: Options = (("terrain", "Follow the ridge"), ("gentle", "A soft arc"))
+HOOK_REVEALS: Options = (("words", "Word by word"), ("all", "All at once"))
 PALETTES: Options = (("bright", "Bright (sunny nature)"),
                      ("moody", "Moody (night, rain)"),
                      ("people", "People (everyday life, the city)"),
-                     ("space", "Space (stars, galaxies)"))
+                     ("space", "Space (stars, galaxies)"),
+                     ("choices", "Choices (chess, clocks, silhouettes)"))
 ROLES: Options = (("footage", "Use in the video"), ("reference", "Reference only (steers stock and colour)"))
 KINDS: Options = (("auto", "Detect automatically"), ("image", "Picture"), ("video", "Video"))
 MOTIONS: Options = (("auto", "Automatic"), ("zoom-in", "Slow zoom in"), ("zoom-out", "Slow zoom out"),
@@ -238,6 +241,10 @@ HOOK = Section("hook", "Hook", "The opening sentence, laid along the skyline of 
          0, 3, 0.05, "s"),
     _num(H + "min_confidence", "Skyline certainty needed", "Skylines the app is less sure about than this "
          "use the fallback layout instead.", 0, 1, 0.05, advanced=True),
+    _sel(H + "curve", "Curve of the line", "Follow the ridge closely, or one soft arc that bends only a "
+         "little (the opening shot is then chosen for a smooth skyline).", HOOK_CURVES),
+    _sel(H + "reveal", "How the hook appears", "Word by word as it is spoken, or the whole hook at once.",
+         HOOK_REVEALS),
     _sel(H + "fallback", "Layout without a skyline", "Shape of the hook line when the first shot has no "
          "clear skyline.", HOOK_FALLBACKS, advanced=True),
 ))

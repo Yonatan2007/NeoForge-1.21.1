@@ -156,3 +156,34 @@ def test_reading_order_check_and_held_top():
     assert np.isfinite(held).all()
     assert held[0] == pytest.approx(60, abs=1) and held[-1] == pytest.approx(40, abs=1)  # ends held level
     assert 40 <= held[250] <= 60                                                 # the gap is bridged
+
+
+def test_a_gentle_line_bends_only_a_little_over_jagged_peaks():
+    frame, _ = mountains()
+    steep = hook.HookRenderer(timed(), HookStyle(), _font(), frame, end=4.0)
+    soft = hook.HookRenderer(timed(), HookStyle(curve="gentle"), _font(), frame, end=4.0)
+
+    def tilt(r):
+        return max(abs(g["angle"]) for p in r.placements if not p["below"] for g in p["glyphs"])
+    assert tilt(soft) <= 15 < tilt(steep)
+    ridge = soft.ridge
+    for p in soft.placements:  # and the words still clear every peak
+        if not p["below"]:
+            assert all(g["y"] < ridge[int(min(max(g["x"], 0), len(ridge) - 1))] for g in p["glyphs"])
+
+
+def test_the_whole_hook_can_appear_at_once():
+    frame, _ = mountains()
+    words = timed()
+    r = hook.HookRenderer(words, HookStyle(reveal="all"), _font(), frame, end=4.0)
+    assert np.array_equal(r.overlay(frame, words[0].start), r.overlay(frame, words[-1].end))  # every word, in full
+    assert np.array_equal(r.overlay(frame, words[0].start - 0.1), frame)
+
+
+def test_a_gentle_hook_prefers_rolling_hills_to_tree_tops():
+    w, h = 540, 960
+    hills = [(x, 600 + 30 * np.sin(x / w * np.pi * 1.5)) for x in range(0, w + 1, 10)]
+    trees = [(x, 600 - (28 if (x // 14) % 2 else 0)) for x in range(0, w + 1, 14)]
+    smooth, _ = mountains(w, h, ridge=hills)
+    spiky, _ = mountains(w, h, ridge=trees)
+    assert hook.skyline_score(smooth, gentle=True) > hook.skyline_score(spiky, gentle=True)

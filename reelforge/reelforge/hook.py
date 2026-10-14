@@ -406,10 +406,13 @@ def find_contour(frame: np.ndarray, style: HookStyle) -> Contour:
     return Contour(xs, _pattern(fallback, width, height), best, fallback)
 
 
-def skyline_score(image) -> float:
+def skyline_score(image, gentle: bool = False) -> float:
     """0..1: how good ``image`` is as the hook shot - a confident skyline with
     relief (peaks beat a flat horizon), room for text above it and a bright
-    sky behind dark text. Never raises; unusable input scores 0."""
+    sky behind dark text. ``gentle`` (a hook laid as one soft arc) wants a
+    smooth skyline that curves only a little instead: rolling hills, a
+    horizon, not jagged peaks or tree tops. Never raises; unusable input
+    scores 0."""
     try:
         if image is None:
             return 0.0
@@ -420,7 +423,11 @@ def skyline_score(image) -> float:
         sky = _detect_skyline(f)
         h, w = f.shape
         rows = sky.rows
-        relief = _ramp(float(rows.max() - rows.min()) / h, 0.02, 0.25)
+        rise = float(rows.max() - rows.min()) / h
+        relief = _ramp(rise, 0.02, 0.25)
+        if gentle:  # smooth (no tree tops) and a slight curve: rolling hills beat a ruler-flat line and peaks
+            smooth = _ramp(float(sky.detail.get("roughness", 1.0)), 0.012, 0.003)
+            relief = smooth * (0.5 + 0.5 * min(_ramp(rise, 0.0, 0.05), _ramp(rise, 0.3, 0.14)))
         room = min(_ramp(float(rows.mean()) / h, 0.15, 0.35), _ramp(float(rows.mean()) / h, 0.85, 0.65))
         sky_mask = np.arange(h)[:, None] < rows[None, :].astype(int)
         if not sky_mask.any():
@@ -434,6 +441,8 @@ def skyline_score(image) -> float:
         skyness = max(blue, overcast)
         score = sky.confidence * (0.45 + 0.3 * relief + 0.15 * room + 0.1 * brightness)
         score *= 0.2 + 0.8 * skyness
+        if gentle:  # the soft arc clears the highest point, so that point must leave room for the words
+            score *= 0.2 + 0.8 * _ramp(float(rows.min()) / h, 0.2, 0.36)
         # A "skyline" that runs up to the top edge is sky framed by overhanging
         # branches or walls, not a horizon text can ride along.
         touching_top = float(np.mean(rows < 0.04 * h))
@@ -591,6 +600,8 @@ BENT_BIG_TILT = math.radians(50)   # steepest a letter of a big word may lean (n
 BRIDGE = 0.7              # the text path is smoothed over this many em, so letters ride over
 BRIDGE_DIP = 0.45         # tree tops and rocks narrower than a word, dipping at most this many em
 MAX_SLOPE = math.tan(math.radians(70))
+GENTLE_SLOPE = math.tan(math.radians(12))  # curve "gentle": the text never climbs steeper than this ...
+GENTLE_SPAN = 0.09        # ... and its path is smoothed over this share of the frame's width
 LEAD = 0.04               # words appear this much before they are heard
 POP = 0.12                # pop-in duration
 POP_START = 0.86
@@ -661,11 +672,13 @@ class HookRenderer:
         self.scale = 1.0
         self.lines = 0
         self._items: list[_Placed] = self._solve() if self.words else []
+        self._first = min((p.start for p in self._items), default=self.end)
         self._choose_colors()
         self._sprites = [self._sprite(p) for p in self._items]
         order = sorted(range(len(self._items)), key=lambda i: self._appear(i))
         self._order = order
-        self._settle = [self._appear(i) + POP for i in order]
+        pop = 0.0 if st.reveal == "all" else POP  # the whole hook at once: drawn in full from its first frame
+        self._settle = [self._appear(i) + pop for i in order]
         self._pixels = [self._sparse(sp) for sp in self._sprites]
 
     # ------------------------------------------------------------------ sizes
@@ -861,14 +874,21 @@ class HookRenderer:
         makes) rounded to at least ~1 em so letters of words laid through it
         do not converge; kept inside the safe area. A ``stacked`` line (one
         wrapped above another line of text) is a gentler, rounder arc."""
-        y = _slope_limit(_dilate_up(terrain, lift), UPPER_SLOPE if stacked else MAX_SLOPE)
-        r = max(self.close_r, (3.0 if stacked else BENT_CLOSE_EM if self.style.per_glyph else CLOSE_EM) * size)
-        y = _erode_down(_dilate_up(y, r), r)
-        if self.style.per_glyph:
-            # Letters follow every wiggle of the path: smooth away spikes no
-            # wider than a letter (tree tops), letting them poke into the
-            # clearance a little, so the words ride the shape of the ridge.
-            y = np.minimum(_gauss1d(y, BRIDGE * size), y + BRIDGE_DIP * size)
+        if self.style.curve == "gentle":
+            # One soft arc: never steeper than GENTLE_SLOPE, smoothed across a
+            # wide span, then raised until it clears every peak again.
+            floor = _dilate_up(terrain, lift)
+            y = _gauss1d(_slope_limit(floor, GENTLE_SLOPE), GENTLE_SPAN * self.width)
+            y = y - max(0.0, float(np.max(y - floor)))
+        else:
+            y = _slope_limit(_dilate_up(terrain, lift), UPPER_SLOPE if stacked else MAX_SLOPE)
+            r = max(self.close_r, (3.0 if stacked else BENT_CLOSE_EM if self.style.per_glyph else CLOSE_EM) * size)
+            y = _erode_down(_dilate_up(y, r), r)
+            if self.style.per_glyph:
+                # Letters follow every wiggle of the path: smooth away spikes no
+                # wider than a letter (tree tops), letting them poke into the
+                # clearance a little, so the words ride the shape of the ridge.
+                y = np.minimum(_gauss1d(y, BRIDGE * size), y + BRIDGE_DIP * size)
         y = _gauss1d(y, 2.0 * self.k)
         top = self.top_safe + ascent
         bottom = self.height - self.bottom_safe
@@ -1205,7 +1225,7 @@ class HookRenderer:
 
     # ------------------------------------------------------------------ per frame
     def _appear(self, i: int) -> float:
-        return self._items[i].start - LEAD
+        return (self._first if self.style.reveal == "all" else self._items[i].start) - LEAD
 
     @property
     def start(self) -> float:
