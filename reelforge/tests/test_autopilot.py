@@ -654,3 +654,59 @@ def test_comment_videos_render_without_a_voice(tmp_path, monkeypatch):
     monkeypatch.setattr(panelrun.subprocess, "run", fake_run)
     out = panelrun.autopilot_render(tmp_path / "plan.json", tmp_path / "no-voices.json")
     assert out["passed"] == 1 and "--voiceover" not in cmds[0]  # and a cropped starfield is fine for space
+
+
+def test_an_account_posted_by_hand_needs_no_metricool(tmp_path, monkeypatch):
+    from reelforge import pipeline
+
+    s = ap.settings_of({"posting": "manual", "tz": "Asia/Jerusalem"})
+    assert ap.by_hand(s) and s["tz"] == "Asia/Jerusalem"
+    s = ap.settings_of({"posting": "fax", "tz": "Mars/Olympus"})
+    assert not ap.by_hand(s) and (s["posting"], s["tz"]) == ("metricool", None)
+    monkeypatch.setattr(pipeline, "review_footage", lambda project, work, settings, out: {
+        "opening": [], "pool": [clip(f"p_{work.name}x{i}") for i in range(6)],
+        "rest_shots": 0 if project.voice.source == "none" else 4})
+    inp = tmp_path / "in.json"
+    inp.write_text(json.dumps({  # no brand, no best times: its own time zone and the usual good hours
+        "account": "gym", "queued": ["2026-10-12T19:00"],
+        "settings": {"per_day": 2, "days": 2, "platforms": ["instagram", "tiktok"], "niche": "gym", "mix": "half",
+                     "music": "none", "search": False, "posting": "manual", "tz": "Asia/Jerusalem"},
+        "template": {"id": "tpl-1", "data": {"project": template_project(), "files": []}}, "now": "2026-10-12T08:00"}))
+
+    def line_writer(**kw):
+        return {"model": "g", "ideas": [{"kind": "comment", "title": f"L{i}", "script": "Nothing ages a man faster than...",
+                                         "why": "", "caption": "Be honest. #gym", "hashtags": ["gym"], "youtube_title": "Y",
+                                         "first_comment": "Regret."} for i in range(kw["count"])]}
+
+    def writer(**kw):
+        return {"model": "g", "ideas": [{"title": f"W{i}", "script": "Five habits keep men stuck. More words.", "why": "",
+                                         "caption": "C", "hashtags": [], "youtube_title": "Y"} for i in range(kw["count"])]}
+
+    out = panelrun.autopilot_prepare(inp, tmp_path, tmp_path / "run", writer=writer, line_writer=line_writer)
+    plan_path = tmp_path / "run" / "plan.json"
+    items = json.loads(plan_path.read_text())["items"]
+    # 19:00 today waits to be posted already: today gets one more, tomorrow two
+    assert out["slots"] == 3 and [it["slot"] for it in items] == ["2026-10-12T12:00", "2026-10-13T12:00", "2026-10-13T19:00"]
+    assert all(it["tz"] == "Asia/Jerusalem" for it in items)
+    small = tmp_path / "small.mp4"
+    small.write_bytes(b"\0" * 1000)
+    results = {items[0]["id"]: {"ok": True, "problems": [], "video": str(small), "cover_ms": 900, "duration": 8},
+               items[1]["id"]: {"ok": True, "problems": [], "video": str(small), "duration": 30},
+               items[2]["id"]: {"ok": True, "problems": ["Some clips repeat."], "video": str(small)}}
+    results_path = tmp_path / "run" / "results.json"
+    results_path.write_text(json.dumps(results))
+    assert panelrun.autopilot_posts(plan_path, results_path, tmp_path / "none.json")["posts"] == 0
+    videos = panelrun.autopilot_videos(plan_path, results_path)
+    upload = json.loads(open(videos["file"]).read())
+    assert upload == {items[0]["id"]: str(small), items[1]["id"]: str(small)}  # small enough: as rendered
+    (tmp_path / "videos.json").write_text(json.dumps({items[0]["id"]: "vid0"}))  # the second didn't upload
+    (tmp_path / "covers.json").write_text(json.dumps({items[0]["id"]: "cov0"}))
+    docs = panelrun.autopilot_docs(plan_path, results_path, None, tmp_path / "covers.json", None, tmp_path / "videos.json")
+    assert docs["statuses"] == {"ready": 1, "failed": 1, "held": 1}
+    writes = json.loads(open(docs["file"]).read())
+    first, second = (json.loads(open(w["file_path"]).read()) for w in writes[:2])
+    assert (first["status"], first["posting"], first["video"], first["cover"]) == ("ready", "manual", "vid0", "cov0")
+    # the gym niche's own first line goes first, with its first comment
+    assert first["script"] == "Nothing beats a man faster than..." and first["text"] == "Be honest."
+    assert first["first_comment"] == "Comfort. It wins without a fight." and first["metricool"] is None
+    assert second["status"] == "failed" and second["problems"] == ["Its video couldn't be saved in the panel."]

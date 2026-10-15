@@ -4,7 +4,10 @@
  *
  * One autopilot per account (#/x/autopilot/<account>): the main account and
  * one per niche (panel-data/niches.json, reelforge/niches.py), each posting
- * through its own Metricool brand with its own settings, queue and numbers.
+ * through its own Metricool brand with its own settings, queue and numbers,
+ * or posted by hand (settings.posting "manual"): its reels wait here with
+ * their video to save, caption and first comment until the viewer posts
+ * them in the apps and taps "Posted".
  *
  *   settings/autopilot   the main account's settings (the same keys as autopilot.DEFAULTS);
  *                        settings/autopilot-<account> another account's
@@ -12,7 +15,8 @@
  *   autopilot/<slot id>  one reel of the queue: {account, kind ("watch" | "comment"), slot, tz, status,
  *                        title, script, caption, cover, master_url, platforms,
  *                        metricool: {id, uuid, plannerUrl}, problems, first_comment, trial,
- *                        collaborator, reply_to, tiktok_sound, metricool_tiktok}
+ *                        collaborator, reply_to, tiktok_sound, metricool_tiktok}; posted by hand:
+ *                        posting "manual", video (asset id), text (the post's text), status "ready" | "posted"
  *   insights/latest      how the main account's reels did (reelforge/insights.py): learnings,
  *                        followers, per-reel numbers, Trial Reel decisions; insights/<account>
  *                        another account's. Claude refreshes them each morning
@@ -24,7 +28,7 @@
 
 import { api } from "./api.js";
 import { callout } from "./components.js";
-import { button, confirmDialog, debounce, h, relativeTime, toast, toastError } from "./dom.js";
+import { button, confirmDialog, copyText, debounce, dialog, h, relativeTime, toast, toastError } from "./dom.js";
 import { segmented, switchControl } from "./fields.js";
 import { icon } from "./icons.js";
 import { brandNetworks, metricool, metricoolBrand, metricoolBrands, metricoolProblem, isoIn, postInfo } from "./panel-growth.js";
@@ -38,6 +42,7 @@ const DEFAULTS = {
   topic: "", tone: "", ai_label: false,
   length: "short", first_comment: true, search: true, trial_reels: "some", collaborators: [], collab_every: 7,
   tiktok_sound: "off", hashtags: false, niche: "philosophy", name: "", brand_id: null, mix: "watch",
+  posting: "metricool", tz: null,
 };
 const MAIN = "main";
 /** The accounts (panel-data/niches.json): [{id, niche, name}], the main one first. */
@@ -70,7 +75,28 @@ const STATUS = {
   planned: ["Being made", "busy"], review: ["Needs your OK", "warn"], scheduled: ["Scheduled", "ok"],
   posted: ["Posted", "ok"], posting: ["Posting…", "busy"], skipped: ["Won't post", "idle"],
   held: ["Held back", "warn"], failed: ["Failed", "bad"], ready: ["Made, not scheduled", "idle"],
+  waiting: ["Ready to post", "ok"], due: ["Time to post it", "warn"], // posted by hand
 };
+const POSTINGS = [{ value: "metricool", label: "Metricool posts them" }, { value: "manual", label: "I post them myself" }];
+/** The viewer's time zone ("Asia/Jerusalem"): a hand-posted account's times are in it. */
+const viewerTz = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
+};
+/** "nothing-beats-a-man-faster-than-1016-1200.mp4": the saved video's name, from its title and time. */
+const videoName = (it) => {
+  const slug = String(it.title || "reel").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "reel";
+  const when = String(it.slot || "");
+  return `${slug}-${when.slice(5, 10).replace("-", "")}-${when.slice(11, 16).replace(":", "")}.mp4`;
+};
+async function copy(text, done) {
+  const ok = await copyText(text).catch(() => false);
+  toast(ok ? done : "Copying isn't allowed in this view: press and hold the text to copy it.",
+    { kind: ok ? "success" : "error", timeout: 2400 });
+}
 
 function head(title, lead, ...actions) {
   return h("header", { class: "home-head" },
@@ -90,8 +116,9 @@ const busy = (t) => Boolean(t) && (t.status === "running"
 const dayLabel = (d) => d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
 const timeLabel = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
-/** A queued reel's state, using Metricool's answer when there is one. */
+/** A queued reel's state, using Metricool's answer when there is one (a hand-posted one: ready, due or posted). */
 function liveStatus(it, live) {
+  if (it.posting === "manual") return it.status === "ready" ? (slotDate(it) <= new Date() ? "due" : "waiting") : it.status;
   if (it.status !== "scheduled" && it.status !== "review") return it.status;
   const providers = (live && live.providers) || [];
   if (providers.length && providers.every((p) => p.status === "PUBLISHED")) return "posted";
@@ -172,7 +199,8 @@ export function renderAutopilot(container, sub) {
   };
 
   // ---- the account: the Metricool brand its reels go out through
-  const connected = () => main || Boolean(settings.brand_id);
+  const manual = () => settings.posting === "manual";
+  const connected = () => main || manual() || Boolean(settings.brand_id);
   // the main account's brand before one was chosen: the first with Instagram or YouTube (never Calendar's pick)
   const firstBrand = (list) => list.find((b) => b.networks.instagramData || b.networks.youtubeData) || list[0];
   async function brandFor() {
@@ -192,6 +220,22 @@ export function renderAutopilot(container, sub) {
     paintConnect();
   }
   function paintConnect() {
+    const how = segmented({ label: "How the reels go out", value: manual() ? "manual" : "metricool", options: POSTINGS,
+      onChange: (v) => {
+        set({ posting: v, ...(v === "manual" && !settings.tz ? { tz: viewerTz() } : {}) }, true);
+        paintConnect();
+        paintLearned();
+        paintQueue();
+      } });
+    const top = [
+      h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "ap-connect" }, account.name),
+        h("p", { class: "card-sub" }, niche ? `Reels about ${niche.about}.` : "")),
+      h("div", { class: "field" }, h("span", { class: "field-label" }, "How the reels go out"), how)];
+    if (manual()) {
+      connect.replaceChildren(...top, h("p", { class: "field-help" },
+        "Claude makes the reels and keeps each one below with its caption and first comment, at a suggested time. Save the video, post it in the TikTok and Instagram apps, then tap “Posted”. No Metricool needed."));
+      return;
+    }
     const chosen = brands && settings.brand_id ? brands.find((b) => b.id === String(settings.brand_id)) : null;
     const pick = h("select", { class: "input select", "aria-label": "Metricool brand" },
       h("option", { value: "" }, brands ? (brands.length ? "Choose the brand" : "No brands in Metricool yet") : "Reading Metricool…"),
@@ -208,8 +252,7 @@ export function renderAutopilot(container, sub) {
     const shared = chosen ? Object.entries(others).filter(([, id]) => String(id) === chosen.id).map(([a]) => accountName(a)) : [];
     const missing = brands && brands.length && settings.brand_id && !chosen;
     connect.replaceChildren(...[
-      h("div", { class: "card-head" }, h("h2", { class: "card-title", id: "ap-connect" }, account.name),
-        h("p", { class: "card-sub" }, niche ? `Reels about ${niche.about}.` : "")),
+      ...top,
       h("div", { class: "field" }, h("span", { class: "field-label" }, "Posts through this Metricool brand"),
         h("div", { class: "row row-wrap ap-brand" }, pick, again),
         chosen ? h("p", { class: "field-help" }, brandNetworks(chosen)
@@ -222,7 +265,8 @@ export function renderAutopilot(container, sub) {
         h("ol", { class: "ap-steps" },
           h("li", {}, "Create its profiles on TikTok, Instagram and YouTube."),
           h("li", {}, "In Metricool, add a new brand and connect those profiles to it."),
-          h("li", {}, "Choose that brand here, then press “Fill the next days”."))),
+          h("li", {}, "Choose that brand here, then press “Fill the next days”.")),
+        h("p", { class: "muted small" }, "Or choose “I post them myself” above: Claude makes the reels and you post them in the apps.")),
       brandProblem ? callout("info", brandProblem) : null,
     ].filter(Boolean));
   }
@@ -234,7 +278,9 @@ export function renderAutopilot(container, sub) {
         ? `From your Metricool numbers, ${relativeTime(insights.updated)}. Each new batch is written to do more of what worked.`
         : "Claude reads your numbers from Metricool each morning; each new batch is written to do more of what worked."));
     if (!insights) {
-      learned.replaceChildren(headRow, h("p", { class: "muted empty-inline" }, "No numbers read yet."));
+      learned.replaceChildren(headRow, h("p", { class: "muted empty-inline" }, manual()
+        ? "You post this account yourself, so Claude can't read its numbers: each batch follows what works in its niche."
+        : "No numbers read yet."));
       return;
     }
     const f = insights.followers || {};
@@ -253,10 +299,12 @@ export function renderAutopilot(container, sub) {
     if (task && task.status === "error") return `The last run failed: ${task.error || task.message}`;
     if (task && task.status === "done") return `Last run ${relativeTime(task.updated || task.created)}: ${task.message || "done"}.`;
     if (!connected()) return "Choose this account's Metricool brand above to start.";
+    if (manual()) return `${settings.per_day} a day for you to post on ${settings.platforms.map((p) => NETS[p]).join(", ")}, each at a suggested time.`;
     return `${settings.per_day} a day on ${settings.platforms.map((p) => NETS[p]).join(", ")}, ${settings.approval === "review" ? "after you approve each one" : "posted automatically"}.`;
   };
   function paintStatus() {
-    const upcoming = items.filter((it) => slotDate(it) > new Date() && ["scheduled", "review", "planned"].includes(it.status));
+    const upcoming = items.filter((it) => slotDate(it) > new Date()
+      && (["scheduled", "review", "planned"].includes(it.status) || (it.posting === "manual" && it.status === "ready")));
     const last = upcoming.length ? slotDate(upcoming[upcoming.length - 1]) : null;
     const daysLeft = last ? Math.max(0, Math.ceil((last - new Date()) / 864e5)) : 0;
     const need = settings.per_day * settings.days;
@@ -267,7 +315,9 @@ export function renderAutopilot(container, sub) {
       const comments = settings.mix !== "watch";
       const ok = await confirmDialog({
         title: `Make up to ${need} reels for ${account.name}?`,
-        message: `Claude writes them with Gemini, voices ${comments ? "the longer ones" : "them"} with Higgsfield (about ${cost} credits${comments ? "; comment videos need none" : ""}), renders them and schedules them on ${settings.platforms.map((p) => NETS[p]).join(", ")} at the best times${settings.approval === "review" ? " as drafts for you to approve" : ""}. Days that already have their reels are skipped.`,
+        message: `Claude writes them with Gemini, voices ${comments ? "the longer ones" : "them"} with Higgsfield (about ${cost} credits${comments ? "; comment videos need none" : ""}), renders them and ${manual()
+          ? `keeps them here for you to post on ${settings.platforms.map((p) => NETS[p]).join(", ")}, each at a suggested time`
+          : `schedules them on ${settings.platforms.map((p) => NETS[p]).join(", ")} at the best times${settings.approval === "review" ? " as drafts for you to approve" : ""}`}. Days that already have their reels are skipped.`,
         confirmLabel: "Make them",
       });
       if (!ok) return;
@@ -301,7 +351,9 @@ export function renderAutopilot(container, sub) {
         ? callout("warn", `The queue runs out ${daysLeft <= 0 ? "today" : `in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`}. Fill the next days to keep posting.`) : null,
       h("div", { class: "row row-wrap ap-actions" }, fill,
         h("span", { class: "muted small ap-credits" }, credits ? `Higgsfield credits: ${Math.round(credits)} · about ${cost} per run` : "")),
-      h("p", { class: "muted small" }, "Claude makes the reels when you press the button (send “run autopilot” in your Claude chat if it isn't reached). Metricool posts them on time; you don't need to keep anything open."),
+      h("p", { class: "muted small" }, `Claude makes the reels when you press the button (send “run autopilot” in your Claude chat if it isn't reached). ${manual()
+        ? "They wait below: save each video and post it in the app around its time."
+        : "Metricool posts them on time; you don't need to keep anything open."}`),
     ].filter(Boolean));
   }
 
@@ -327,7 +379,7 @@ export function renderAutopilot(container, sub) {
     const tiktokLinked = Boolean(brand && brand.networks && brand.networks.tiktokData);
     const nets = h("div", { class: "chips", role: "group", "aria-label": "Platforms" }, Object.entries(NETS).map(([p, label]) => {
       const id = `ap-net-${p}`;
-      const off = p === "tiktok" && !tiktokLinked;
+      const off = p === "tiktok" && !tiktokLinked && !manual();
       const input = h("input", { type: "checkbox", id, class: "visually-hidden", checked: settings.platforms.includes(p) && !off, disabled: off });
       input.addEventListener("change", () => {
         const next = input.checked ? [...new Set([...settings.platforms, p])] : settings.platforms.filter((x) => x !== p);
@@ -386,9 +438,11 @@ export function renderAutopilot(container, sub) {
       h("div", { class: "form-grid ap-form" },
         field("Reels a day", perDay, `${settings.per_day * 7} a week.`),
         field("Fill ahead", days, "How many days one run fills."),
-        field("Platforms", nets, tiktokLinked ? null : "TikTok joins once it's linked in Metricool: TikTok's own form can't be filled without you."),
-        field("Posting", approval, settings.approval === "review" ? "Each reel waits as a Metricool draft until you approve it below or in Calendar." : "Reels go out at their times without you."),
-        field("Posting hours", h("div", { class: "row ap-window" }, from, h("span", { class: "muted" }, "to"), to, gap), "Within these hours, the busiest ones for your audience."),
+        field("Platforms", nets, manual() ? "Where you'll post them: one caption fits them all."
+          : tiktokLinked ? null : "TikTok joins once it's linked in Metricool: TikTok's own form can't be filled without you."),
+        manual() ? null : field("Posting", approval, settings.approval === "review" ? "Each reel waits as a Metricool draft until you approve it below or in Calendar." : "Reels go out at their times without you."),
+        field("Posting hours", h("div", { class: "row ap-window" }, from, h("span", { class: "muted" }, "to"), to, gap),
+          manual() ? "Each reel's suggested time is within these hours." : "Within these hours, the busiest ones for your audience."),
         field("Make reels like", template, "They copy its look, captions, voice and searches; the script, clips and post are new."),
         field("Format", format),
         field("Music", h("div", { class: "stack" }, music, musicHelp)),
@@ -461,10 +515,10 @@ export function renderAutopilot(container, sub) {
           h("p", { class: "field-help" }, "Real searches from YouTube's suggestions go word for word into the caption and the title, so the reel is found in search long after it leaves the feed.")),
         h("div", { class: "field field-bool" }, tags,
           h("p", { class: "field-help" }, "Off: posts go out with the caption only, no hashtags.")),
-        field("Trial Reels on Instagram", trials, trialHelp),
+        manual() ? null : field("Trial Reels on Instagram", trials, trialHelp),
         field("Collabs on Instagram", h("div", { class: "row row-wrap ap-collabs" }, collabs, every),
           "Each account gets an invite; once it accepts, the reel shows on its profile and its followers' feeds too. Pages like yours work best. Never on a Trial Reel."),
-        h("div", { class: "field field-bool" }, sound, soundHelp)));
+        manual() ? null : h("div", { class: "field field-bool" }, sound, soundHelp)));
   }
 
   // ---- queue
@@ -491,6 +545,43 @@ export function renderAutopilot(container, sub) {
     }
   }
 
+  /** A hand-posted reel: "posted" once the viewer taps Posted, back to "ready" to undo. */
+  async function mark(it, status) {
+    try {
+      await retrying(() => db.doc(`autopilot/${it.id}`).update({ status, posted_at: status === "posted" ? nowIso() : null, updated: nowIso() }));
+      it.status = status;
+      paintStatus();
+      paintQueue();
+    } catch (err) {
+      toastError("Could not save that", err);
+    }
+  }
+
+  const watch = (it) => dialog({
+    title: it.kind === "comment" && it.script ? it.script : it.title || "Reel",
+    body: h("video", { class: "ap-player", src: blobUrl(it.video), controls: true, playsinline: true, autoplay: true }),
+    actions: [{ label: "Close", value: null, variant: "ghost" }],
+  });
+
+  /** Save video, copy its words, mark it posted: what a reel posted by hand needs. */
+  function handActions(it, st) {
+    const out = [];
+    if (it.video) {
+      out.push(button("Save video", { icon: "download", size: "sm", variant: st === "posted" ? "ghost" : "primary",
+        onClick: () => globalThis.reelforgeSaveFile(blobUrl(it.video), videoName(it)) }));
+      out.push(button("Watch", { icon: "play", size: "sm", variant: "ghost", onClick: () => watch(it) }));
+    }
+    const text = it.text || it.caption;
+    if (text) out.push(button("Copy caption", { icon: "copy", size: "sm", variant: "ghost", onClick: () => copy(text, "Caption copied.") }));
+    if (it.first_comment) out.push(button("Copy first comment", { icon: "copy", size: "sm", variant: "ghost",
+      onClick: () => copy(it.first_comment, "Copied: post it as the first comment once the reel is up.") }));
+    if ((it.platforms || []).includes("youtube") && it.youtube_title) out.push(button("Copy YouTube title", { icon: "copy", size: "sm", variant: "ghost",
+      onClick: () => copy(it.youtube_title, "YouTube title copied.") }));
+    if (st === "waiting" || st === "due") out.push(button("Posted", { icon: "check", size: "sm", variant: "secondary", onClick: () => mark(it, "posted") }));
+    if (st === "posted") out.push(button("Not posted yet", { icon: "undo", size: "sm", variant: "ghost", onClick: () => mark(it, "ready") }));
+    return out;
+  }
+
   function soundLine(it, state) {
     const s = it.tiktok_sound;
     if (!s || !s.name) return null;
@@ -507,7 +598,7 @@ export function renderAutopilot(container, sub) {
     const st = liveStatus(it, it.metricool && live.get(String(it.metricool.uuid)));
     const tt = tiktokState(it, it.metricool_tiktok && live.get(String(it.metricool_tiktok.uuid)));
     const when = slotDate(it);
-    const actions = [];
+    const actions = it.posting === "manual" ? handActions(it, st) : [];
     if (it.master_url) actions.push(h("a", { class: "btn btn-ghost btn-sm", href: it.master_url, target: "_blank", rel: "noopener", html: `${icon("play", { size: 14 })}<span class="btn-label">Watch</span>` }));
     if (st === "review") actions.push(button("Approve", { icon: "check", size: "sm", variant: "primary", onClick: () => act(it, false, "Approved: it posts at its time.") }));
     if (st === "review" || st === "scheduled") actions.push(button("Don't post", { icon: "pause", size: "sm", variant: "ghost", onClick: () => act(it, true, "Held back: it stays a draft in Metricool.") }));
@@ -527,7 +618,8 @@ export function renderAutopilot(container, sub) {
         h("div", { class: "ap-top" }, h("strong", { class: "timecode" }, timeLabel(when)), pill(st),
           h("span", { class: "ap-nets" }, (it.platforms || []).map(dot))),
         h("p", { class: "ap-title" }, it.kind === "comment" && it.script ? `“${it.script}”` : it.title || "Untitled"),
-        it.caption ? h("p", { class: "muted small ap-caption" }, String(it.caption).split("\n")[0]) : null,
+        it.posting === "manual" && (it.text || it.caption) ? h("p", { class: "muted small ap-posttext" }, it.text || it.caption)
+          : it.caption ? h("p", { class: "muted small ap-caption" }, String(it.caption).split("\n")[0]) : null,
         it.first_comment ? h("p", { class: "muted small ap-comment" }, `First comment: ${it.first_comment}`) : null,
         tags.length ? h("div", { class: "chips ap-tags" }, tags) : null,
         soundLine(it, tt),
@@ -536,10 +628,33 @@ export function renderAutopilot(container, sub) {
         actions.length ? h("div", { class: "row row-wrap" }, actions) : null));
   }
 
+  /** Remove the saved videos of reels already posted by hand (the panel's storage is limited). */
+  async function freeSpace(list) {
+    const ok = await confirmDialog({ title: `Remove ${list.length} posted video${list.length === 1 ? "" : "s"}?`,
+      message: "They're already up on your accounts. Their captions and covers stay here; only the video files go, to make room for the next ones.",
+      confirmLabel: "Remove them", danger: true });
+    if (!ok) return;
+    let done = 0;
+    for (const it of list) {
+      try {
+        await P().assets.delete(it.video);
+        await retrying(() => db.doc(`autopilot/${it.id}`).update({ video: null, updated: nowIso() }));
+        it.video = null;
+        done += 1;
+      } catch (err) {
+        toastError("Could not remove a video", err);
+        break;
+      }
+    }
+    if (done) toast(`Removed ${done} video${done === 1 ? "" : "s"}.`, { kind: "success", timeout: 2500 });
+    paintQueue();
+  }
+
   function paintQueue() {
     const now = new Date();
     const upcoming = items.filter((it) => slotDate(it) >= new Date(now - 3 * 3600e3));
     const past = items.filter((it) => slotDate(it) < new Date(now - 3 * 3600e3)).slice(-12).reverse();
+    const posted = items.filter((it) => it.posting === "manual" && it.status === "posted" && it.video);
     const byDay = new Map();
     for (const it of upcoming) {
       const k = slotDate(it).toDateString();
@@ -554,7 +669,10 @@ export function renderAutopilot(container, sub) {
           h("ul", { class: "ap-list" }, list.map(row)))))
           : h("p", { class: "muted empty-inline" }, "Nothing lined up. Press “Fill the next days” and Claude makes the reels.")),
       ...(past.length ? [h("details", { class: "ap-past", open: pastOpen, ontoggle: (e) => { pastOpen = e.target.open; } },
-        h("summary", {}, `Earlier (${past.length})`), h("ul", { class: "ap-list" }, past.map(row)))] : []));
+        h("summary", {}, `Earlier (${past.length})`), h("ul", { class: "ap-list" }, past.map(row)))] : []),
+      ...(posted.length && P().assets ? [h("div", { class: "row row-wrap" },
+        button(`Remove the videos you've posted (${posted.length})`, { icon: "trash", size: "sm", variant: "ghost", onClick: () => freeSpace(posted) }),
+        h("span", { class: "muted small" }, "Frees the panel's storage for the next ones."))] : []));
   }
 
   async function loadLive(force = false) {

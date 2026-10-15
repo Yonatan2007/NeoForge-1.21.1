@@ -26,9 +26,12 @@ account owner attach a sound, in its own app), reminded by Metricool's app.
 
 Accounts: the main account and one per niche the user added (``niches``),
 each posting to its own Metricool brand with its own settings, queue and
-numbers. A batch mixes two kinds of video (``kinds_for``): longer "watch"
-reels with a voice, and 7-10 s "comment" videos, one line on screen and no
-voice, that ask something people answer in the comments
+numbers. An account can also be posted by hand (``posting: "manual"``): its
+reels wait in the panel, each with its video to save, caption and first
+comment, for the user to post in the apps around its time; it needs no
+Metricool brand. A batch mixes two kinds of video (``kinds_for``): longer
+"watch" reels with a voice, and 7-10 s "comment" videos, one line on screen
+and no voice, that ask something people answer in the comments
 (``build_comment_project``).
 
 Panel documents (``settings_doc``, ``insights_doc``):
@@ -38,7 +41,9 @@ Panel documents (``settings_doc``, ``insights_doc``):
     autopilot/<slot id>  one reel (``slot_id``): {account, kind, slot, tz, status, project_id, title, script, caption, hashtags,
                          youtube_title, first_comment, search_phrase, trial, collaborator, tiktok_sound,
                          reply_to, platforms, song, master_url, master_media_id, cover, cover_ms,
-                         metricool: {id, uuid, plannerUrl}, metricool_tiktok, clips, problems, created, updated}
+                         metricool: {id, uuid, plannerUrl}, metricool_tiktok, clips, problems, created, updated};
+                         a reel posted by hand also has posting "manual", video (the panel asset to save) and
+                         text (the post's text to copy); its status goes "ready" -> "posted" (the user's tap)
     insights/latest      how the main account's reels did and what its next batch learns (``insights.py``);
                          insights/<account> another account's
     replies/<id>         a viewer's comment with reply drafts; status "idea" makes it a video reply
@@ -81,9 +86,12 @@ DEFAULTS = {
     "name": "",                     # the account's name in the panel
     "brand_id": None,               # the Metricool brand it posts to
     "mix": "watch",                 # "watch" (longer videos only) | "half" | "comments" (2 in 3 comment videos)
+    "posting": "metricool",         # "metricool" posts them; "manual": they wait in the panel for the user to post
+    "tz": None,                     # a manual account's time zone (the panel saves the viewer's); else the brand's
 }
+POSTINGS = ("metricool", "manual")
 MAIN = "main"                       # the first account: settings/autopilot, insights/latest, ids "ap-<slot>"
-# The accounts the panel offers, each posting through its own Metricool brand: the main one and one per niche
+# The accounts the panel offers, each posting through its own Metricool brand or by hand: the main one and one per niche
 ACCOUNTS = ({"id": MAIN, "niche": "philosophy", "name": "Main account"},
             {"id": "dilemmas", "niche": "dilemmas", "name": "Would you rather"},
             {"id": "psychology", "niche": "psychology", "name": "Everyday psychology"},
@@ -147,7 +155,22 @@ def settings_of(raw: dict | None) -> dict:
     s["name"] = str(s["name"] or "").strip()[:60]
     s["brand_id"] = str(s["brand_id"]).strip() if s["brand_id"] not in (None, "") else None
     s["mix"] = s["mix"] if s["mix"] in MIXES else "watch"
+    s["posting"] = s["posting"] if s["posting"] in POSTINGS else "metricool"
+    s["tz"] = time_zone(s["tz"])
     return s
+
+
+def time_zone(name) -> str | None:
+    """``name`` if it is a time zone (IANA, e.g. "Asia/Jerusalem"), else None."""
+    try:
+        return str(name) if name and ZoneInfo(str(name)) else None
+    except (ValueError, KeyError, OSError):  # ZoneInfoNotFoundError is a KeyError
+        return None
+
+
+def by_hand(settings: dict) -> bool:
+    """The account's reels wait in the panel for the user to post them (no Metricool)."""
+    return settings.get("posting") == "manual"
 
 
 # --------------------------------------------------------------------------- accounts
@@ -522,6 +545,14 @@ def post_text(caption: str, hashtags: list[str]) -> str:
     return text[:2200]
 
 
+def reel_text(item: dict, settings: dict) -> str:
+    """The text a reel is posted with: its caption, with its hashtags only when the setting is on."""
+    caption = item.get("caption") or item["title"]
+    if settings["hashtags"]:
+        return post_text(caption, item.get("hashtags") or [])
+    return without_hashtags(caption)[:2200]
+
+
 def quality_problems(result: dict, used_clips: list[dict], min_s: float | None = None, max_s: float | None = None,
                      kind: str = "watch", wide_ok: bool = False) -> list[str]:
     """Why a finished reel shouldn't be posted on its own (empty list = fine).
@@ -607,9 +638,7 @@ def metricool_post(item: dict, settings: dict, brand_id: str, media_url: str, co
         "firstCommentText": comment, "hasNotReadNotes": False, "media": [media_url], "mediaAltText": [],
         "providers": [{"network": n} for n in nets],
         "publicationDate": {"dateTime": dt.strftime("%Y-%m-%dT%H:%M:00"), "timezone": tz},
-        "shortener": False, "smartLinkData": {"ids": []},
-        "text": post_text(item.get("caption") or item["title"], item.get("hashtags") or []) if settings["hashtags"]
-                else without_hashtags(item.get("caption") or item["title"])[:2200],
+        "shortener": False, "smartLinkData": {"ids": []}, "text": reel_text(item, settings),
     }
     if cover_ms is not None:
         info["videoCoverMilliseconds"] = int(cover_ms)

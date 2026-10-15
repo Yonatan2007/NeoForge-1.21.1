@@ -30,9 +30,14 @@ Autopilot (reels made and scheduled in batches, see autopilot.py):
         names per reel); autopilot-render then makes them again.
     python -m reelforge.panelrun autopilot-posts --plan PLAN --results RES --media MEDIA.json
         Metricool createScheduledPost arguments for the reels that passed.
+    python -m reelforge.panelrun autopilot-videos --plan PLAN --results RES
+        For an account posted by hand: each passed reel's video to upload to
+        the asset store -> videos-upload.json (under the asset size limit).
     python -m reelforge.panelrun autopilot-docs --plan PLAN --results RES --media MEDIA.json
                                                --covers COVERS.json --metricool MC.json
         The panel's queue documents (autopilot/<slot id>) as an ArtifactData batch.
+        An account posted by hand takes --videos VIDEOS.json (the uploaded
+        videos' asset ids) instead of --media and --metricool.
     python -m reelforge.panelrun autopilot-insights --codes
         The Metricool metric ids to read for the next command.
     python -m reelforge.panelrun autopilot-insights IN.json --out DIR
@@ -200,7 +205,10 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
     document), answers the viewers' comments in ``replies`` first, and builds
     the posts around real searches (``search_phrases``, or YouTube's
     suggestions); each reel then gets its extras (trial, collaborator,
-    TikTok sound from ``sounds``)."""
+    TikTok sound from ``sounds``). The hours already taken are Metricool's
+    ``scheduled`` posts and ``queued``: the slots ("YYYY-MM-DDTHH:MM") of the
+    account's reels still waiting to be posted by hand. An account posted by
+    hand has no brand: its times are in the settings' ``tz``."""
     import random
     import secrets
     from datetime import datetime, timedelta
@@ -213,12 +221,18 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
     account = ap.account_key(data.get("account"))
     niche = settings["niche"]
     brand = data.get("brand") or {}
-    tz = brand.get("timezone") or "UTC"
+    tz = brand.get("timezone") or settings["tz"] or "UTC"
     template = _doc_body(data["template"])
     now = datetime.fromisoformat(data["now"]) if data.get("now") else ap.now_in(tz)
     best = data.get("best") or {}
     grid = ap.combine([ap.grid_of(best.get(p)) for p in settings["platforms"] if best.get(p)])
-    taken = ap.taken_slots(data.get("scheduled") or [], tz)
+    taken = set(ap.taken_slots(data.get("scheduled") or [], tz))
+    for slot in data.get("queued") or []:
+        try:
+            taken.add(datetime.fromisoformat(str(slot)[:16]))
+        except ValueError:
+            continue
+    taken = sorted(taken)
     slots = ap.pick_slots(grid, now.date(), settings["days"], settings["per_day"], settings["window"],
                           settings["min_gap"], taken, earliest=now + timedelta(hours=3))
     history = data.get("history") or []
@@ -553,9 +567,13 @@ def autopilot_posts(plan_path: Path, results_path: Path, media_path: Path, now=N
     from datetime import datetime, timedelta
 
     from . import autopilot as ap
-    plan, results, media = _read(plan_path), _read(results_path), _read(media_path)
-    soon = (now or ap.now_in(plan["tz"])) + timedelta(minutes=15)
+    plan = _read(plan_path)
     posts, late = [], []
+    if ap.by_hand(ap.settings_of(plan["settings"])):  # the user posts them: nothing goes to Metricool
+        _write(plan_path.parent / "posts.json", posts)
+        return {"ok": True, "posts": 0, "late": late, "by_hand": True, "file": str(plan_path.parent / "posts.json")}
+    results, media = _read(results_path), _read(media_path)
+    soon = (now or ap.now_in(plan["tz"])) + timedelta(minutes=15)
     for item in plan["items"]:
         res, m = results.get(item["id"]) or {}, media.get(item["id"]) or {}
         if not (res.get("ok") and not res.get("problems") and m.get("url")):
@@ -568,15 +586,41 @@ def autopilot_posts(plan_path: Path, results_path: Path, media_path: Path, now=N
     return {"ok": True, "posts": len(posts), "late": late, "file": str(plan_path.parent / "posts.json")}
 
 
-def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers_path: Path,
-                   metricool_path: Path) -> dict:
+def autopilot_videos(plan_path: Path, results_path: Path) -> dict:
+    """For an account posted by hand: the video of each reel that passed, as
+    the panel keeps it (a copy under the asset store's limit when the render
+    is bigger) -> videos-upload.json {reel id: file}. Upload them to the
+    panel's assets and pass their ids to ``autopilot_docs`` (``videos``)."""
+    plan, results = _read(plan_path), _read(results_path)
+    files = {}
+    for item in plan["items"]:
+        res = results.get(item["id"]) or {}
+        if not (res.get("ok") and not res.get("problems") and res.get("video")):
+            continue
+        video = Path(res["video"])
+        files[item["id"]] = str(_shrink(video) if video.stat().st_size > ASSET_LIMIT else video)
+    out = plan_path.parent / "videos-upload.json"
+    _write(out, files)
+    return {"ok": True, "videos": len(files), "file": str(out)}
+
+
+def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path | None, covers_path: Path,
+                   metricool_path: Path | None, videos_path: Path | None = None) -> dict:
     """The panel's queue documents (``autopilot/<slot id>``) for the batch, as
     ArtifactData batch writes (one file per document). The reels stay out of
-    the Reels list: their videos are on Higgsfield, their covers in the panel."""
+    the Reels list: their videos are on Higgsfield, their covers in the panel.
+    For an account posted by hand there is no Metricool post nor Higgsfield
+    upload: each reel that passed waits "ready" with its ``video`` (the panel
+    asset id from ``videos``) and the ``text`` to post it with."""
     from datetime import datetime, timezone
 
-    plan, results, media = _read(plan_path), _read(results_path), _read(media_path)
-    covers, mc = _read(covers_path), _read(metricool_path)
+    from . import autopilot as ap
+
+    opt = lambda path: _read(path) if path and Path(path).exists() else {}  # noqa: E731
+    plan, results, media = _read(plan_path), _read(results_path), opt(media_path)
+    covers, mc, videos = _read(covers_path), opt(metricool_path), opt(videos_path)
+    settings = ap.settings_of(plan["settings"])
+    manual = ap.by_hand(settings)
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     review = plan["settings"]["approval"] == "review"
     folder = plan_path.parent / "docs"
@@ -592,6 +636,10 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
             status = "failed"
         elif res.get("problems"):
             status = "held"
+        elif manual:
+            status = "ready" if videos.get(item["id"]) else "failed"
+            if status == "failed":
+                res = {**res, "problems": ["Its video couldn't be saved in the panel."]}
         elif post.get("error") or not post.get("id"):
             status = "failed" if post.get("error") else "ready"
         else:
@@ -612,6 +660,8 @@ def autopilot_docs(plan_path: Path, results_path: Path, media_path: Path, covers
               "trial": bool(item.get("trial")), "collaborator": item.get("collaborator"),
               "tiktok_sound": item.get("tiktok_sound"), "reply_to": item.get("reply_to"),
               "created": now, "updated": now}
+        if manual:
+            ad.update(posting="manual", video=videos.get(item["id"]), text=ap.reel_text(item, settings))
         _write(folder / f"autopilot-{item['id']}.json", ad)
         writes.append({"op": "set", "collection": "autopilot", "doc_id": item["id"],
                        "file_path": str(folder / f"autopilot-{item['id']}.json")})
@@ -800,9 +850,15 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("autopilot-posts")
     for flag in ("--plan", "--results", "--media"):
         a.add_argument(flag, required=True)
-    a = sub.add_parser("autopilot-docs")
-    for flag in ("--plan", "--results", "--media", "--covers", "--metricool"):
+    a = sub.add_parser("autopilot-videos")
+    for flag in ("--plan", "--results"):
         a.add_argument(flag, required=True)
+    a = sub.add_parser("autopilot-docs")
+    for flag in ("--plan", "--results", "--covers"):
+        a.add_argument(flag, required=True)
+    a.add_argument("--media", help="the masters on Higgsfield (not for an account posted by hand)")
+    a.add_argument("--metricool", help="Metricool's answers per slot (not for an account posted by hand)")
+    a.add_argument("--videos", help="for an account posted by hand: {reel id: panel asset id of its video}")
     a = sub.add_parser("autopilot-insights")
     a.add_argument("input", nargs="?")
     a.add_argument("--out")
@@ -831,9 +887,11 @@ def main(argv: list[str] | None = None) -> int:
                              _read(args.choices) if args.choices else None, args.near_hours)
     elif args.cmd == "autopilot-posts":
         out = autopilot_posts(Path(args.plan), Path(args.results), Path(args.media))
+    elif args.cmd == "autopilot-videos":
+        out = autopilot_videos(Path(args.plan), Path(args.results))
     elif args.cmd == "autopilot-docs":
-        out = autopilot_docs(Path(args.plan), Path(args.results), Path(args.media), Path(args.covers),
-                             Path(args.metricool))
+        out = autopilot_docs(Path(args.plan), Path(args.results), args.media and Path(args.media), Path(args.covers),
+                             args.metricool and Path(args.metricool), args.videos and Path(args.videos))
     elif args.cmd == "autopilot-insights":
         if args.codes or not args.input:
             out = insights_codes()

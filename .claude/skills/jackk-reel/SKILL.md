@@ -214,7 +214,10 @@ voices, renders and schedules; Metricool then posts them at their times.
 There is one autopilot per **account** (`ACCOUNTS` in
 `reelforge/autopilot.py`): "main" (the late-night philosophy account) and
 one per niche ("dilemmas", "psychology", "space", "gym", see `reelforge/niches.py`),
-each posting through its own Metricool brand. An account's settings are in
+each posting through its own Metricool brand, or **posted by hand**
+(settings `posting: "manual"`): no Metricool at all; its reels wait on the
+Autopilot page, each with its video to save, its caption and first comment,
+until the user posts them in the apps and taps "Posted". An account's settings are in
 `settings/autopilot` (main) or `settings/autopilot-<account>` (keys and
 defaults: `DEFAULTS`; missing: the defaults with the account's `niche`);
 its queue documents are `autopilot/<slot id>` with `account` (none: main)
@@ -232,9 +235,10 @@ folder; run Python from `reelforge/` with the Gemini key available (see
    "Replaced by a newer run"; run the accounts one after another. Read the
    account's settings (the task's `days` / `per_day` win). `enabled: false`:
    finish the task with "Autopilot is off" and stop. No `brand_id` on an
-   account other than main: finish with "Choose this account's Metricool
-   brand on the Autopilot page first" and stop (main without one: the
-   brand with Instagram or YouTube, 7327885).
+   account other than main that Metricool posts: finish with "Choose this
+   account's Metricool brand on the Autopilot page first" and stop (main
+   without one: the brand with Instagram or YouTube, 7327885). An account
+   posted by hand needs no brand.
 2. The template: `settings.template`, or the most recently `updated` project
    that has a script. `ArtifactData get projects/<id>` with `out_dir`.
 3. Metricool, read only, all for the account's brand: `getBrandSettings`
@@ -243,6 +247,11 @@ folder; run Python from `reelforge/` with the Gemini key available (see
    its Metricool brand first");
    `getBestTimeToPostByNetwork` per chosen platform for the next 7 days;
    `getScheduledPosts` from today to today + days + 1.
+   An account posted by hand skips all of it: `brand` = `{id: null,
+   timezone: settings.tz}` (none: the main brand's timezone from
+   `getBrandSettings`), no `best` (the usual good hours) and no
+   `scheduled`; `queued` = the `slot` of each of its queue documents still
+   `ready` from today on (those hours are taken).
 4. `ArtifactData list autopilot`, this account's documents only:
    `history` = the latest 40, oldest first, as `{title, clips, song,
    collaborator, reply_to}` (collaborators take turns from it). `avoid` =
@@ -268,8 +277,8 @@ folder; run Python from `reelforge/` with the Gemini key available (see
    genre}`, the two lists interleaved. Each TikTok of the batch gets one.
 5. Write R/in.json: `{account, settings, brand: {id, timezone}, template:
    <the saved doc>, best: {<platform>: {"1": [24 hourly values from
-   midnight], …, "7": […]}}, scheduled: <getScheduledPosts data>, history,
-   avoid, examples, library, insights, replies, sounds}`
+   midnight], …, "7": […]}}, scheduled: <getScheduledPosts data>, queued,
+   history, avoid, examples, library, insights, replies, sounds}`
    (best times in this short form: day of week with Monday = 1, values as
    Metricool gave them). With `search: true` the command reads YouTube's
    search suggestions itself; if it can't reach them, add `search_phrases`
@@ -301,8 +310,14 @@ folder; run Python from `reelforge/` with the Gemini key available (see
    PUT each (`Content-Type: video/mp4`), `media_confirm` with `media_ids` →
    R/media.json `{<item id>: {url, media_id}}`. Covers: `Artifact` publish
    to the panel, `asset: true`, `file_paths` (up to 25) → R/covers.json
-   `{<item id>: <asset id>}`.
-10. `panelrun autopilot-posts --plan … --results … --media R/media.json` →
+   `{<item id>: <asset id>}`. An account posted by hand gets no Higgsfield
+   upload: `panelrun autopilot-videos --plan R/run/plan.json --results
+   R/run/results.json` → R/run/videos-upload.json `{<item id>: file}` (a
+   copy under the asset limit when a render is bigger), then `Artifact`
+   publish those files to the panel the same way → R/videos.json
+   `{<item id>: <asset id>}`; covers as above.
+10. (Not for an account posted by hand.)
+    `panelrun autopilot-posts --plan … --results … --media R/media.json` →
     posts.json. For each post `createScheduledPost` with its `blogId`,
     `date` and `info` exactly as given; R/metricool.json = `{<slot_id>: {id,
     uuid, plannerUrl}}` from the answers, or `{error}`. A reel can have two
@@ -313,12 +328,15 @@ folder; run Python from `reelforge/` with the Gemini key available (see
     (`instagramData.type` "REEL", no `collaborators`) and note it in the
     task message.
 11. `panelrun autopilot-docs --plan … --results … --media … --covers …
-    --metricool R/metricool.json`, then `ArtifactData batch` with its
-    writes.json (50 writes a batch).
+    --metricool R/metricool.json` (posted by hand: `--covers …
+    --videos R/videos.json` instead of `--media` and `--metricool`; each
+    reel that passed is `ready` with its `video` and the `text` to post),
+    then `ArtifactData batch` with its writes.json (50 writes a batch).
 12. Finish the task: `{status: "done", message: "Scheduled 18 reels; 2 wait
     for your OK; 1 held back", result: {statuses}}` and tell the user in a
     line or two. In "ask me first" mode the posts are Metricool drafts: the
-    Autopilot page approves or holds them itself.
+    Autopilot page approves or holds them itself. Posted by hand: "Made 14
+    reels: they wait on the Autopilot page for you to post".
 
 ### Daily review (`insights/<account>`, each morning or "review the reels")
 
@@ -326,7 +344,8 @@ How the reels did, what the next batch learns, and the Trial Reels'
 outcome. Read only from Metricool, except posting the Trial Reels that won
 again for followers. Do it for every account of `autopilot.ACCOUNTS` whose
 settings have a `brand_id` (main: 7327885 without one), one after another,
-each with that brand's numbers. R = a review folder in the scratchpad.
+each with that brand's numbers; an account posted by hand has none to
+read. R = a review folder in the scratchpad.
 
 1. `panelrun autopilot-insights --codes` → the metric ids. For each network
    in it with a linked account: `getAnalyticsDataByMetrics` with the

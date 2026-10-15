@@ -47,7 +47,11 @@ so the whole app can be used from the Claude app on any device:
   you rather", "Everyday psychology", "Space and science"; `panel-data/
   niches.json` from `reelforge/niches.py`), each posting through the
   Metricool brand chosen on its page, with its own settings, queue and
-  numbers. "Video types" mixes in comment videos: 7-10 s, one line on
+  numbers, or posted by hand ("I post them myself"): no Metricool brand;
+  each reel waits on the page with its video to save (the asset store,
+  through the viewer's download prompt), its caption and first comment to
+  copy, until the viewer taps "Posted" (and can remove the posted videos to
+  free the storage). "Video types" mixes in comment videos: 7-10 s, one line on
   screen, music and no voice, asking something people answer in the
   comments. Calendar and Stats get a brand switcher once Metricool has more
   than one brand. "Growing the account" holds the growth
