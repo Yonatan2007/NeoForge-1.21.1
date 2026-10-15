@@ -227,6 +227,7 @@ def line_prompt(count: int = 5, *, niche: str | None = None, topic: str = "", to
         "answer in the comments; the short video loops while they read the answers.",
         "Rules for every line:",
         "- Under 14 words, plain spoken English, no emojis, no hashtags.",
+        f"- {n.line_form}" if n.line_form else
         "- An unfinished sentence that ends with a colon, or a direct question, that anyone can answer from their "
         "own life or opinion in a few words. Prefer what people answer in their own words over a plain yes or no.",
         "- Never ask for comments, likes or tags (\"comment below\", \"like if\", \"tag someone\").",
@@ -357,6 +358,7 @@ def generate_lines(count: int = 5, *, niche: str | None = None, topic: str = "",
     clean = []
     for i in ideas:
         line = re.sub(r"\s+", " ", str(i.get("line", ""))).strip().strip('"“”')
+        line = re.sub(r"\s*(?:\.{2,}|…)$", "...", line)  # "than…" / "than.." -> "than..."
         if not line:
             continue
         idea = {"kind": "comment", "title": str(i.get("title", "")).strip()[:80] or line[:60], "script": line, "why": "",

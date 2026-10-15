@@ -597,6 +597,45 @@ def test_prepare_mixes_comment_videos_for_an_account(tmp_path, monkeypatch):
             assert len(p["footage"]["picks"]) == 5
 
 
+def test_the_gym_account_posts_its_own_first_line_before_any_gemini_writes(tmp_path, monkeypatch):
+    from reelforge import pipeline
+
+    monkeypatch.setattr(pipeline, "review_footage", lambda project, work, settings, out: {
+        "opening": [], "pool": [clip(f"p_{work.name}x{i}") for i in range(6)],
+        "rest_shots": 0 if project.voice.source == "none" else 4})
+
+    def run(avoid, name):
+        inp = tmp_path / f"{name}.json"
+        inp.write_text(json.dumps({
+            "account": "gym", "avoid": avoid,
+            "settings": {"per_day": 2, "days": 2, "platforms": ["instagram"], "niche": "gym", "mix": "half",
+                         "music": "none", "brand_id": "997", "search": False},
+            "brand": {"id": "997", "timezone": "Asia/Jerusalem"},
+            "template": {"id": "tpl-1", "data": {"project": template_project(), "files": []}},
+            "best": {"instagram": grid({19: 100, 12: 90})}, "now": "2026-10-12T08:00"}))
+        asked = []
+
+        def line_writer(**kw):
+            asked.append(kw["count"])
+            return {"model": "g", "ideas": [{"kind": "comment", "title": f"L{i}", "script": "Nothing humbles a man faster than...",
+                                             "why": "", "caption": "Be honest.", "hashtags": [], "youtube_title": "Y",
+                                             "first_comment": "Gravity."} for i in range(kw["count"])]}
+
+        def writer(**kw):
+            return {"model": "g", "ideas": [{"title": f"W{i}", "script": "Five habits keep men stuck. More words.", "why": "",
+                                             "caption": "C", "hashtags": [], "youtube_title": "Y"} for i in range(kw["count"])]}
+
+        panelrun.autopilot_prepare(inp, tmp_path, tmp_path / name, writer=writer, line_writer=line_writer)
+        items = json.loads((tmp_path / name / "plan.json").read_text())["items"]
+        return [it for it in items if it["kind"] == "comment"], asked
+
+    comments, asked = run([], "first")
+    assert comments[0]["script"] == "Nothing beats a man faster than..." and asked == [1]
+    assert comments[0]["first_comment"] == "Comfort. It wins without a fight." and comments[1]["first_comment"] == "Gravity."
+    comments, asked = run(["Nothing beats a man faster than"], "again")  # posted before: Gemini writes them all
+    assert asked == [2] and all(c["script"] != "Nothing beats a man faster than..." for c in comments)
+
+
 def test_comment_videos_render_without_a_voice(tmp_path, monkeypatch):
     work = tmp_path / "ap-space-1"
     work.mkdir()

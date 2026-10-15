@@ -54,6 +54,7 @@ import argparse
 import base64
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -176,6 +177,11 @@ def ideas(task_path: Path) -> dict:
 
 # --------------------------------------------------------------------------- autopilot
 
+def _plain(text) -> str:
+    """Text compared without case, punctuation or extra spaces."""
+    return " ".join(re.findall(r"\w+", str(text or "").lower()))
+
+
 def _read(path: Path | str) -> dict | list:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -243,6 +249,11 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
     avoid = [*(data.get("avoid") or []), *(h.get("title", "") for h in history)]
     written = [i for i in data.get("ideas") or [] if i.get("kind", "watch") == "watch"]
     lines = [i for i in data.get("ideas") or [] if i.get("kind") == "comment"]
+    posted = {_plain(a) for a in avoid}  # the niche's own first lines, until each has been used once
+    lines = [{"kind": "comment", "title": f["line"].rstrip(". "), "script": f["line"], "why": "",
+              "caption": f.get("caption") or "Be honest.", "youtube_title": f["line"], "hashtags": [],
+              "first_comment": f.get("first_comment") or ""}
+             for f in niches.get(niche).first_lines if _plain(f["line"]) not in posted][:kinds.count("comment")] + lines
     writer = writer or ideas.generate
     line_writer = line_writer or ideas.generate_lines
     insights = data.get("insights") or {}

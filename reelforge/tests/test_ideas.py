@@ -163,6 +163,17 @@ def test_a_niche_shapes_the_brief_and_comment_lines(monkeypatch):
     body = g.posts[0][1]
     brief = body["contents"][0]["parts"][0]["text"]
     assert "moral dilemmas" in brief and "no voice" in brief and "Never ask for comments" in brief
+    gym = ideas.line_prompt(3, niche="gym")
+    assert "Nothing [verb] a man faster than..." in gym and "ends with a colon" not in gym
     assert "first_comment" in brief and "- would you rather questions" in brief and "- hashtags:" not in brief
     item = body["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]
     assert {"line", "caption", "first_comment", "search_phrase"} <= set(item["required"]) and "hashtags" not in item["properties"]
+
+
+def test_a_line_that_trails_off_ends_in_three_dots(monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    text = json.dumps({"ideas": [{"line": "Nothing ages a man faster than\u2026", "title": "T", "caption": "C", "youtube_title": "Y"},
+                                 {"line": "Nothing humbles a man faster than..", "title": "T", "caption": "C", "youtube_title": "Y"}]})
+    g = Gemini([], Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}))
+    lines = [i["script"] for i in ideas.generate_lines(count=2, niche="gym", session=g)["ideas"]]
+    assert lines == ["Nothing ages a man faster than...", "Nothing humbles a man faster than..."]
