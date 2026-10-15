@@ -40,6 +40,23 @@ def test_pick_model_prefers_the_newest_stable_pro():
     assert ideas.pick_model([model("gemini-3.0-pro-preview")]) == "gemini-3.0-pro-preview"  # nothing stable
 
 
+def test_a_model_without_quota_hands_over_to_the_next(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    text = json.dumps({"ideas": [{"title": "T", "script": "Hook? More.", "why": ""}]})
+    ok = Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]})
+    spent = Resp(429, {"error": {"message": "You exceeded your current quota, limit: 0"}})
+    g = Gemini([model("gemini-4-argon"), model("gemini-3.8-flash"), model("gemini-3.7-flash"),
+                model("gemini-3.5-transcribe")], ok)
+    answers = iter([spent, Resp(503, {"error": {"message": "This model is currently experiencing high demand."}}), ok])
+    g.post = lambda url, params=None, headers=None, json=None, timeout=None: (g.posts.append((url, json)), next(answers))[1]
+    assert ideas.generate(count=1, session=g)["model"] == "gemini-3.7-flash"  # no quota, then busy
+    assert [u.rsplit("/", 1)[-1].split(":")[0] for u, _ in g.posts] == ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash"]
+    assert ideas.ranked_models([model("gemini-3.5-transcribe"), model("gemini-3.5-flash")]) == ["gemini-3.5-flash"]
+    with pytest.raises(ideas.IdeasError, match="quota"):  # every model spent: Gemini's own words
+        ideas.generate(count=1, session=Gemini([model("gemini-3.8-flash")], spent))
+
+
 def test_generate_sends_the_brief_and_reads_the_json(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     monkeypatch.delenv("GEMINI_MODEL", raising=False)

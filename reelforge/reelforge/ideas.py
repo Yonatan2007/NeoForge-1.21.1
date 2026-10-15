@@ -11,12 +11,15 @@ Gemini Pro (or Flash) the key can use is chosen from the API's model list.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 
 import requests
 
 from . import niches
+
+log = logging.getLogger(__name__)
 
 API = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -40,13 +43,15 @@ def _version(name: str) -> tuple[float, ...]:
     return tuple(float(x) for x in re.findall(r"\d+(?:\.\d+)?", name.split("/")[-1])[:2]) or (0.0,)
 
 
-def pick_model(models: list[dict]) -> str:
-    """The best text model in a ``models.list`` answer: generateContent,
-    not a lite/preview/experimental/image/audio variant, Pro over Flash,
-    the highest version first."""
+def ranked_models(models: list[dict]) -> list[str]:
+    """The text models in a ``models.list`` answer, best first:
+    generateContent, not a lite/preview/experimental/image/audio variant
+    (previews only when nothing stable is left), the highest version first,
+    Pro over Flash."""
     usable = [m for m in models if "generateContent" in (m.get("supportedGenerationMethods") or [])
               and "gemini" in m.get("name", "")]
-    special = ("lite", "image", "tts", "audio", "live", "embedding", "vision", "thinking", "robotics", "computer")
+    special = ("lite", "image", "tts", "audio", "live", "embedding", "vision", "thinking", "robotics", "computer",
+               "transcribe", "banana")
     stable = [m for m in usable if not any(w in m["name"] for w in special + ("preview", "exp"))]
     pool = stable or [m for m in usable if not any(w in m["name"] for w in special)] or usable
     if not pool:
@@ -57,15 +62,24 @@ def pick_model(models: list[dict]) -> str:
         tier = 2 if "pro" in name else 1 if "flash" in name else 0
         return (_version(name), tier, "latest" not in name)
 
-    return max(pool, key=rank)["name"].split("/", 1)[-1]
+    return [m["name"].split("/", 1)[-1] for m in sorted(pool, key=rank, reverse=True)]
 
 
-def _model(session: requests.Session, headers: dict) -> str:
+def pick_model(models: list[dict]) -> str:
+    """The best text model in a ``models.list`` answer (``ranked_models``)."""
+    return ranked_models(models)[0]
+
+
+QUOTA_TRIES = 4  # models tried in turn while Gemini says their quota is used up (a new model may have none on a free key)
+BUSY = (429, 503)  # ... or that they are overloaded
+
+
+def _models(session: requests.Session, headers: dict) -> list[str]:
     if os.environ.get("GEMINI_MODEL"):
-        return os.environ["GEMINI_MODEL"]
+        return [os.environ["GEMINI_MODEL"]]
     r = session.get(f"{API}/models", params={"pageSize": 200}, headers=headers, timeout=30)
     _raise(r)
-    return pick_model(r.json().get("models", []))
+    return ranked_models(r.json().get("models", []))
 
 
 def _raise(r: requests.Response) -> None:
@@ -256,16 +270,22 @@ def clean_tags(raw) -> list[str]:
 
 
 def _ask(brief: str, response_schema: dict, session: requests.Session | None) -> tuple[str, list[dict]]:
-    """(model, the answer's "ideas") for ``brief``."""
+    """(model, the answer's "ideas") for ``brief``: from the best model, or
+    the next ones while Gemini says a model's quota is used up (HTTP 429) or
+    it is overloaded (503)."""
     headers = _headers()
     session = session or requests.Session()
-    model = _model(session, headers)
     body = {
         "contents": [{"role": "user", "parts": [{"text": brief}]}],
         "generationConfig": {"temperature": 1.0, "responseMimeType": "application/json",
                              "responseSchema": response_schema},
     }
-    r = session.post(f"{API}/models/{model}:generateContent", headers=headers, json=body, timeout=180)
+    models = _models(session, headers)[:QUOTA_TRIES]
+    for i, model in enumerate(models):
+        r = session.post(f"{API}/models/{model}:generateContent", headers=headers, json=body, timeout=180)
+        if r.status_code not in BUSY or i + 1 == len(models):
+            break
+        log.info("Gemini %s is out of quota or busy (HTTP %s); trying %s", model, r.status_code, models[i + 1])
     _raise(r)
     data = r.json()
     try:
