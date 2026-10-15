@@ -249,8 +249,11 @@ folder; run Python from `reelforge/` with the Gemini key available (see
    the first sentence of every reel's script and every autopilot title;
    `examples` = the scripts of the 3 latest longer reels.
    `ArtifactData list music` → `library` (the songs of the Music page, as
-   saved: `{name, store, start, enabled}`); with `music: "random"` each reel
-   gets one of them, dealt like cards (none repeats before the others).
+   saved: `{name, store, start, enabled, use}`; `use` lists where a song
+   plays, "<account>/watch" or "<account>/comment", none: the main
+   account's both); with `music: "random"` each reel gets a song from its
+   half of the account's library (else the account's other half, else the
+   main account's), dealt like cards (none repeats before the others).
    The account's insights document → `insights` (missing: `{}`): its
    `learnings` steer the scripts, its `trial_eligible` lets Trial Reels in.
    `ArtifactData query replies` where `status == "idea"` and the reply's

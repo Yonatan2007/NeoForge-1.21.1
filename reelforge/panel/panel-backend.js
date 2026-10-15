@@ -3,7 +3,8 @@
  * api.js, but kept inside the claude.ai Artifact instead of a local server.
  *
  *   projects/<id>   {name, updated, project, files: [record], outputs: {key: assetId}}
- *   music/<id>      the music library: a song's record {name, kind, info, size, store, peaks}
+ *   music/<id>      the music libraries: a song's record {name, kind, info, size, store, peaks, start, enabled,
+ *                   use: the lists it plays in, "<account>/watch" | "<account>/comment"}
  *                   plus {start (seconds into the song), enabled (dealt by Autopilot), created}
  *   settings/defaults {project}
  *   tasks/<id>      {kind: "plan" | "render" | "review", project_id, status, stage, progress,
@@ -517,7 +518,8 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
     return snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => String(a.created).localeCompare(String(b.created)));
   }
 
-  async function addSong(file, { onProgress, signal } = {}) {
+  /** A song kept once in the panel; `use`: the lists it plays in ("gym/comment", see panel-music.js). */
+  async function addSong(file, { onProgress, signal, use } = {}) {
     const progress = (f) => onProgress && onProgress(Math.max(0, Math.min(1, f)));
     const check = () => {
       if (signal && signal.aborted) throw new DOMException("Upload cancelled", "AbortError");
@@ -535,7 +537,8 @@ export function createPanelBackend({ db, assets, mcp, sample = null }, data) {
     const store = await storeFile(file, mimeOf(file), (f) => progress(0.05 + 0.9 * f), check);
     const name = uniqueName(await listSongs(), safeName(name0));
     const id = `${slug(stemOf(name))}-${hex(3)}`;
-    const doc = { name, kind, info, size: file.size, store, peaks: peaks || null, start: 0, enabled: true, created: nowIso() };
+    const doc = { name, kind, info, size: file.size, store, peaks: peaks || null, start: 0, enabled: true, created: nowIso(),
+                  ...(Array.isArray(use) ? { use } : {}) };
     await retrying(() => M(id).set(doc));
     if (store.type === "b64") resolved.set(store.ids[0], URL.createObjectURL(new Blob([file], { type: store.mime })));
     progress(1);

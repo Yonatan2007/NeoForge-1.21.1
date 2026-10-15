@@ -431,11 +431,12 @@ def _readable_first(ranked: list, providers: list, words: list[Word], project: P
 def _stock_common(project: Project) -> dict:
     vs = project.style.video
     wide = vs.aspect == "16:9"
+    fs = project.footage
     return dict(min_duration=vs.max_shot + vs.crossfade,
-                allow_landscape=project.footage.allow_landscape or wide,
-                portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0),
-                palette=project.footage.palette, wide=wide,
-                avoid=avoided(project.footage.queries) | avoided([project.footage.hook_query or ""]),
+                allow_landscape=fs.allow_landscape or wide,
+                portrait_weight=PORTRAIT_WEIGHT.get(vs.aspect, 3.0) if fs.portrait_weight is None else fs.portrait_weight,
+                palette=fs.palette, wide=wide,
+                avoid=avoided(fs.queries) | avoided([fs.hook_query or ""]) | {w.lower() for w in fs.avoid or [] if w},
                 frame=(vs.width, vs.height))  # the picture's size: clips that must be enlarged rank lower
 
 

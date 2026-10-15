@@ -121,6 +121,27 @@ def test_library_songs_are_dealt_at_random_like_cards():
     assert ap.settings_of({"music": "rotate"})["music"] == "random" and ap.settings_of(None)["music"] == "random"
 
 
+def test_each_account_and_video_type_has_its_own_songs():
+    import random
+    library = [song("old.mp3"),  # from before the libraries: the main account's, both halves
+               song("phonk.mp3", use=["gym/watch"]), song("drums.mp3", use=["gym/watch", "gym/comment"]),
+               song("loop.mp3", use=["gym/comment"]), song("stars.mp3", use=["space/watch"]),
+               song("off.mp3", use=["gym/comment"], enabled=False)]
+    assert [x["name"] for x in ap.songs_for(library, "gym", "watch")[0]] == ["phonk.mp3", "drums.mp3"]
+    loops, place = ap.songs_for(library, "gym", "comment")
+    assert place == "gym/comment" and {x["name"] for x in loops} == {"drums.mp3", "loop.mp3"}
+    assert ap.songs_for(library, "space", "comment") == ([library[4]], "space/watch")  # its other half
+    assert ap.songs_for(library, "dilemmas", "watch") == ([library[0]], "main/watch")  # nothing yet: the main one's
+    assert ap.songs_for(library, None, "comment") == ([library[0]], "main/comment")
+    assert ap.songs_for([song("x.mp3", use=["gym/watch"])], "main", "watch") == ([], None)
+    s = ap.settings_of({"music": "random"})
+    picks = ap.pick_songs(s, ["comment", "watch", "comment", "watch"], "uploads/t.mp3", library,
+                          rng=random.Random(2), account="gym")
+    assert {x["name"] for x in picks[0::2]} == {"drums.mp3", "loop.mp3"}  # dealt like cards within a kind
+    assert {x["name"] for x in picks[1::2]} == {"phonk.mp3", "drums.mp3"}
+    assert ap.pick_songs(s, ["watch"], "uploads/t.mp3", [song("x.mp3", use=["gym/watch"])], account="main") == [True]
+
+
 def clip(key, w=1080, h=1920):
     return {"key": key, "provider": key.split("_")[0], "id": key.split("_")[1], "download_url": "u",
             "width": w, "height": h, "tile": 0, "portrait": h > w}
@@ -467,14 +488,19 @@ def test_a_niche_sets_the_footage_and_a_comment_video_holds_its_line():
     # its longer reels follow the skyline closely, word by word, like the main account's
     assert dilemmas["style"].get("hook", {}).get("curve", "terrain") == "terrain"
     assert dilemmas["style"].get("hook", {}).get("reveal", "words") == "words"
-    # the gym account: training footage with no skyline, the opening line on a fixed arc with a shadow,
-    # its first shot chosen like the others; its comment videos keep that layout
+    # the gym account: only dark gym footage (wide clips cropped, the darkest first, no women, boxing or
+    # outdoors), no skyline: the opening line on a fixed arc with a shadow; its comment videos keep that
+    # layout and are one clip of someone lifting
     gym = ap.build_project(template_project(), "Five habits keep men stuck.", "T", niche="gym")
-    assert (gym["footage"]["palette"], gym["footage"]["hook_query"]) == ("gym", None) and "man" in gym["footage"]["theme"]
+    gf = gym["footage"]
+    assert (gf["palette"], gf["hook_query"], gf["allow_landscape"], gf["portrait_weight"]) == ("gym", None, True, 0.0)
+    assert "barbell" in gf["theme"] and {"woman", "boxing", "forest", "gymnast"} <= set(gf["avoid"])
+    assert gym["style"]["look"]["brightness"] < 0 and gym["style"]["look"]["saturation"] < 1
     assert (gym["style"]["hook"]["curve"], gym["style"]["hook"]["fallback"], gym["style"]["hook"]["shadow"]) == \
         ("fixed", "arc", True)
     gym_line = ap.build_comment_project(template_project(), "Nothing ruins a man faster than", "T", music=None, niche="gym")
     assert (gym_line["style"]["hook"]["curve"], gym_line["style"]["hook"]["reveal"]) == ("fixed", "all")
+    assert gym_line["footage"]["queries"] == ["lifting weights"]
     assert "gym" in {a["id"] for a in ap.ACCOUNTS}
     plain = ap.build_project(template_project(), "Hook.", "T")
     assert plain["footage"]["allow_landscape"] is False and plain["footage"].get("hook_searches") is None

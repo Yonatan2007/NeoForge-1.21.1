@@ -31,6 +31,7 @@ class Niche:
     topic_hint: str = ""            # placeholder of the panel's Topics field
     footage: dict = field(default_factory=dict)   # project "footage" overrides (palette, hook searches ...)
     style: dict = field(default_factory=dict)     # project "style" overrides
+    comment_footage: dict = field(default_factory=dict)  # ... and a comment video's (its one clip's searches)
 
 
 NICHES: dict[str, Niche] = {
@@ -138,15 +139,25 @@ NICHES: dict[str, Niche] = {
                "self improvement", "how to wake up early", "stoic", "how to stop being lazy", "discipline",
                "how to get in shape"),
         topic_hint="e.g. discipline, waking up early, the first year of lifting",
-        # men training, boxing and the city at night (many stock fitness clips show women: the theme keeps
-        # men); no skyline in a gym, so the opening line sits on a fixed soft arc with a shadow instead of
-        # bending over heads and walls, and the first shot is chosen like the others
-        footage={"palette": "gym", "hook_query": None,
-                 "theme": ["man", "men", "guy", "boxer", "boxing", "muscular", "shirtless", "strong", "climber",
-                           "mountaineer", "dumbbell", "squats", "reps", "pull", "runs", "basketball", "alarm",
-                           "city", "night", "skyscrapers"]},
-        style={"look": {"match": "off", "contrast": 1.12, "saturation": 0.82, "lift": 0.0, "grain": 5},
+        # only gym footage, very dark (a "dark edit": crushed shadows, muted colour, warm light, grain), men lifting:
+        # Mixkit's gym clips are mostly wide, so they are cropped, and the darkest ones win over the
+        # vertical ones; no skyline in a gym, so the opening line sits on a fixed soft arc with a
+        # shadow; a comment video is one clip of someone lifting
+        footage={"palette": "gym", "hook_query": None, "allow_landscape": True, "portrait_weight": 0.0,
+                 "theme": ["gym", "barbell", "dumbbell", "kettlebell", "weights", "weightlifting", "lifting", "deadlift",
+                           "squats", "bench", "bodybuilder", "ropes", "pulldown", "cable", "machine", "workout",
+                           "training", "exercising", "reps", "repetitions", "chalk", "lunges", "crossfit", "pull",
+                           "physique", "strength", "muscular", "athlete"],
+                 "avoid": ["woman", "women", "girl", "female", "lady", "couple", "gymnast", "gymnastics", "leotard",
+                           "beam", "ballet", "dancer", "dancing", "yoga", "boxer", "boxing", "kickboxer", "ring",
+                           "wrestler", "martial", "fighter", "soccer", "ball", "basketball", "tennis", "golf",
+                           "running", "jogging", "runner", "treadmill", "forest", "mountain", "climber",
+                           "climbing", "hiking", "beach", "park", "street", "city", "outdoors", "nature", "pool",
+                           "swimming", "office", "fashion", "smartwatch", "phone"]},
+        style={"look": {"match": "off", "brightness": -0.03, "contrast": 1.18, "saturation": 0.55, "gamma": 0.9,
+                        "lift": 0.0, "tint": "rm=0.03:bm=-0.03:rh=0.05:gh=0.01:bh=-0.05", "grain": 6},
                "hook": {"curve": "fixed", "fallback": "arc", "shadow": True}},
+        comment_footage={"queries": ["lifting weights"]},
     ),
 }
 DEFAULT = "philosophy"

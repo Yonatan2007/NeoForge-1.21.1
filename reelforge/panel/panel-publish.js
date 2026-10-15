@@ -1264,7 +1264,7 @@ export const extras = {
     if (id === "calendar") return renderCalendar(container, { findVideo: videoLookup });
     if (id === "ideas") return renderIdeas(container);
     if (id === "autopilot") return renderAutopilot(container, sub);
-    if (id === "music") return renderMusic(container);
+    if (id === "music") return renderMusic(container, sub);
     if (id === "replies") return renderReplies(container);
     if (id === "batch") return renderBatch(container);
     if (id === "stats") return renderStats(container, { findVideo: videoLookup });

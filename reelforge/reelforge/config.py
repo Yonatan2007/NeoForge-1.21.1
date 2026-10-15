@@ -278,6 +278,9 @@ class FootageSettings:
     hook_searches: list[str] | None = None # more searches tried for it (None: mountains, hills ...)
     theme: list[str] | None = None         # words a clip's name should mention (a space account's: stars, galaxy
                                            # ...); clips that mention none rank far lower
+    avoid: list[str] | None = None         # words that rule a clip out (a gym account's: woman, boxing, forest ...)
+    portrait_weight: float | None = None   # how much a vertical clip counts (None: by the picture's shape; 0:
+                                           # not at all, so brightness and sharpness decide, e.g. the darkest)
     reference_matching: bool = True        # rank stock clips by similarity to reference uploads
     allow_landscape: bool = True           # crop landscape clips when vertical ones run out
     picks: list[dict] = field(default_factory=list)  # stock clips chosen in the review, in shot order

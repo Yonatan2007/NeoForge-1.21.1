@@ -8,7 +8,8 @@ of the user's template reel with the new script, so the look, voice, captions,
 music and footage searches stay the same; the stock clips are planned for the
 whole batch at once so no two reels share a clip, and clips used by recent
 autopilot reels are ruled out so the feed keeps changing. The music comes
-from the user's music library, dealt at random like cards.
+from the account's music library, dealt at random like cards: each account's
+library has a half for its longer videos and one for its comment videos.
 
 The steps that need the user's connectors (the Higgsfield voice and upload,
 Metricool's scheduling) are done by Claude in its session; ``panelrun
@@ -32,7 +33,8 @@ voice, that ask something people answer in the comments
 
 Panel documents (``settings_doc``, ``insights_doc``):
     settings/autopilot   the main account's settings (``DEFAULTS``); settings/autopilot-<account> another's
-    music/<id>           the music library: {name, store, start (seconds into the song), enabled, ...}
+    music/<id>           the music libraries: {name, store, start (seconds into the song), enabled,
+                         use: ["<account>/watch" | "<account>/comment", ...] (where it plays), ...}
     autopilot/<slot id>  one reel (``slot_id``): {account, kind, slot, tz, status, project_id, title, script, caption, hashtags,
                          youtube_title, first_comment, search_phrase, trial, collaborator, tiktok_sound,
                          reply_to, platforms, song, master_url, master_media_id, cover, cover_ms,
@@ -378,11 +380,13 @@ def build_comment_project(template: dict, line: str, title: str, *, music: str |
     style.setdefault("video", {}).update(max_shot=seconds + 0.5, fade_in=0.0, fade_out=0.0, voice_delay=0.0)
     p.setdefault("music", {}).update(fade_in=0.0, fade_out=0.3, duck=False, volume_db=-12.0)
     p.setdefault("footage", {})["queries"] = None
+    if niche and niche != niches.DEFAULT:  # the niche's own searches for that one clip
+        _merge(p["footage"], niches.get(niche).comment_footage)
     return p
 
 
 def library_songs(library: list[dict] | None) -> list[dict]:
-    """The usable songs of the music library (documents as saved, or wrapped as ArtifactData returns them)."""
+    """The usable songs of the music libraries (documents as saved, or wrapped as ArtifactData returns them)."""
     out = []
     for raw in library or []:
         song = raw["data"] if isinstance(raw.get("data"), dict) and "store" in raw["data"] else raw
@@ -391,20 +395,35 @@ def library_songs(library: list[dict] | None) -> list[dict]:
     return out
 
 
-def pick_songs(settings: dict, count: int, template_song: str | None, library: list[dict] | None,
-               recent: list[str] | tuple = (), rng: random.Random | None = None) -> list:
-    """The music of ``count`` new reels, each None (no music), True (the
-    template's song) or a library song {name, file, start}. Library songs are
-    dealt like cards: every song once, in random order with the ones heard
-    lately (``recent``, oldest first) last, before any song comes again, and
-    never the same song twice in a row. An empty library falls back to the
-    template's song."""
-    if settings["music"] == "none":
-        return [None] * count
+VIDEO_KINDS = ("watch", "comment")
+
+
+def song_places(song: dict) -> list[str]:
+    """Where a library song plays: "<account>/<kind>" places (a song from
+    before the accounts had libraries: both halves of the main account's)."""
+    use = song.get("use")
+    return [str(u) for u in use] if isinstance(use, list) else [f"{MAIN}/{k}" for k in VIDEO_KINDS]
+
+
+def songs_for(library: list[dict] | None, account: str | None, kind: str) -> tuple[list[dict], str | None]:
+    """The songs a reel of ``kind`` ("watch" or "comment") on ``account`` is
+    dealt from, and the place they come from: that half of the account's
+    library, else its other half, else the main account's library (the same
+    half first). ([], None) when every one of them is empty."""
     songs = library_songs(library)
-    if settings["music"] == "template" or not songs:
-        return [True if template_song else None] * count
-    rng = rng or random.Random()
+    account = account_key(account)
+    other = "comment" if kind == "watch" else "watch"
+    for place in dict.fromkeys((f"{account}/{kind}", f"{account}/{other}", f"{MAIN}/{kind}", f"{MAIN}/{other}")):
+        hit = [s for s in songs if place in song_places(s)]
+        if hit:
+            return hit, place
+    return [], None
+
+
+def _deal(songs: list[dict], count: int, recent: list[str] | tuple, rng: random.Random) -> list[dict]:
+    """``count`` songs dealt like cards: every song once, in random order with
+    the ones heard lately (``recent``, oldest first) last, before any song
+    comes again, and never the same song twice in a row."""
     last_heard = {name: i for i, name in enumerate(recent or [])}
     out: list = []
     deck: list[dict] = []
@@ -418,6 +437,31 @@ def pick_songs(settings: dict, count: int, template_song: str | None, library: l
                 deck.append(deck.pop(0))
         song = deck.pop(0)
         out.append({"name": song["name"], "file": f"uploads/{song['name']}", "start": float(song.get("start") or 0)})
+    return out
+
+
+def pick_songs(settings: dict, kinds: int | list[str], template_song: str | None, library: list[dict] | None,
+               recent: list[str] | tuple = (), rng: random.Random | None = None, account: str | None = None) -> list:
+    """The music of new reels of ``kinds`` (one per reel, "watch" or
+    "comment"; a number: that many longer reels), each None (no music), True
+    (the template's song) or a library song {name, file, start}. Each kind is
+    dealt from its half of ``account``'s library (``songs_for``, ``_deal``);
+    with no song anywhere it falls back to the template's song."""
+    kinds = ["watch"] * kinds if isinstance(kinds, int) else list(kinds)
+    if settings["music"] == "none":
+        return [None] * len(kinds)
+    fallback = True if template_song else None
+    if settings["music"] == "template":
+        return [fallback] * len(kinds)
+    rng = rng or random.Random()
+    out: list = [fallback] * len(kinds)
+    for kind in dict.fromkeys(kinds):
+        songs, _ = songs_for(library, account, kind)
+        if not songs:
+            continue
+        slots = [i for i, k in enumerate(kinds) if k == kind]
+        for i, song in zip(slots, _deal(songs, len(slots), recent, rng)):
+            out[i] = song
     return out
 
 

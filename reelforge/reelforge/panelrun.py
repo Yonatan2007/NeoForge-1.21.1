@@ -218,9 +218,11 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
     history = data.get("history") or []
     template_project = template["project"]
     tsong = (template_project.get("music") or {}).get("file")
-    # the same picks when this runs again after fetching files (seeded by the day)
-    songs = ap.pick_songs(settings, len(slots), tsong, data.get("library"),
-                          [h["song"] for h in history if h.get("song")], random.Random(str(data.get("seed") or now.date())))
+    kinds = ap.kinds_for(len(slots), settings["mix"])
+    # each kind from its half of the account's library; the same picks when this runs again after
+    # fetching files (seeded by the day)
+    songs = ap.pick_songs(settings, kinds, tsong, data.get("library"), [h["song"] for h in history if h.get("song")],
+                          random.Random(str(data.get("seed") or now.date())), account=account)
     picked = {song["name"] for song in songs if isinstance(song, dict)}
     library = [{"name": song["name"], "store": song["store"]} for song in ap.library_songs(data.get("library"))
                if song["name"] in picked]
@@ -238,7 +240,6 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
         return {"ok": True, "slots": 0, "plan": str(out / "plan.json")}
 
     # scripts and posts: Gemini (or ideas the caller wrote, when the user chose that)
-    kinds = ap.kinds_for(len(slots), settings["mix"])
     avoid = [*(data.get("avoid") or []), *(h.get("title", "") for h in history)]
     written = [i for i in data.get("ideas") or [] if i.get("kind", "watch") == "watch"]
     lines = [i for i in data.get("ideas") or [] if i.get("kind") == "comment"]

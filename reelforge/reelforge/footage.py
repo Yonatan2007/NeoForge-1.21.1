@@ -29,7 +29,7 @@ SEARCH_TTL = 24 * 3600  # Pixabay asks API users to cache results for 24 h
 # at 0.51; raw stock is a little darker before the lift), moody night and
 # rain B-roll about 0.2.
 LUMA_TARGETS = {"bright": 0.48, "moody": 0.22, "people": 0.4, "space": 0.12,  # space: a night sky
-                "choices": 0.32, "gym": 0.3}
+                "choices": 0.32, "gym": 0.12}  # gym: a dark gym
 
 
 class FootageError(RuntimeError):

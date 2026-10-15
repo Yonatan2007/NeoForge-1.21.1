@@ -138,6 +138,14 @@ def _stock_project(**footage):
     return p
 
 
+def test_a_niche_rules_clips_out_and_can_drop_the_vertical_preference():
+    from reelforge.pipeline import _stock_common
+    common = _stock_common(_stock_project(avoid=["Woman", "forest", ""], portrait_weight=0.0))
+    assert {"woman", "forest"} <= common["avoid"] and "" not in common["avoid"] and common["portrait_weight"] == 0.0
+    plain = _stock_common(_stock_project())
+    assert plain["portrait_weight"] == 3.0 and not {"woman", "forest"} & plain["avoid"]
+
+
 def test_review_lists_opening_and_pool_clips(tmp_path, monkeypatch):
     from reelforge import pipeline
     from reelforge.config import Settings

@@ -356,6 +356,11 @@ FOOTAGE = Section("footage", "Footage", "Your own pictures and videos, and free 
     Field("footage.theme", "Keep clips on these subjects", "Words a stock clip's name should mention, one per "
           "line (e.g. stars, galaxy); clips that mention none are only used when nothing else is left.", "lines",
           nullable=True, advanced=True),
+    Field("footage.avoid", "Never use clips about", "Words that rule a stock clip out when its name mentions "
+          "one, one per line (e.g. woman, forest).", "lines", nullable=True, advanced=True),
+    _opt("footage.portrait_weight", "Prefer vertical clips", "How much a vertical clip counts over a wide one "
+         "(empty = by the video's shape; 0 = not at all, so the clips nearest the mood's brightness win).",
+         0, 6, 0.5, advanced=True),
     _bool("footage.reference_matching", "Prefer clips like my references", "Rank stock clips by how much "
           "they look like your reference pictures."),
     _bool("footage.allow_landscape", "Allow landscape clips", "Crop landscape clips to fit when there "

@@ -29,6 +29,7 @@ import { segmented, switchControl } from "./fields.js";
 import { icon } from "./icons.js";
 import { brandNetworks, metricool, metricoolBrand, metricoolBrands, metricoolProblem, isoIn, postInfo } from "./panel-growth.js";
 import { TONES } from "./panel-more.js";
+import { musicNote } from "./panel-music.js";
 
 const P = () => api._panel;
 const DEFAULTS = {
@@ -364,11 +365,12 @@ export function renderAutopilot(container, sub) {
       [["random", "A random song from my music library"], ["template", "That reel's song"], ["none", "No music"]]
         .map(([v, l]) => h("option", { value: v, selected: v === settings.music }, l)));
     music.addEventListener("change", () => set({ music: music.value }, true));
+    const musicHref = account.id === MAIN ? "#/x/music" : `#/x/music/${account.id}`;
     const musicHelp = settings.music !== "random" ? null
       : h("p", { class: "field-help" }, library.length
-        ? `${library.length} song${library.length === 1 ? "" : "s"} in the shuffle, dealt so none repeats before the others have played. `
-        : "Your music library is empty, so reels use that reel's song for now. ",
-        h("a", { href: "#/x/music" }, library.length ? "Manage songs" : "Add songs"));
+        ? `${musicNote(library, account.id)} Dealt so none repeats before the others have played. `
+        : "The music libraries are empty, so reels use that reel's song for now. ",
+        h("a", { href: musicHref }, library.length ? "Manage this account's songs" : "Add songs"));
     const topic = h("textarea", { class: "input textarea", rows: 2,
       placeholder: `Optional, ${(niche && niche.topic_hint) || "e.g. letting go, self-worth, loneliness at night"}` }, settings.topic || "");
     topic.addEventListener("change", () => set({ topic: topic.value.trim() }));
