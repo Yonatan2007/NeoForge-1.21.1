@@ -116,6 +116,38 @@ NICHES: dict[str, Niche] = {
                            "comet", "satellite", "telescope", "constellation", "astronomy", "rocket"]},
         style={"look": {"match": "off"}},
     ),
+    "gym": Niche(
+        label="Gym and discipline",
+        about="men's discipline and self-improvement: training, habits and a calm, stoic mindset",
+        arc=("Open with a hook that makes the viewer wait for something: a countdown with the best one last "
+             "(\"5 habits that keep men stuck. Number 1 is the one nobody admits.\"), a question whose answer "
+             "comes in the last lines, or a true story whose rule is only said at the end.",
+             "Hold the payoff back until the last lines: every line before it should make the viewer want it.",
+             "Training, health and food advice must be correct and safe: no extreme diets, no drugs or "
+             "steroids, nothing that risks an injury; name a real athlete or historical figure only when the "
+             "story is true.",
+             "Debatable, never divisive: about habits, money, friendship and discipline, never against women or "
+             "any group of people.",
+             "End on a short line that loops back to the opening, or a two-word question like \"Agree?\"."),
+        lines=("An unfinished sentence or a question about discipline, habits or training that men answer "
+               "from their own life.",),
+        examples=("Nothing ruins a man's potential faster than…",
+                  "The most underrated habit a man can have is…",
+                  "One thing you'd tell your 18-year-old self:"),
+        seeds=("how to be disciplined", "how to stay motivated", "gym motivation", "how to build muscle",
+               "self improvement", "how to wake up early", "stoic", "how to stop being lazy", "discipline",
+               "how to get in shape"),
+        topic_hint="e.g. discipline, waking up early, the first year of lifting",
+        # men training, boxing and the city at night (many stock fitness clips show women: the theme keeps
+        # men); no skyline in a gym, so the opening line sits on a fixed soft arc with a shadow instead of
+        # bending over heads and walls, and the first shot is chosen like the others
+        footage={"palette": "gym", "hook_query": None,
+                 "theme": ["man", "men", "guy", "boxer", "boxing", "muscular", "shirtless", "strong", "climber",
+                           "mountaineer", "dumbbell", "squats", "reps", "pull", "runs", "basketball", "alarm",
+                           "city", "night", "skyscrapers"]},
+        style={"look": {"match": "off", "contrast": 1.12, "saturation": 0.82, "lift": 0.0, "grain": 5},
+               "hook": {"curve": "fixed", "fallback": "arc", "shadow": True}},
+    ),
 }
 DEFAULT = "philosophy"
 

@@ -6,9 +6,10 @@
   palette, the reference look) map script vocabulary to sunny nature and
   adventure searches, and fill the remaining shots.
 * ``VISUAL_CONCEPTS`` / ``ATMOSPHERE`` are the "moody" palette (night, rain).
-* ``PEOPLE_*`` (people in daily life), ``SPACE_*`` (stars, galaxies) and
-  ``CHOICES_*`` (chess, clocks, silhouettes) serve the psychology, space and
-  would-you-rather accounts (``niches``).
+* ``PEOPLE_*`` (people in daily life), ``SPACE_*`` (stars, galaxies),
+  ``CHOICES_*`` (chess, clocks, silhouettes) and ``GYM_*`` (training,
+  boxing, the city at night) serve the psychology, space, would-you-rather
+  and gym accounts (``niches``).
 * ``PALETTES`` names them all.
 
 Edit freely: these lists are the "taste" of the generator.
@@ -334,10 +335,57 @@ CHOICES_ATMOSPHERE: list[str] = [
     "sunset over train tracks",
 ]
 
+# The "gym" palette (discipline and training): men training, boxing, running,
+# climbing, the city at night. Checked on Mixkit's vertical listing
+# (2026-10-15): exercise, training, athlete, city night 23+; workout, fitness
+# 20; boxing 17; man training 16; gym 8; jogging 7; crossfit 6; boxer, hiking
+# 5; basketball 4; muscular 3; rock climbing, dumbbell, alarm clock 2. Many
+# fitness clips show women: the gym niche's ``footage.theme`` keeps men.
+GYM_CONCEPTS: list[tuple[frozenset[str], list[str]]] = [
+    (frozenset("discipline disciplined habit habits routine consistent consistency daily every".split()),
+     ["man training", "workout"]),
+    (frozenset("wake waking woke morning mornings early alarm sleep 5am bed".split()),
+     ["alarm clock", "man training"]),
+    (frozenset("run running ran miles mile cardio race".split()),
+     ["jogging", "athlete"]),
+    (frozenset("fight fighter fighting punch hit war battle enemy opponent".split()),
+     ["boxing", "boxer"]),
+    (frozenset("strong strength weight weights lift lifting muscle muscles body gym rep reps".split()),
+     ["muscular", "gym"]),
+    (frozenset("pain hard hurt suffer suffering struggle tired quit quitting exhausted sweat".split()),
+     ["boxer", "crossfit"]),
+    (frozenset("mountain climb climbing top summit goal goals success win winning dream".split()),
+     ["rock climbing", "hiking"]),
+    (frozenset("alone lonely silence quiet focus focused night nights dark".split()),
+     ["city night", "man training"]),
+    (frozenset("money rich work job business career".split()),
+     ["city night", "man training"]),
+    (frozenset("mind mental think thoughts stoic calm control".split()),
+     ["hiking", "man training"]),
+    (frozenset("phone scroll scrolling social dopamine distraction distractions".split()),
+     ["city night", "workout"]),
+    (frozenset("game team play player sport".split()),
+     ["basketball", "athlete"]),
+]
+
+GYM_ATMOSPHERE: list[str] = [
+    "man training",
+    "boxing",
+    "workout",
+    "gym",
+    "athlete",
+    "jogging",
+    "crossfit",
+    "rock climbing",
+    "city night",
+    "muscular",
+]
+
 PALETTES: dict[str, tuple[list[tuple[frozenset[str], list[str]]], list[str]]] = {
     "bright": (BRIGHT_CONCEPTS, BRIGHT_ATMOSPHERE),
     "moody": (VISUAL_CONCEPTS, ATMOSPHERE),
     "people": (PEOPLE_CONCEPTS, PEOPLE_ATMOSPHERE),
     "space": (SPACE_CONCEPTS, SPACE_ATMOSPHERE),
     "choices": (CHOICES_CONCEPTS, CHOICES_ATMOSPHERE),
+    "gym": (GYM_CONCEPTS, GYM_ATMOSPHERE),
 }

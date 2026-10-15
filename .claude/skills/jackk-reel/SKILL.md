@@ -213,7 +213,7 @@ The Autopilot page fills the coming days with reels that Claude writes,
 voices, renders and schedules; Metricool then posts them at their times.
 There is one autopilot per **account** (`ACCOUNTS` in
 `reelforge/autopilot.py`): "main" (the late-night philosophy account) and
-one per niche ("dilemmas", "psychology", "space", see `reelforge/niches.py`),
+one per niche ("dilemmas", "psychology", "space", "gym", see `reelforge/niches.py`),
 each posting through its own Metricool brand. An account's settings are in
 `settings/autopilot` (main) or `settings/autopilot-<account>` (keys and
 defaults: `DEFAULTS`; missing: the defaults with the account's `niche`);

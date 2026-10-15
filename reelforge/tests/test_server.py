@@ -241,7 +241,7 @@ def test_meta_lists_choices_and_capabilities(client):
     assert [a["id"] for a in meta["aspects"]] == list(config.ASPECTS)
     assert {f["id"] for f in meta["fonts"]} == {"inter", "montserrat"} and "Black" in meta["font_weights"]
     assert {"file", "higgsfield", "piper", "none"} <= {v["id"] for v in meta["voice_sources"]}
-    assert {p["id"] for p in meta["palettes"]} == {"bright", "moody", "people", "space", "choices"}
+    assert {p["id"] for p in meta["palettes"]} == {"bright", "moody", "people", "space", "choices", "gym"}
     assert {m["id"] for m in meta["hook_modes"]} == {"terrain", "center", "off"}
     assert {c["id"] for c in meta["caption_cases"]} == {"lower", "upper", "as-is"}
     assert set(meta["capabilities"]) >= {"whisper", "piper", "pexels", "pixabay", "higgsfield_api"}

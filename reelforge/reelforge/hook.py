@@ -380,13 +380,14 @@ def _pattern(kind: str, width: int, height: int) -> np.ndarray:
 def find_contour(frame: np.ndarray, style: HookStyle) -> Contour:
     """The skyline of ``frame`` (top edge of terrain/objects against the sky),
     or the dominant straight edge, or ``style.fallback`` - whichever is the
-    first to reach ``style.min_confidence``. The returned confidence is the
-    detector's (so a fallback pattern reports how weak the skyline was)."""
+    first to reach ``style.min_confidence`` (curve "fixed": always the
+    fallback). The returned confidence is the detector's (so a fallback
+    pattern reports how weak the skyline was)."""
     rgb = _as_rgb(frame)
     height, width = rgb.shape[:2]
     xs = np.arange(width, dtype=np.float64)
     fallback = style.fallback if style.fallback in FALLBACKS else "diagonal"
-    if height < 16 or width < 16:
+    if height < 16 or width < 16 or style.curve == "fixed":  # fixed: the pattern, whatever the picture
         return Contour(xs, _pattern(fallback, width, height), 0.0, fallback)
     f = _Features.of(rgb)
     h, w = f.shape

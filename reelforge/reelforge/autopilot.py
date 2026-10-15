@@ -85,7 +85,8 @@ MAIN = "main"                       # the first account: settings/autopilot, ins
 ACCOUNTS = ({"id": MAIN, "niche": "philosophy", "name": "Main account"},
             {"id": "dilemmas", "niche": "dilemmas", "name": "Would you rather"},
             {"id": "psychology", "niche": "psychology", "name": "Everyday psychology"},
-            {"id": "space", "niche": "space", "name": "Space and science"})
+            {"id": "space", "niche": "space", "name": "Space and science"},
+            {"id": "gym", "niche": "gym", "name": "Gym and discipline"})
 MIXES = ("watch", "half", "comments")
 COMMENT_SECONDS = (7.0, 10.0)       # a comment video's length range
 PLATFORMS = ("instagram", "youtube", "tiktok")
@@ -368,9 +369,12 @@ def build_comment_project(template: dict, line: str, title: str, *, music: str |
     p.setdefault("duration", {}).update(target=seconds, max_intro=0.0)
     style = p.setdefault("style", {})
     # the whole line at once, from the first frame to the last, on one soft arc (the opening
-    # shot is chosen for a smooth skyline that curves only a little), big enough to read
-    style.setdefault("hook", {}).update(mode="terrain", sentences=3, hold=60.0, reveal="all", curve="gentle",
-                                        fallback="arc", size=68, small_scale=0.9, big_scale=1.6)
+    # shot is chosen for a smooth skyline that curves only a little; a niche without skylines
+    # keeps its fixed layout), big enough to read
+    hook = style.setdefault("hook", {})
+    hook.update(mode="terrain", sentences=3, hold=60.0, reveal="all",
+                curve="fixed" if hook.get("curve") == "fixed" else "gentle",
+                fallback="arc", size=68, small_scale=0.9, big_scale=1.6)
     style.setdefault("video", {}).update(max_shot=seconds + 0.5, fade_in=0.0, fade_out=0.0, voice_delay=0.0)
     p.setdefault("music", {}).update(fade_in=0.0, fade_out=0.3, duck=False, volume_db=-12.0)
     p.setdefault("footage", {})["queries"] = None

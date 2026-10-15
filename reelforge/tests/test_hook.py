@@ -189,6 +189,13 @@ def test_a_gentle_hook_prefers_rolling_hills_to_tree_tops():
     assert hook.skyline_score(smooth, gentle=True) > hook.skyline_score(spiky, gentle=True)
 
 
+def test_a_fixed_curve_lays_the_hook_on_its_pattern_whatever_the_picture():
+    frame, _ = mountains()
+    assert hook.find_contour(frame, HookStyle()).kind == "skyline"
+    fixed = hook.HookRenderer(timed(), HookStyle(curve="fixed", fallback="arc"), _font(), frame, end=4.0)
+    assert fixed.contour.kind == "arc" and fixed.placements
+
+
 def test_a_trial_layout_rejects_words_that_would_climb_a_pole():
     font = _font()
     y = np.linspace(0, 1, 960)[:, None, None]
