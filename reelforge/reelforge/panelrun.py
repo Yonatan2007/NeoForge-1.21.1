@@ -71,6 +71,7 @@ from . import config, media
 from .config import Project, Settings
 
 ASSET_LIMIT = 18 * 1024 * 1024   # the asset store takes 20 MiB per file; keep a margin
+HAND_LIMIT = 9 * 1000 * 1000     # a reel posted by hand: a phone may fail to download a bigger video
 BATCH_DEPTH = 30                 # clips read per stock search for a batch of reels (one reel: 8)
 NEAR_HOURS = 48                  # reels this close in time never share a clip
 LINE_TRIES = 4                   # rounds of comment lines asked of Gemini before a batch gives up on repeats
@@ -604,9 +605,10 @@ def autopilot_posts(plan_path: Path, results_path: Path, media_path: Path, now=N
 
 def autopilot_videos(plan_path: Path, results_path: Path) -> dict:
     """For an account posted by hand: the video of each reel that passed, as
-    the panel keeps it (a copy under the asset store's limit when the render
-    is bigger) -> videos-upload.json {reel id: file}. Upload them to the
-    panel's assets and pass their ids to ``autopilot_docs`` (``videos``)."""
+    the panel keeps it and the chat sends it (a copy under ``HAND_LIMIT``
+    when the render is bigger, which a phone may fail to download) ->
+    videos-upload.json {reel id: file}. Upload them to the panel's assets
+    and pass their ids to ``autopilot_docs`` (``videos``)."""
     plan, results = _read(plan_path), _read(results_path)
     files = {}
     for item in plan["items"]:
@@ -614,7 +616,7 @@ def autopilot_videos(plan_path: Path, results_path: Path) -> dict:
         if not (res.get("ok") and not res.get("problems") and res.get("video")):
             continue
         video = Path(res["video"])
-        files[item["id"]] = str(_shrink(video) if video.stat().st_size > ASSET_LIMIT else video)
+        files[item["id"]] = str(_shrink(video, HAND_LIMIT) if video.stat().st_size > HAND_LIMIT else video)
     out = plan_path.parent / "videos-upload.json"
     _write(out, files)
     return {"ok": True, "videos": len(files), "file": str(out)}
@@ -804,10 +806,10 @@ def status(work: Path) -> dict:
     return st
 
 
-def _shrink(video: Path) -> Path:
-    """A copy of ``video`` under the asset limit (same size and frame rate)."""
+def _shrink(video: Path, limit: int = ASSET_LIMIT) -> Path:
+    """A copy of ``video`` under ``limit`` bytes (same size and frame rate)."""
     duration = media.duration(video)
-    kbps = max(400, int(ASSET_LIMIT * 8 / 1000 / max(duration, 1) * 0.9) - 160)
+    kbps = max(400, int(limit * 8 / 1000 / max(duration, 1) * 0.9) - 160)
     small = video.with_name(video.stem + "-panel.mp4")
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-c:v", "libx264", "-preset", "medium",
                     "-b:v", f"{kbps}k", "-maxrate", f"{kbps}k", "-bufsize", f"{2 * kbps}k",

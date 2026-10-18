@@ -763,6 +763,11 @@ def test_an_account_posted_by_hand_needs_no_metricool(tmp_path, monkeypatch):
     videos = panelrun.autopilot_videos(plan_path, results_path)
     upload = json.loads(open(videos["file"]).read())
     assert upload == {items[0]["id"]: str(small), items[1]["id"]: str(small)}  # small enough: as rendered
+    shrunk = []  # a bigger one goes as a copy a phone downloads easily
+    monkeypatch.setattr(panelrun, "HAND_LIMIT", 500)
+    monkeypatch.setattr(panelrun, "_shrink", lambda video, limit: shrunk.append(limit) or video.with_name("small-panel.mp4"))
+    upload = json.loads(open(panelrun.autopilot_videos(plan_path, results_path)["file"]).read())
+    assert shrunk == [500, 500] and upload[items[1]["id"]] == str(tmp_path / "small-panel.mp4")
     (tmp_path / "videos.json").write_text(json.dumps({items[0]["id"]: "vid0"}))  # the second didn't upload
     (tmp_path / "covers.json").write_text(json.dumps({items[0]["id"]: "cov0"}))
     docs = panelrun.autopilot_docs(plan_path, results_path, None, tmp_path / "covers.json", None, tmp_path / "videos.json")

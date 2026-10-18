@@ -316,9 +316,10 @@ folder; run Python from `reelforge/` with the Gemini key available (see
    `{<item id>: <asset id>}`. An account posted by hand gets no Higgsfield
    upload: `panelrun autopilot-videos --plan R/run/plan.json --results
    R/run/results.json` → R/run/videos-upload.json `{<item id>: file}` (a
-   copy under the asset limit when a render is bigger), then `Artifact`
-   publish those files to the panel the same way → R/videos.json
-   `{<item id>: <asset id>}`; covers as above.
+   copy under 9 MB when a render is bigger: a phone may fail to download a
+   bigger video), then `Artifact` publish those files to the panel the same
+   way → R/videos.json `{<item id>: <asset id>}`; covers as above. When the
+   user wants the videos in the chat, send these same files.
 10. (Not for an account posted by hand.)
     `panelrun autopilot-posts --plan … --results … --media R/media.json` →
     posts.json. For each post `createScheduledPost` with its `blogId`,
