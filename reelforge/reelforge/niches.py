@@ -32,8 +32,8 @@ class Niche:
     footage: dict = field(default_factory=dict)   # project "footage" overrides (palette, hook searches ...)
     style: dict = field(default_factory=dict)     # project "style" overrides
     comment_footage: dict = field(default_factory=dict)  # ... and a comment video's (its one clip's searches)
-    line_form: str = ""             # the one shape every comment line takes (default: an unfinished sentence
-                                    # ending in a colon, or a question)
+    line_form: str = ""             # the form of every comment line (default: an unfinished sentence ending
+                                    # in a colon, or a question)
     first_lines: tuple[dict, ...] = ()  # comment lines posted first, once each: {line, first_comment, caption}
 
 
@@ -134,9 +134,8 @@ NICHES: dict[str, Niche] = {
              "any group of people.",
              "End on a short line that loops back to the opening, or a two-word question like \"Agree?\"."),
         lines=("About discipline, habits, comfort, ego or training: something men answer from their own life.",),
-        examples=("Nothing humbles a man faster than...",
-                  "Nothing kills a man's discipline faster than...",
-                  "Nothing ages a man faster than..."),
+        examples=("Nothing humbles a man faster than...", "The habit that quietly ruined my twenties...",
+                  "You know a man is serious when...", "Discipline is just..."),
         seeds=("how to be disciplined", "how to stay motivated", "gym motivation", "how to build muscle",
                "self improvement", "how to wake up early", "stoic", "how to stop being lazy", "discipline",
                "how to get in shape"),
@@ -161,11 +160,11 @@ NICHES: dict[str, Niche] = {
                "hook": {"curve": "fixed", "fallback": "arc", "shadow": True}},
         comment_footage={"queries": ["lifting weights"]},
         # an unfinished sentence men finish in a word or two gets far more answers than a question; the
-        # three dots leave the gap without asking for comments (which Instagram pushes down)
-        line_form=("An unfinished sentence ending in \"...\" that men finish in the comments in a word or two: almost "
-                   "always \"Nothing [verb] a man faster than...\", now and then \"Nothing [verb] a man more than...\"; "
-                   "under 9 words. Never a question, and never about physically hurting anyone (\"beats\" means "
-                   "defeats or breaks him)."),
+        # three dots leave the gap without asking for comments (which Instagram pushes down); each one is a
+        # sentence of its own, not the same sentence with another verb
+        line_form=("An unfinished sentence ending in \"...\" that men finish in the comments in a word or two, under 9 "
+                   "words. Each line is a different sentence: \"Nothing [verb] a man faster than...\" at most once, "
+                   "the others built another way. Never a question, and never about physically hurting anyone."),
         first_lines=({"line": "Nothing beats a man faster than...", "first_comment": "Comfort. It wins without a fight.",
                       "caption": "Be honest."},),
     ),

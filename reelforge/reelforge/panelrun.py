@@ -73,6 +73,7 @@ from .config import Project, Settings
 ASSET_LIMIT = 18 * 1024 * 1024   # the asset store takes 20 MiB per file; keep a margin
 BATCH_DEPTH = 30                 # clips read per stock search for a batch of reels (one reel: 8)
 NEAR_HOURS = 48                  # reels this close in time never share a clip
+LINE_TRIES = 4                   # rounds of comment lines asked of Gemini before a batch gives up on repeats
 LOG_LINES = 200
 
 
@@ -200,7 +201,9 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
     """Plan a batch for one account (``account``, default the main one):
     slots, scripts with their posts, a work folder per reel (project.json and
     uploads) with its stock clips assigned. The settings' ``mix`` makes some
-    reels comment videos (one line on screen, no voice). Gemini writes for
+    reels comment videos (one line on screen, no voice), each line a
+    different sentence from the others and from the ``line`` of the
+    account's latest reels in ``history``. Gemini writes for
     the account's niche, learns from ``insights`` (the account's insights
     document), answers the viewers' comments in ``replies`` first, and builds
     the posts around real searches (``search_phrases``, or YouTube's
@@ -294,13 +297,22 @@ def autopilot_prepare(inp: Path, assets: Path, out: Path, writer=None, searcher=
         if not got.get("ideas"):
             raise ideas.IdeasError("Gemini returned no scripts.")
         written += got["ideas"]
-    while len(lines) < kinds.count("comment"):
-        got = line_writer(count=min(10, kinds.count("comment") - len(lines)), avoid=[*used(), *(w["script"] for w in lines)],
+    # each comment line a sentence of its own: none the same sentence as another of the batch or one of
+    # the account's latest reels with a word swapped (``ideas.same_sentence``); Gemini sees those first
+    said = [h["line"] for h in history[-14:] if h.get("line")]
+    for _ in range(LINE_TRIES):
+        need = kinds.count("comment") - len(lines)
+        if need <= 0:
+            break
+        taken = [*(w["script"] for w in lines), *said]
+        got = line_writer(count=min(10, need + 2), avoid=[*taken, *used()],
                           **{k: v for k, v in brief.items() if k not in ("examples", "post", "length")})
         plan["model"] = plan["model"] or got.get("model")
         if not got.get("ideas"):
             raise ideas.IdeasError("Gemini returned no comment lines.")
-        lines += [{**i, "kind": "comment"} for i in got["ideas"]]
+        lines += [{**i, "kind": "comment"} for i in ideas.distinct_lines(got["ideas"], taken)[:need]]
+    if len(lines) < kinds.count("comment"):
+        raise ideas.IdeasError("Gemini kept writing comment lines that repeat the same sentence. Try again.")
     queue = {"watch": iter(written), "comment": iter(lines)}
     written = [next(queue[k]) for k in kinds]
 

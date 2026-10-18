@@ -10,6 +10,7 @@ Gemini Pro (or Flash) the key can use is chosen from the API's model list.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import os
@@ -233,7 +234,8 @@ def line_prompt(count: int = 5, *, niche: str | None = None, topic: str = "", to
         "- Never ask for comments, likes or tags (\"comment below\", \"like if\", \"tag someone\").",
         "- Nothing hateful, sexual or political, and never a group of people as the target.",
         *(f"- {rule}" for rule in n.lines),
-        "- Every line is different; none may repeat an idea below.",
+        "- Every line is a sentence of its own: a different opening and shape from the other lines and from the "
+        "ideas below, never one sentence with a word or two swapped. None may repeat an idea below.",
         "Lines of the kind wanted (never reuse them):",
         *(f"- {x}" for x in n.examples),
         "For each line also write:",
@@ -366,6 +368,30 @@ def generate_lines(count: int = 5, *, niche: str | None = None, topic: str = "",
                 "youtube_title": _title(i.get("youtube_title") or line)}
         _extras(idea, i, comment=comment, search=search, hashtags=hashtags)
         clean.append(idea)
+    clean = distinct_lines(clean)
     if not clean:
         raise IdeasError("Gemini returned no lines. Try again.")
     return {"model": model, "ideas": clean[:count]}
+
+
+def _words(line: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", str(line).lower().replace("\u2019", "'"))
+
+
+def same_sentence(a: str, b: str) -> bool:
+    """Whether two comment lines are one sentence with a word or two swapped
+    ("Nothing beats a man faster than..." / "Nothing breaks a man faster
+    than..."): at least half of their words line up."""
+    wa, wb = _words(a), _words(b)
+    return bool(wa and wb) and difflib.SequenceMatcher(None, wa, wb, autojunk=False).ratio() >= 0.5
+
+
+def distinct_lines(lines: list[dict], taken=()) -> list[dict]:
+    """The comment ``lines`` (ideas with the line as ``script``) that are not
+    the same sentence (``same_sentence``) as one of ``taken`` or an earlier one."""
+    seen, out = list(taken), []
+    for idea in lines:
+        if not any(same_sentence(idea["script"], s) for s in seen):
+            out.append(idea)
+            seen.append(idea["script"])
+    return out

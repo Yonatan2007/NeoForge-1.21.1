@@ -254,7 +254,10 @@ folder; run Python from `reelforge/` with the Gemini key available (see
    `ready` from today on (those hours are taken).
 4. `ArtifactData list autopilot`, this account's documents only:
    `history` = the latest 40, oldest first, as `{title, clips, song,
-   collaborator, reply_to}` (collaborators take turns from it). `avoid` =
+   collaborator, reply_to, line}` (`line`: a comment video's script;
+   collaborators take turns from it, and every comment line of the batch is
+   a different sentence from the latest 14 lines and from each other: a
+   line that is the same sentence with a word swapped is asked again). `avoid` =
    the first sentence of every reel's script and every autopilot title;
    `examples` = the scripts of the 3 latest longer reels.
    `ArtifactData list music` → `library` (the songs of the Music page, as

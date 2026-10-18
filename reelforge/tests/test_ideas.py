@@ -164,7 +164,8 @@ def test_a_niche_shapes_the_brief_and_comment_lines(monkeypatch):
     brief = body["contents"][0]["parts"][0]["text"]
     assert "moral dilemmas" in brief and "no voice" in brief and "Never ask for comments" in brief
     gym = ideas.line_prompt(3, niche="gym")
-    assert "Nothing [verb] a man faster than..." in gym and "ends with a colon" not in gym
+    assert "Each line is a different sentence" in gym and "ends with a colon" not in gym
+    assert "never one sentence with a word or two swapped" in gym
     assert "first_comment" in brief and "- would you rather questions" in brief and "- hashtags:" not in brief
     item = body["generationConfig"]["responseSchema"]["properties"]["ideas"]["items"]
     assert {"line", "caption", "first_comment", "search_phrase"} <= set(item["required"]) and "hashtags" not in item["properties"]
@@ -173,7 +174,35 @@ def test_a_niche_shapes_the_brief_and_comment_lines(monkeypatch):
 def test_a_line_that_trails_off_ends_in_three_dots(monkeypatch):
     monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
     text = json.dumps({"ideas": [{"line": "Nothing ages a man faster than\u2026", "title": "T", "caption": "C", "youtube_title": "Y"},
-                                 {"line": "Nothing humbles a man faster than..", "title": "T", "caption": "C", "youtube_title": "Y"}]})
+                                 {"line": "Discipline is just..", "title": "T", "caption": "C", "youtube_title": "Y"}]})
     g = Gemini([], Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}))
     lines = [i["script"] for i in ideas.generate_lines(count=2, niche="gym", session=g)["ideas"]]
-    assert lines == ["Nothing ages a man faster than...", "Nothing humbles a man faster than..."]
+    assert lines == ["Nothing ages a man faster than...", "Discipline is just..."]
+
+
+def test_comment_lines_that_are_one_sentence_with_a_word_swapped_are_the_same(monkeypatch):
+    same = [("Nothing beats a man faster than...", "Nothing breaks a man faster than..."),
+            ("Nothing tests a man more than...", "Nothing beats a man faster than..."),
+            ("You know a man is serious when...", "You know a man is lazy when..."),
+            ("Discipline is just...", "Comfort is just..."),
+            ("The habit that ruined my twenties...", "The habit that saved my twenties..."),
+            ("Nothing beats a man\u2019s ego faster than...", "nothing BEATS a man's ego faster than")]
+    different = [("Nothing beats a man faster than...", "You know a man is serious when..."),
+                 ("The habit that quietly ruined my twenties...", "The lift that humbled me the most..."),
+                 ("Discipline is just...", "Real strength shows up when..."),
+                 # a would-you-rather niche shares its opening, not its sentences
+                 ("Would you rather know the date you die, or how?", "Would you relive your best day or skip your worst one?")]
+    assert all(ideas.same_sentence(a, b) and ideas.same_sentence(b, a) for a, b in same)
+    assert not any(ideas.same_sentence(a, b) for a, b in different) and not ideas.same_sentence("...", "...")
+    got = ideas.distinct_lines([{"script": s} for s in ("Discipline is just...", "Comfort is just...",
+                                                        "Real strength shows up when...")],
+                               ["Real strength shows up when it's hard..."])
+    assert [g["script"] for g in got] == ["Discipline is just..."]
+    # Gemini's own answer keeps the first of two lines that are one sentence
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    text = json.dumps({"ideas": [{"line": line, "title": "T", "caption": "C", "youtube_title": "Y"}
+                                 for line in ("Nothing ages a man faster than...", "Nothing humbles a man faster than...",
+                                              "Discipline is just...")]})
+    g = Gemini([], Resp(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}))
+    lines = [i["script"] for i in ideas.generate_lines(count=3, niche="gym", session=g)["ideas"]]
+    assert lines == ["Nothing ages a man faster than...", "Discipline is just..."]

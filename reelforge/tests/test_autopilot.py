@@ -147,6 +147,18 @@ def clip(key, w=1080, h=1920):
             "width": w, "height": h, "tile": 0, "portrait": h > w}
 
 
+GYM_LINES = ("Discipline is just...", "The habit that quietly ruined my twenties...", "You know a man is serious when...",
+             "Real strength shows up when...", "The lift that humbled me the most...", "Every man should learn early that...")
+DILEMMA_LINES = ("Would you rather know when, or how?", "Would you erase your worst memory if your best went with it?",
+                 "Would you relive your best day or skip your worst one?", "If you could undo one choice, would you?")
+
+
+def lines_of(pool, n, **extra):
+    """``n`` comment lines from ``pool`` as Gemini's line writer returns them, each a different sentence."""
+    return [{"kind": "comment", "title": f"L{i}", "script": pool[i], "why": "", "caption": "Be honest.", "hashtags": [],
+             "youtube_title": "Y", **extra} for i in range(n)]
+
+
 def test_clips_are_shared_out_so_no_two_reels_repeat_one():
     reviews = [{"opening": [clip("m_1"), clip("m_2")], "pool": [clip(f"p_{i}") for i in range(6)], "rest_shots": 2},
                {"opening": [clip("m_1"), clip("m_2")], "pool": [clip(f"p_{i}") for i in range(8)], "rest_shots": 2},
@@ -577,9 +589,7 @@ def test_prepare_mixes_comment_videos_for_an_account(tmp_path, monkeypatch):
 
     def line_writer(**kw):
         seen["lines"].append(kw)
-        return {"model": "g", "ideas": [{"kind": "comment", "title": f"L{i}", "script": "Would you rather know when, or how?",
-                                         "why": "", "caption": "Be honest.", "hashtags": [], "youtube_title": "When or how?",
-                                         "first_comment": "How."} for i in range(kw["count"])]}
+        return {"model": "g", "ideas": lines_of(DILEMMA_LINES, kw["count"], youtube_title="When or how?", first_comment="How.")}
 
     def searcher(topic, seeds=None):
         seen["search"].append(seeds)
@@ -595,7 +605,8 @@ def test_prepare_mixes_comment_videos_for_an_account(tmp_path, monkeypatch):
     assert all(it["id"].startswith("ap-dilemmas-") and it["account"] == "dilemmas" for it in items)
     assert seen["search"][0][0] == "would you rather"  # the niche's searches
     assert seen["watch"][0]["niche"] == "dilemmas" and seen["watch"][0]["replies"][0]["id"] == "r1"
-    assert seen["lines"][0]["count"] == 2 and seen["lines"][0]["niche"] == "dilemmas" and "examples" not in seen["lines"][0]
+    # two lines wanted, two spare in case one repeats another's sentence
+    assert seen["lines"][0]["count"] == 4 and seen["lines"][0]["niche"] == "dilemmas" and "examples" not in seen["lines"][0]
     assert [it["reply_to"] for it in items] == [None, "r1", None, None]  # a video reply is a longer video
     for it in items:
         p = json.loads((tmp_path / "run" / it["id"] / "project.json").read_text())
@@ -627,9 +638,7 @@ def test_the_gym_account_posts_its_own_first_line_before_any_gemini_writes(tmp_p
 
         def line_writer(**kw):
             asked.append(kw["count"])
-            return {"model": "g", "ideas": [{"kind": "comment", "title": f"L{i}", "script": "Nothing humbles a man faster than...",
-                                             "why": "", "caption": "Be honest.", "hashtags": [], "youtube_title": "Y",
-                                             "first_comment": "Gravity."} for i in range(kw["count"])]}
+            return {"model": "g", "ideas": lines_of(GYM_LINES, kw["count"], first_comment="Gravity.")}
 
         def writer(**kw):
             return {"model": "g", "ideas": [{"title": f"W{i}", "script": "Five habits keep men stuck. More words.", "why": "",
@@ -640,10 +649,56 @@ def test_the_gym_account_posts_its_own_first_line_before_any_gemini_writes(tmp_p
         return [it for it in items if it["kind"] == "comment"], asked
 
     comments, asked = run([], "first")
-    assert comments[0]["script"] == "Nothing beats a man faster than..." and asked == [1]
+    assert comments[0]["script"] == "Nothing beats a man faster than..." and asked == [3]
     assert comments[0]["first_comment"] == "Comfort. It wins without a fight." and comments[1]["first_comment"] == "Gravity."
     comments, asked = run(["Nothing beats a man faster than"], "again")  # posted before: Gemini writes them all
-    assert asked == [2] and all(c["script"] != "Nothing beats a man faster than..." for c in comments)
+    assert asked == [4] and all(c["script"] != "Nothing beats a man faster than..." for c in comments)
+
+
+def test_each_comment_line_of_a_batch_is_a_different_sentence(tmp_path, monkeypatch):
+    from reelforge import ideas, pipeline
+
+    monkeypatch.setattr(pipeline, "review_footage", lambda project, work, settings, out: {
+        "opening": [], "pool": [clip(f"p_{work.name}x{i}") for i in range(6)],
+        "rest_shots": 0 if project.voice.source == "none" else 4})
+    inp = tmp_path / "in.json"
+    inp.write_text(json.dumps({  # three comment videos: the niche's own first line and two from Gemini
+        "account": "gym", "history": [{"title": "Old", "line": "You know a man is serious when..."}],
+        "settings": {"per_day": 2, "days": 3, "platforms": ["instagram"], "niche": "gym", "mix": "half",
+                     "music": "none", "search": False, "posting": "manual", "tz": "Asia/Jerusalem"},
+        "template": {"id": "tpl-1", "data": {"project": template_project(), "files": []}}, "now": "2026-10-12T08:00"}))
+
+    def writer(**kw):
+        return {"model": "g", "ideas": [{"title": f"W{i}", "script": "Five habits keep men stuck. More words.", "why": "",
+                                         "caption": "C", "hashtags": [], "youtube_title": "Y"} for i in range(kw["count"])]}
+
+    def writes(*answers):
+        asked, answers = [], iter(answers)
+
+        def line_writer(**kw):
+            asked.append((kw["count"], kw["avoid"]))
+            got = next(answers, ["Nothing humbles a man faster than..."])
+            return {"model": "g", "ideas": [{"kind": "comment", "title": f"L{i}", "script": line, "why": "", "caption": "C",
+                                             "hashtags": [], "youtube_title": "Y"} for i, line in enumerate(got)]}
+        return line_writer, asked
+
+    # the first line with another verb, the account's latest line with another word, and one line twice: each
+    # goes; Gemini is asked again, with the batch's lines and the latest ones first
+    line_writer, asked = writes(["Nothing humbles a man faster than...", "You know a man is lazy when...",
+                                 "Discipline is just...", "Discipline is just..."],
+                                ["Real strength shows up when...", "The lift that humbled me the most..."])
+    panelrun.autopilot_prepare(inp, tmp_path, tmp_path / "run", writer=writer, line_writer=line_writer)
+    items = json.loads((tmp_path / "run" / "plan.json").read_text())["items"]
+    assert [it["script"] for it in items if it["kind"] == "comment"] == [
+        "Nothing beats a man faster than...", "Discipline is just...", "Real strength shows up when..."]
+    assert [n for n, _ in asked] == [4, 3]
+    assert asked[0][1][:2] == ["Nothing beats a man faster than...", "You know a man is serious when..."]
+    assert asked[1][1][:3] == ["Nothing beats a man faster than...", "Discipline is just...", "You know a man is serious when..."]
+    # Gemini keeps writing the same sentence: the batch stops instead of repeating it
+    line_writer, asked = writes()
+    with pytest.raises(ideas.IdeasError, match="repeat the same sentence"):
+        panelrun.autopilot_prepare(inp, tmp_path, tmp_path / "again", writer=writer, line_writer=line_writer)
+    assert len(asked) == panelrun.LINE_TRIES
 
 
 def test_comment_videos_render_without_a_voice(tmp_path, monkeypatch):
@@ -684,9 +739,8 @@ def test_an_account_posted_by_hand_needs_no_metricool(tmp_path, monkeypatch):
         "template": {"id": "tpl-1", "data": {"project": template_project(), "files": []}}, "now": "2026-10-12T08:00"}))
 
     def line_writer(**kw):
-        return {"model": "g", "ideas": [{"kind": "comment", "title": f"L{i}", "script": "Nothing ages a man faster than...",
-                                         "why": "", "caption": "Be honest. #gym", "hashtags": ["gym"], "youtube_title": "Y",
-                                         "first_comment": "Regret."} for i in range(kw["count"])]}
+        return {"model": "g", "ideas": lines_of(GYM_LINES, kw["count"], caption="Be honest. #gym", hashtags=["gym"],
+                                                first_comment="Regret.")}
 
     def writer(**kw):
         return {"model": "g", "ideas": [{"title": f"W{i}", "script": "Five habits keep men stuck. More words.", "why": "",
