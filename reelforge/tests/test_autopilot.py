@@ -491,8 +491,13 @@ def test_a_niche_sets_the_footage_and_a_comment_video_holds_its_line():
     # the gym account: only dark gym footage (wide clips cropped, the darkest first, no women, boxing or
     # outdoors), no skyline: the opening line on a fixed arc with a shadow; its comment videos keep that
     # layout and are one clip of someone lifting
-    gym = ap.build_project(template_project(), "Five habits keep men stuck.", "T", niche="gym")
+    with_searches = template_project()
+    with_searches["footage"].update(queries=["golden hour lake"], hook_searches=["snow mountains"])
+    gym = ap.build_project(with_searches, "Five habits keep men stuck.", "T", niche="gym")
     gf = gym["footage"]
+    # the main account's reference pictures and searches stay behind: their colours made gym reels
+    # search "mountains" and "forest" first
+    assert (gf["items"], gf["queries"], gf["hook_searches"]) == ([], None, None)
     assert (gf["palette"], gf["hook_query"], gf["allow_landscape"], gf["portrait_weight"]) == ("gym", None, True, 0.0)
     assert "barbell" in gf["theme"] and {"woman", "boxing", "forest", "gymnast"} <= set(gf["avoid"])
     assert gym["style"]["look"]["brightness"] < 0 and gym["style"]["look"]["saturation"] < 1
@@ -504,6 +509,7 @@ def test_a_niche_sets_the_footage_and_a_comment_video_holds_its_line():
     assert "gym" in {a["id"] for a in ap.ACCOUNTS}
     plain = ap.build_project(template_project(), "Hook.", "T")
     assert plain["footage"]["allow_landscape"] is False and plain["footage"].get("hook_searches") is None
+    assert plain["footage"]["items"] == [{"path": "uploads/ref.jpg", "role": "reference"}]  # the main account keeps them
     line = "Would you rather know the date you die, or how?"
     c = ap.build_comment_project(template_project(), line, "Date or how", music=None, niche="dilemmas")
     assert c["script"] == line and c["voice"]["source"] == "none" and c["voice"]["file"] is None
@@ -710,3 +716,27 @@ def test_an_account_posted_by_hand_needs_no_metricool(tmp_path, monkeypatch):
     assert first["script"] == "Nothing beats a man faster than..." and first["text"] == "Be honest."
     assert first["first_comment"] == "Comfort. It wins without a fight." and first["metricool"] is None
     assert second["status"] == "failed" and second["problems"] == ["Its video couldn't be saved in the panel."]
+
+
+def test_comment_videos_choose_their_one_long_clip_before_the_longer_reels(tmp_path, monkeypatch):
+    from reelforge import pipeline
+
+    def review(project, work, settings, out):  # every reel finds the same clips, the long one first
+        fresh = [c for c in (clip("m_long"), *(clip(f"m_{i}") for i in range(12))) if c["key"] not in project.footage.banned]
+        return {"opening": [], "pool": fresh, "rest_shots": 1 if project.voice.source == "none" else 3, "hook_slot": False}
+
+    monkeypatch.setattr(pipeline, "review_footage", review)
+    items = []
+    for n, (kind, slot) in enumerate((("watch", "2026-10-18T19:00"), ("comment", "2026-10-19T12:00"))):
+        work = tmp_path / f"ap-gym-{n}"
+        work.mkdir()
+        build = ap.build_comment_project if kind == "comment" else ap.build_project
+        p = build(template_project(), "Nothing beats a man faster than...", "T", music=None, niche="gym")
+        config.save_project(config.from_dict(Project, p), work / "project.json")
+        items.append({"id": work.name, "kind": kind, "slot": slot, "work": str(work)})
+    panelrun._plan_footage({"items": items, "banned": []})
+    picks = {it["kind"]: [k["key"] for k in config.load_project(tmp_path / it["id"] / "project.json").footage.picks]
+             for it in items}
+    # the comment video comes second in time but chooses first: the long clip is its own, and its one
+    # clip is enough (no opening to choose apart), so it doesn't fall back to clips other reels have
+    assert picks["comment"] == ["m_long"] and "m_long" not in picks["watch"] and len(picks["watch"]) == 5

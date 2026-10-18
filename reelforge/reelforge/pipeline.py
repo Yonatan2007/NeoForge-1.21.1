@@ -541,7 +541,7 @@ def review_footage(project: Project, project_dir: Path, settings: Settings, out_
     sources, warnings = assign_sources(project, script, len(shots), hook_terrain, ref_terms)
     stock_slots = [k for k, s in enumerate(sources) if s.kind == "stock"]
     out = {"shots": len(shots), "stock_shots": len(stock_slots), "opening": [], "pool": [],
-           "warnings": warnings, "sheet": None, "tile": None}
+           "warnings": warnings, "sheet": None, "tile": None, "hook_slot": False}
     if not stock_slots:
         out["warnings"].append("Every shot uses your own footage, so there is no stock to choose.")
         return out
@@ -554,6 +554,7 @@ def review_footage(project: Project, project_dir: Path, settings: Settings, out_
     rest = list(stock_slots)
     opening: list = []
     if _hook_slot(project, hook_terrain, stock_slots):
+        out["hook_slot"] = True  # the first shot is its own pick, chosen for its skyline
         ranked = footage.ranked_best(
             [search_terms(project.footage.hook_query), *(project.footage.hook_searches or HOOK_SEARCHES)],
             providers, rank=skyline,

@@ -347,7 +347,10 @@ def build_project(template: dict, script: str, title: str, *, music: str | dict 
     means no music. The template's own clips
     stay with it (only its reference pictures carry over), and landscape clips
     are left out: in a tall frame they look zoomed in. ``niche`` sets the
-    footage the reel searches for and its grade (``niches``)."""
+    footage the reel searches for and its grade (``niches``); a niche's reel
+    leaves the template's reference pictures and searches behind, or their
+    colours would steer its clips toward the main account's look (a gym reel
+    searching "mountains")."""
     p = copy.deepcopy(template)
     p["name"], p["script"] = title, script
     fs = p.setdefault("footage", {})
@@ -372,6 +375,7 @@ def build_project(template: dict, script: str, title: str, *, music: str | dict 
         m.update(file=music, source_in=0, source_out=None)
     if niche and niche != niches.DEFAULT:
         n = niches.get(niche)
+        fs["items"], fs["queries"], fs["hook_searches"] = [], None, None
         _merge(fs, n.footage)
         _merge(p.setdefault("style", {}), n.style)
     return p

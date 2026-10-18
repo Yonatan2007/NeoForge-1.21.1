@@ -345,8 +345,10 @@ def _plan_footage(plan: dict) -> None:
     """Stock clips for every reel of ``plan``, one reel after another: each
     searches without the clips the reels before it got (nor ``plan.banned``:
     the template's and recent reels'), so every reel has its own opening and
-    clips; the other opening clips it found are kept for swaps. Then each
-    reel's own render rules out every other reel's clips."""
+    clips; the other opening clips it found are kept for swaps. Comment
+    videos choose first: each is one long clip, and the longer reels' many
+    shorter shots would otherwise use up the few long ones. Then each reel's
+    own render rules out every other reel's clips."""
     from . import autopilot as ap, voiceover
     from .pipeline import review_footage
     from .script import parse_script
@@ -368,7 +370,7 @@ def _plan_footage(plan: dict) -> None:
             logging.getLogger("reelforge").warning("footage plan for %s: %s", work.name, exc)
             return {}
 
-    for item in plan["items"]:
+    for item in sorted(plan["items"], key=lambda it: it.get("kind") != "comment"):  # stable: by slot within each kind
         work = Path(item["work"])
         if st is None:
             st = _settings(work)
@@ -379,7 +381,9 @@ def _plan_footage(plan: dict) -> None:
         review = {**review_with(project, work, base | used), "extra": extra}
         picks = ap.assign_clips([review], banned=base | used)[0]
         rest = review.get("rest_shots")
-        if len(picks) < (4 if rest is None else int(rest)) + 1:
+        # an opening chosen for its skyline is one pick more (a reel without one, like a gym
+        # comment video's one clip, takes its first shot from the pool)
+        if len(picks) < (4 if rest is None else int(rest)) + bool(review.get("hook_slot", True)):
             # the stock sites ran out of fresh clips: reuse ones from reels far away in time
             near = {k for k, slots in when.items() if any(abs((slot - t).total_seconds()) < NEAR_HOURS * 3600 for t in slots)}
             review = {**review_with(project, work, base | near), "extra": extra}
