@@ -517,6 +517,10 @@ def test_a_niche_sets_the_footage_and_a_comment_video_holds_its_line():
     hook_style = c["style"]["hook"]
     assert (hook_style["mode"], hook_style["hold"], hook_style["reveal"], hook_style["curve"]) == ("terrain", 60.0, "all", "gentle")
     assert c["style"]["video"]["fade_out"] == 0 and c["music"]["file"] is None
+    late = template_project()
+    late["music"]["start_at"] = 3.2  # the template's song comes in after its hook
+    m = ap.build_comment_project(late, line, "Date or how", niche="gym")["music"]
+    assert (m["start_at"], m["end_at"], m["fade_in"]) == (0.0, None, 0.0)  # a comment video's music plays from frame one
     assert ap.comment_seconds("Why?") == 7.0 and ap.comment_seconds("word " * 40) == 10.0
     # one shot, the whole line up within the first seconds and on screen to the last frame
     proj = config.from_dict(Project, c)

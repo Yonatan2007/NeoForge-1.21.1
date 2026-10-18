@@ -405,7 +405,8 @@ def build_comment_project(template: dict, line: str, title: str, *, music: str |
                 curve="fixed" if hook.get("curve") == "fixed" else "gentle",
                 fallback="arc", size=68, small_scale=0.9, big_scale=1.6)
     style.setdefault("video", {}).update(max_shot=seconds + 0.5, fade_in=0.0, fade_out=0.0, voice_delay=0.0)
-    p.setdefault("music", {}).update(fade_in=0.0, fade_out=0.3, duck=False, volume_db=-12.0)
+    # the music from the first frame to the last (a longer reel's song may come in after its hook)
+    p.setdefault("music", {}).update(fade_in=0.0, fade_out=0.3, duck=False, volume_db=-12.0, start_at=0.0, end_at=None)
     p.setdefault("footage", {})["queries"] = None
     if niche and niche != niches.DEFAULT:  # the niche's own searches for that one clip
         _merge(p["footage"], niches.get(niche).comment_footage)
